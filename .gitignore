@@ -1,0 +1,30 @@
+# Secrets / environment
+.env
+.env.*
+*.secret
+*.pem
+*.key
+
+# .NET / IDE
+bin/
+obj/
+.vs/
+*.user
+*.suo
+.vscode/
+.idea/
+
+# SolidWorks artifacts
+*.SLDPRT
+*.SLDASM
+*.SLDDRW
+*.sldprt
+*.sldasm
+*.slddrw
+~$*
+
+# OS / logs
+.DS_Store
+Thumbs.db
+*.log
+tmp/

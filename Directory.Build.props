@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <RepositoryUrl>https://github.com/SlncTrZ/CDT-SolidWorks</RepositoryUrl>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+  <!-- TargetFramework and SolidWorks interop dependencies are intentionally deferred until W0 runtime research. -->
+</Project>
