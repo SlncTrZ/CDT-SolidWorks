@@ -28,3 +28,13 @@ obj/
 Thumbs.db
 *.log
 tmp/
+
+# Agent-local configuration
+AGENTS.md
+.agents/
+CLAUDE.md
+.claude/
+.mcp.json
+
+# Internal development direction, roadmap and evidence
+_private/
