@@ -30,6 +30,16 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "document_reconcile": frozenset({"call_id", "path", "expected_type", "should_be_open"}),
     "sketch_create_geometry": frozenset({"path", "expected_revision", "name", "plane", "entities"}),
     "sketch_get": frozenset({"path", "expected_revision", "sketch_id"}),
+    "body_inspect": frozenset({"path"}),
+    "body_combine": frozenset({"path", "operation", "body_names", "main_body_name"}),
+    "surface_thicken": frozenset({"path", "surface_body_name", "thickness_mm", "side", "merge"}),
+    "sheet_metal_inspect": frozenset({"path"}),
+    "sheet_metal_set_flattened": frozenset({"path", "flattened"}),
+    "weldment_inspect": frozenset({"path"}),
+    "weldment_create_structural_member": frozenset({
+        "path", "sketch_feature_name", "profile_path", "profile_configuration",
+        "apply_corner_treatment", "corner_treatment_type"
+    }),
     "sketch_create_rectangle": frozenset({"output_path", "width_mm", "height_mm", "plane", "center_x_mm", "center_y_mm"}),
     "part_create_rect_extrude": frozenset({"output_path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm"}),
     "part_add_rect_extrude": frozenset({"path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm", "merge"}),

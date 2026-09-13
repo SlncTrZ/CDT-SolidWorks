@@ -214,6 +214,16 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                             "unexpected": True,
                         },
                     )
+                with pytest.raises(MCPError) as body_exc_info:
+                    await client.call_tool(
+                        "body_combine",
+                        {
+                            "path": str(tmp_path / "part.SLDPRT"),
+                            "operation": "add",
+                            "body_names": ["Body1", "Body2"],
+                            "unexpected": True,
+                        },
+                    )
                 with pytest.raises(MCPError) as cad_exc_info:
                     await client.call_tool(
                         "sketch_create_rectangle",
@@ -230,5 +240,7 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
     assert "unexpected" in exc_info.value.message.lower()
     assert sketch_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in sketch_exc_info.value.message.lower()
+    assert body_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in body_exc_info.value.message.lower()
     assert cad_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in cad_exc_info.value.message.lower()

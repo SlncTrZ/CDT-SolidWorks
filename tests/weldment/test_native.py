@@ -139,3 +139,26 @@ def test_weldment_path_segments_exclude_construction_geometry(tmp_path) -> None:
 
     assert len(segments) == 2
     assert all(segment.ConstructionGeometry is False for segment in segments)
+
+
+def test_unconfigured_profile_roots_fail_create_before_dispatch(tmp_path) -> None:
+    part = tmp_path / "frame.sldprt"
+    part.write_bytes(b"fixture")
+    profile = tmp_path / "tube.sldlfp"
+    profile.write_bytes(b"profile")
+    session = NeverExecuteSession()
+    adapter = WeldmentNativeAdapter(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        profile_roots=(),
+    )
+
+    result = adapter.create_structural_member(
+        part, sketch_feature_name="Sketch1", profile_path=profile
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "path_policy_unconfigured"
+    assert session.calls == 0

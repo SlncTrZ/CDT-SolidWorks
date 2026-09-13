@@ -82,8 +82,9 @@ Install the package and run `cdt-solidworks`. Network startup reads runtime conf
 - `CDT_SOLIDWORKS_AUTH_ISSUER_URL`
 - `CDT_SOLIDWORKS_RESOURCE_URL`
 - `CDT_SOLIDWORKS_ALLOWED_ROOTS`
+- `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS`
 - `CDT_SOLIDWORKS_BIND_HOST`
 - `CDT_SOLIDWORKS_PORT`
 - `CDT_SOLIDWORKS_VERSION`
 
-Authentication configuration is mandatory and startup fails closed when it is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy.
+Authentication configuration is mandatory and startup fails closed when it is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.

@@ -30,6 +30,22 @@ class _FakeSketchService:
     pass
 
 
+class _FakeBodyService:
+    pass
+
+
+class _FakeSurfaceService:
+    pass
+
+
+class _FakeSheetMetalService:
+    pass
+
+
+class _FakeWeldmentService:
+    pass
+
+
 def _success_probe(*, registered: bool, running: bool) -> NativeCallResult[ApplicationProbe]:
     return NativeCallResult.success(
         ApplicationProbe(
@@ -51,6 +67,10 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
         sketch_service=_FakeSketchService(),
+        body_service=_FakeBodyService(),
+        surface_service=_FakeSurfaceService(),
+        sheetmetal_service=_FakeSheetMetalService(),
+        weldment_service=_FakeWeldmentService(),
     )
     context = runtime.runtime_context()
     states = {item.name: item for item in context.capabilities}
@@ -68,6 +88,15 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.part.combine"].implemented is True
     assert states["solidworks.sheet_metal.base_flange"].implemented is True
     assert states["solidworks.surface.extrude"].implemented is True
+    assert states["solidworks.body.inspect"].implemented is True
+    assert states["solidworks.body.combine"].available is True
+    assert states["solidworks.surface.thicken"].available is True
+    assert states["solidworks.surface.knit"].implemented is False
+    assert states["solidworks.sheet_metal.inspect"].available is True
+    assert states["solidworks.sheet_metal.flat_pattern"].available is True
+    assert states["solidworks.sheet_metal.edge_flange"].implemented is False
+    assert states["solidworks.weldment.cut_list"].available is True
+    assert states["solidworks.weldment.structural_member"].available is True
     assert states["solidworks.assembly.components"].implemented is True
     assert states["solidworks.assembly.coincident_mate"].implemented is True
     assert states["solidworks.assembly.mates"].implemented is False
@@ -107,6 +136,10 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
         sketch_service=_FakeSketchService(),
+        body_service=_FakeBodyService(),
+        surface_service=_FakeSurfaceService(),
+        sheetmetal_service=_FakeSheetMetalService(),
+        weldment_service=_FakeWeldmentService(),
     )
     server = build_integrated_server(ServerConfig.in_process(guide_path=guide), runtime=runtime)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
@@ -117,6 +150,9 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "document_close", "document_reopen", "document_list_features",
         "document_list_bodies", "document_list_components", "document_rebuild",
         "document_reconcile", "sketch_create_geometry", "sketch_get",
+        "body_inspect", "body_combine", "surface_thicken",
+        "sheet_metal_inspect", "sheet_metal_set_flattened",
+        "weldment_inspect", "weldment_create_structural_member",
         "sketch_create_rectangle", "part_create_rect_extrude",
         "part_add_rect_extrude", "part_combine_all_bodies", "part_split_by_plane",
         "sheet_metal_create_base_flange", "surface_create_extrude",

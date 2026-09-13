@@ -4,7 +4,11 @@ import os
 
 import pytest
 
-from cdt_solidworks.cli import _allowed_roots_from_environ, _bind_from_environ
+from cdt_solidworks.cli import (
+    _allowed_roots_from_environ,
+    _bind_from_environ,
+    _weldment_profile_roots_from_environ,
+)
 from cdt_solidworks.platform.errors import StartupConfigError
 
 
@@ -22,3 +26,12 @@ def test_bind_defaults_are_loopback_and_bounded_port() -> None:
 def test_bind_rejects_invalid_port(value: str) -> None:
     with pytest.raises(StartupConfigError):
         _bind_from_environ({"CDT_SOLIDWORKS_PORT": value})
+
+
+def test_weldment_profile_roots_are_independent_from_document_roots() -> None:
+    env = {
+        "CDT_SOLIDWORKS_ALLOWED_ROOTS": os.pathsep.join(("/docs-a", "/docs-b")),
+        "CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS": os.pathsep.join(("/profiles-a", "/profiles-b")),
+    }
+    assert _allowed_roots_from_environ(env) == ("/docs-a", "/docs-b")
+    assert _weldment_profile_roots_from_environ(env) == ("/profiles-a", "/profiles-b")

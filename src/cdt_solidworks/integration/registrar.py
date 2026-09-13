@@ -255,6 +255,66 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 )
             )
 
+    if runtime.body_service is not None:
+        @server.tool(name="body_inspect", description="Inspect named native solid and surface bodies in a SOLIDWORKS part.")
+        def body_inspect(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.body_service.inspect(path))
+
+        @server.tool(name="body_combine", description="Combine explicitly named solid bodies using add, subtract, or common Boolean semantics.")
+        def body_combine(
+            path: str,
+            operation: Literal["add", "subtract", "common"],
+            body_names: list[str],
+            main_body_name: str | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.body_service.combine(
+                path, operation=operation, body_names=body_names, main_body_name=main_body_name
+            ))
+
+    if runtime.surface_service is not None:
+        @server.tool(name="surface_thicken", description="Thicken one explicitly named native surface body and verify resulting solid-body state.")
+        def surface_thicken(
+            path: str,
+            surface_body_name: str,
+            thickness_mm: float,
+            side: int = 0,
+            merge: bool = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.surface_service.thicken(
+                path, surface_body_name=surface_body_name, thickness_mm=thickness_mm,
+                side=side, merge=merge
+            ))
+
+    if runtime.sheetmetal_service is not None:
+        @server.tool(name="sheet_metal_inspect", description="Read bounded native sheet-metal Base Flange and Flat Pattern state.")
+        def sheet_metal_inspect(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.sheetmetal_service.inspect(path))
+
+        @server.tool(name="sheet_metal_set_flattened", description="Set persisted Flat Pattern suppression state for a native Base Flange sheet-metal part.")
+        def sheet_metal_set_flattened(path: str, flattened: bool) -> dict[str, Any]:
+            return _result_payload(runtime.sheetmetal_service.set_flattened(path, flattened=flattened))
+
+    if runtime.weldment_service is not None:
+        @server.tool(name="weldment_inspect", description="Read bounded weldment structural-member and cut-list state.")
+        def weldment_inspect(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.weldment_service.inspect(path))
+
+        @server.tool(name="weldment_create_structural_member", description="Create a structural member from one named path sketch and an allowed .sldlfp profile; custom profiles may specify an explicit configuration.")
+        def weldment_create_structural_member(
+            path: str,
+            sketch_feature_name: str,
+            profile_path: str,
+            profile_configuration: str = "",
+            apply_corner_treatment: bool = True,
+            corner_treatment_type: int = 0,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.weldment_service.create_structural_member(
+                path, sketch_feature_name=sketch_feature_name, profile_path=profile_path,
+                profile_configuration=profile_configuration,
+                apply_corner_treatment=apply_corner_treatment,
+                corner_treatment_type=corner_treatment_type,
+            ))
+
     if runtime.cad_service is None:
         return
 

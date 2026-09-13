@@ -26,10 +26,9 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
         **kwargs: Any,
     ) -> None:
         super().__init__(session, **kwargs)
-        roots = tuple(Path(root).expanduser().resolve(strict=False) for root in profile_roots)
-        if not roots:
-            raise ValueError("profile_roots must contain at least one allowed weldment profile root")
-        self.profile_roots = roots
+        self.profile_roots = tuple(
+            Path(root).expanduser().resolve(strict=False) for root in profile_roots
+        )
 
     def inspect(
         self, path: str | Path, *, timeout: float | None = None
@@ -281,6 +280,12 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                 "cad_validation_error",
                 "weldment_profile_validation",
                 "Weldment profile must use the .sldlfp extension.",
+            )
+        if not self.profile_roots:
+            raise NativeRuntimeError(
+                "path_policy_unconfigured",
+                "weldment_profile_validation",
+                "Weldment structural-member creation is disabled until profile roots are configured.",
             )
         if not any(self._is_within(candidate, root) for root in self.profile_roots):
             raise NativeRuntimeError(
