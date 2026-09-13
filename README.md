@@ -1,31 +1,41 @@
 # CDT-SolidWorks
 
-Independent SolidWorks MCP provider for the CDT engineering program.
+Independent SOLIDWORKS MCP provider for the CDT engineering program.
 
-> Status: **W0 skeleton ready** · Runtime implementation not started · Spec pin: `CDT_Engineer@643019c`
+> Status: **native CAD core operational on SOLIDWORKS 2024 SP0.1** · Spec pin: `CDT_Engineer@643019c`
 
 ## Repository role
 
-This repo owns SolidWorks-native runtime code, tests, COM/.NET integration and provider documentation. Common architecture/contracts live in `SlncTrZ/CDT_Engineer`; pinned read-only snapshots are under `specs/`.
+This repo owns SOLIDWORKS-native runtime code, tests, Windows COM integration and provider-facing documentation. Common architecture/contracts live in `SlncTrZ/CDT_Engineer`; pinned read-only snapshots are under `specs/`.
 
-## First objective
+## Current native scope
 
-W0/W1 establishes the supported SolidWorks/API boundary and delivers:
+The provider has native Windows evidence for:
 
-- provider identity/help/status/capabilities;
-- application/license/version availability;
-- document lifecycle;
-- feature/body/component query;
-- sketch entities, constraints and dimensions;
-- parametric extrude/cut/revolve with rebuild/error validation.
+- application/session lifecycle and document open/query/save/close/reopen;
+- rectangular 2D sketch creation;
+- solid extrude and multi-body creation;
+- body Combine and Split;
+- sheet-metal Base Flange;
+- extruded surfaces;
+- assembly component insertion;
+- coincident standard-plane mates;
+- rebuild/error validation and bounded path policy.
 
-A feature is not successful if SolidWorks rebuild state reports failure.
+The provider intentionally does **not** claim full part, assembly, drawing, Simulation, Motion, Routing, Flow Simulation or Electrical coverage until each capability family has production wiring and native acceptance evidence.
+
+## Correctness rules
+
+- Preserve SOLIDWORKS feature-tree, configuration and assembly semantics.
+- A COM return value alone is not success; relevant rebuild/error state and postconditions must be read back.
+- In-flight timeout after native dispatch is `uncertain` until reconciliation proves final state.
+- Provider-owned and user-owned SOLIDWORKS sessions remain distinct; user sessions are never blindly killed.
+- No arbitrary macro/script/dynamic COM invocation surface is exposed.
 
 ## Start here
 
-1. Read `AGENTS.md`.
-2. Read `docs/INITIAL_HANDOFF.md` and `docs/ROADMAP.md`.
-3. Read `docs/SPEC_BASELINE.md` plus `specs/**`.
-4. Research the current supported SolidWorks COM/.NET API/version matrix before choosing project structure/TargetFramework.
+1. Read `docs/SPEC_BASELINE.md`.
+2. Read `docs/TOOL_GUIDE.md` for the callable provider surface.
+3. Read `specs/MCP_PROVIDER_STANDARD.md`, `specs/ARCHITECTURE.md`, and `specs/CONTRACTS.md`.
 
-The roadmap reference `solidworks-automation-skill` is MIT-licensed research input; normalize behavior to CDT/SlncTrZ contracts.
+Development roadmaps, research, handoffs and acceptance evidence are intentionally kept outside the public documentation set.
