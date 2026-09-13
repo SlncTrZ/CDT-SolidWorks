@@ -27,6 +27,14 @@ class RebuildReport:
 
 
 @dataclass(frozen=True)
+class DrawingSnapshot:
+    identity: str
+    path: str
+    sheet_names: tuple[str, ...]
+    template_path: str | None
+
+
+@dataclass(frozen=True)
 class SheetSnapshot:
     name: str
 
@@ -59,6 +67,10 @@ class BomSnapshot:
 
 
 class DrawingAdapter(Protocol):
+    def create_drawing(self, drawing_id: str, template_path: str | None) -> None: ...
+
+    def read_drawing(self, drawing_id: str) -> DrawingSnapshot | None: ...
+
     def create_sheet(self, drawing_id: str, sheet_name: str) -> None: ...
 
     def read_sheet(self, drawing_id: str, sheet_name: str) -> SheetSnapshot | None: ...
@@ -96,6 +108,24 @@ class DrawingService:
 
     def __init__(self, adapter: DrawingAdapter) -> None:
         self._adapter = adapter
+
+    def create_drawing(
+        self, drawing_id: str, template_path: str | None = None
+    ) -> DrawingSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        if template_path is not None:
+            self._require_identity("template_path", template_path)
+        self._adapter.create_drawing(drawing_id, template_path)
+        drawing = self._adapter.read_drawing(drawing_id)
+        if drawing is None:
+            raise DrawingPostconditionError("drawing_readback_missing", drawing_id)
+        if drawing.identity != drawing_id or drawing.path != drawing_id:
+            raise DrawingPostconditionError("drawing_identity_readback_mismatch", drawing_id)
+        if not drawing.sheet_names or any(not name.strip() for name in drawing.sheet_names):
+            raise DrawingPostconditionError("drawing_sheet_readback_missing", drawing_id)
+        if template_path is not None and drawing.template_path != template_path:
+            raise DrawingPostconditionError("drawing_template_readback_mismatch", drawing_id)
+        return drawing
 
     def create_sheet(self, drawing_id: str, sheet_name: str) -> SheetSnapshot:
         self._require_identity("drawing_id", drawing_id)

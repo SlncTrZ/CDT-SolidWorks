@@ -4,6 +4,7 @@ from cdt_solidworks.drawing.domain import (
     BomSnapshot,
     DimensionSnapshot,
     DrawingPostconditionError,
+    DrawingSnapshot,
     DrawingRefusal,
     DrawingService,
     RebuildReport,
@@ -21,6 +22,18 @@ class FakeDrawingAdapter:
         self.bom_supported = False
         self.rebuild = RebuildReport(ok=True)
         self.force_dangling_view = False
+        self.drawings = {}
+
+    def create_drawing(self, drawing_id, template_path):
+        self.drawings[drawing_id] = DrawingSnapshot(
+            identity=drawing_id,
+            path=drawing_id,
+            sheet_names=("Sheet1",),
+            template_path=template_path,
+        )
+
+    def read_drawing(self, drawing_id):
+        return self.drawings.get(drawing_id)
 
     def create_sheet(self, drawing_id, sheet_name):
         self.sheets[sheet_name] = SheetSnapshot(name=sheet_name)
@@ -89,6 +102,19 @@ class DrawingServiceTests(unittest.TestCase):
         self.adapter = FakeDrawingAdapter()
         self.service = DrawingService(self.adapter)
         self.service.create_sheet("drawing-1", "Sheet1")
+
+    def test_create_drawing_requires_native_readback_identity_and_template(self):
+        result = self.service.create_drawing(
+            r"C:\\drawings\\fixture.SLDDRW",
+            r"C:\\templates\\a3.drwdot",
+        )
+        self.assertEqual(r"C:\\drawings\\fixture.SLDDRW", result.path)
+        self.assertEqual(("Sheet1",), result.sheet_names)
+        self.assertEqual(r"C:\\templates\\a3.drwdot", result.template_path)
+
+    def test_create_drawing_rejects_blank_template_before_dispatch(self):
+        with self.assertRaisesRegex(DrawingRefusal, "invalid_template_path"):
+            self.service.create_drawing(r"C:\\drawings\\fixture.SLDDRW", "")
 
     def test_view_preserves_source_association(self):
         view = self.service.create_view(

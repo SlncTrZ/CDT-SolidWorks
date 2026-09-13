@@ -40,11 +40,20 @@ class FakeInspector:
         return ArtifactInspection(
             detected_format=request.format,
             readable=True,
-            geometry_verified=request.format in {ExportFormat.STEP, ExportFormat.IGES},
+            geometry_verified=request.format
+            in {
+                ExportFormat.STEP,
+                ExportFormat.STEP_242,
+                ExportFormat.IGES,
+                ExportFormat.PARASOLID,
+                ExportFormat.STL,
+                ExportFormat.THREE_MF,
+            },
             source_document_id=request.source_document_id,
             source_configuration=request.source_configuration,
             drawing_sheet=request.drawing_sheet,
             detected_extension=extension,
+            byte_size=1024,
         )
 
 
@@ -109,6 +118,7 @@ class ExportServiceTests(unittest.TestCase):
             source_document_id=None,
             source_configuration=None,
             drawing_sheet=None,
+            byte_size=1024,
         )
         with self.assertRaisesRegex(ExportPostconditionError, "geometry_not_verified"):
             self.service.export(
@@ -153,6 +163,98 @@ class ExportServiceTests(unittest.TestCase):
         self.assertTrue(result.readable)
         self.assertEqual("Sheet1", result.drawing_sheet)
         self.assertEqual("Default", result.source_configuration)
+
+    def test_geometry_export_matrix_accepts_independently_verified_artifacts(self):
+        cases = (
+            (ExportFormat.PARASOLID, r"C:\exports\part.x_t"),
+            (ExportFormat.STL, r"C:\exports\part.stl"),
+            (ExportFormat.THREE_MF, r"C:\exports\part.3mf"),
+            (ExportFormat.STEP_242, r"C:\exports\part.stp"),
+        )
+        for export_format, target in cases:
+            with self.subTest(export_format=export_format):
+                self.inspector.inspection = ArtifactInspection(
+                    detected_format=export_format,
+                    readable=True,
+                    geometry_verified=True,
+                    source_document_id="part-1",
+                    source_configuration=None,
+                    drawing_sheet=None,
+                    detected_extension=target[target.rfind(".") :],
+                    byte_size=2048,
+                )
+                result = self.service.export(
+                    ExportRequest(
+                        source_document_id="part-1",
+                        target_path=target,
+                        format=export_format,
+                    )
+                )
+                self.assertTrue(result.geometry_verified)
+
+    def test_geometry_format_cannot_pass_without_geometry_verification(self):
+        self.inspector.inspection = ArtifactInspection(
+            detected_format=ExportFormat.STL,
+            readable=True,
+            geometry_verified=False,
+            source_document_id="part-1",
+            source_configuration=None,
+            drawing_sheet=None,
+            detected_extension=".stl",
+            byte_size=2048,
+        )
+        with self.assertRaisesRegex(ExportPostconditionError, "geometry_not_verified"):
+            self.service.export(
+                ExportRequest(
+                    source_document_id="part-1",
+                    target_path=r"C:\exports\part.stl",
+                    format=ExportFormat.STL,
+                )
+            )
+
+    def test_zero_byte_artifact_is_rejected(self):
+        self.inspector.inspection = ArtifactInspection(
+            detected_format=ExportFormat.PDF,
+            readable=True,
+            geometry_verified=False,
+            source_document_id="drawing-1",
+            source_configuration=None,
+            drawing_sheet=None,
+            detected_extension=".pdf",
+            byte_size=0,
+        )
+        with self.assertRaisesRegex(ExportPostconditionError, "artifact_empty"):
+            self.service.export(
+                ExportRequest(
+                    source_document_id="drawing-1",
+                    target_path=r"C:\exports\drawing.pdf",
+                    format=ExportFormat.PDF,
+                )
+            )
+
+    def test_dxf_and_dwg_extensions_are_typed(self):
+        for export_format, target in (
+            (ExportFormat.DXF, r"C:\exports\drawing.dxf"),
+            (ExportFormat.DWG, r"C:\exports\drawing.dwg"),
+        ):
+            with self.subTest(export_format=export_format):
+                self.inspector.inspection = ArtifactInspection(
+                    detected_format=export_format,
+                    readable=True,
+                    geometry_verified=False,
+                    source_document_id="drawing-1",
+                    source_configuration=None,
+                    drawing_sheet=None,
+                    detected_extension=target[target.rfind(".") :],
+                    byte_size=2048,
+                )
+                self.service.export(
+                    ExportRequest(
+                        source_document_id="drawing-1",
+                        target_path=target,
+                        format=export_format,
+                    )
+                )
 
 
 if __name__ == "__main__":
