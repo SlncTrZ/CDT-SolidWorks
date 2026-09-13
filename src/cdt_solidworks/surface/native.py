@@ -168,7 +168,10 @@ class SurfaceNativeAdapter(BodyNativeAdapter):
                         "Requested surface-body identity is not present in the part.",
                     )
                 self.api._member(model, "ClearSelection2", True)
-                if not bool(self.api._member(body, "Select2", False, self.api.null_dispatch())):
+                selection_manager = self.api._member(model, "SelectionManager")
+                select_data = self.api._member(selection_manager, "CreateSelectData")
+                select_data.Mark = 1
+                if not bool(self.api._member(body, "Select2", False, select_data)):
                     raise NativeRuntimeError(
                         "cad_selection_failed",
                         "surface_thicken",

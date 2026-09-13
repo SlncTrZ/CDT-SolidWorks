@@ -14,6 +14,11 @@ from cdt_solidworks.weldment.native import WeldmentNativeAdapter
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="requires native SOLIDWORKS on Windows")
 
 
+
+def _profile_configuration() -> str:
+    return os.environ.get("CDT_SW_WELDMENT_PROFILE_CONFIGURATION", "").strip()
+
+
 def test_native_weldment_frame_cut_list_fixture(tmp_path) -> None:
     raw_profile = os.environ.get("CDT_SW_WELDMENT_PROFILE", "").strip()
     if not raw_profile:
@@ -45,10 +50,12 @@ def test_native_weldment_frame_cut_list_fixture(tmp_path) -> None:
         assert sketch.value is not None
         sketch_name = str(sketch.value["sketch_name"])
 
+        profile_configuration = _profile_configuration()
         created = adapter.create_structural_member(
             path,
             sketch_feature_name=sketch_name,
             profile_path=profile,
+            profile_configuration=profile_configuration,
             apply_corner_treatment=True,
             corner_treatment_type=0,
         )

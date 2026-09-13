@@ -78,6 +78,8 @@ class WeldmentService:
             raise WeldmentValidationError("structural member path identities must not be empty")
         if spec.corner_treatment < 0:
             raise WeldmentValidationError("corner treatment must be non-negative")
+        if spec.profile_configuration and not spec.profile_configuration.strip():
+            raise WeldmentValidationError("profile configuration must not be whitespace-only")
 
     def _resolve_part(self, target: DocumentTarget) -> ResolvedDocument:
         document = self._runtime.resolve_document(target)

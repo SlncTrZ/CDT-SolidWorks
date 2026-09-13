@@ -13,6 +13,7 @@ class StructuralMemberSpec:
     profile_path: str
     group_name: str = "Group1"
     corner_treatment: int = 0
+    profile_configuration: str = ""
 
 
 @dataclass(frozen=True, slots=True)

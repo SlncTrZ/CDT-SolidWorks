@@ -9,7 +9,8 @@ from cdt_solidworks.native.errors import NativeRuntimeError
 
 from cdt_solidworks.body.native import BodyNativeAdapter
 
-_STRUCTURAL_MEMBER_FEATURE_TYPES = {"WeldMemberFeat", "WeldmentFeature"}
+_STRUCTURAL_MEMBER_FEATURE_TYPES = {"WeldMemberFeat"}
+_WELDMENT_ENV_FEATURE_TYPE = "WeldmentFeature"
 _CUT_LIST_TYPE = "CutListFolder"
 _SW_CONNECTED_SEGMENTS_SIMPLE_CUT = 1
 
@@ -58,6 +59,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
         *,
         sketch_feature_name: str,
         profile_path: str | Path,
+        profile_configuration: str = "",
         apply_corner_treatment: bool = True,
         corner_treatment_type: int = 0,
         timeout: float | None = None,
@@ -72,6 +74,19 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                     "sketch_feature_name must not be empty.",
                 )
             profile = self._validate_profile_path(profile_path)
+            if not isinstance(profile_configuration, str):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "weldment_create_structural_member",
+                    "profile_configuration must be a string.",
+                )
+            if profile_configuration and not profile_configuration.strip():
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "weldment_create_structural_member",
+                    "profile_configuration must not be whitespace-only.",
+                )
+            configuration = profile_configuration.strip()
             if int(corner_treatment_type) < 0:
                 raise NativeRuntimeError(
                     "cad_validation_error",
@@ -92,8 +107,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                         "Requested sketch feature identity is not present as a ProfileFeature.",
                     )
                 sketch = self.api._member(sketch_feature, "GetSpecificFeature2")
-                raw_segments = self.api._member(sketch, "GetSketchSegments")
-                segments = self._as_tuple(raw_segments)
+                segments = self._weldment_path_segments(sketch)
                 if not segments:
                     raise NativeRuntimeError(
                         "cad_precondition_failed",
@@ -102,6 +116,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                     )
 
                 manager = self.api._member(model, "FeatureManager")
+                self._ensure_weldment_environment(model, manager)
                 group = self.api._member(manager, "CreateStructuralMemberGroup")
                 if group is None:
                     raise NativeRuntimeError(
@@ -122,7 +137,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                     _SW_CONNECTED_SEGMENTS_SIMPLE_CUT,
                     False,
                     self.api.dispatch_array((group,)),
-                    "",
+                    configuration,
                 )
                 if feature is None:
                     raise NativeRuntimeError(
@@ -149,6 +164,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                     "path": source,
                     "feature_name": self.api.feature_name(feature),
                     "profile_path": profile,
+                    "profile_configuration": configuration,
                     "path_segment_count": len(segments),
                     **after,
                 }
@@ -163,9 +179,45 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
             mutation=True,
         )
 
+    def _weldment_path_segments(self, sketch: Any) -> tuple[Any, ...]:
+        raw_segments = self.api._member(sketch, "GetSketchSegments")
+        segments = self._as_tuple(raw_segments)
+        usable: list[Any] = []
+        for segment in segments:
+            try:
+                construction = bool(self.api._member(segment, "ConstructionGeometry"))
+            except Exception:
+                construction = False
+            if not construction:
+                usable.append(segment)
+        return tuple(usable)
+
+    def _ensure_weldment_environment(self, model: Any, manager: Any) -> None:
+        feature = self.api.first_feature(model)
+        count = 0
+        while feature is not None:
+            count += 1
+            if count > self.max_features:
+                raise NativeRuntimeError(
+                    "query_limit_exceeded",
+                    "weldment_feature_lookup",
+                    "Weldment feature lookup exceeded its bounded item limit.",
+                )
+            if self.api.feature_type(feature) == _WELDMENT_ENV_FEATURE_TYPE:
+                return
+            feature = self.api.next_feature(feature)
+        created = self.api._member(manager, "InsertWeldmentFeature")
+        if created is None:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                "weldment_create_structural_member",
+                "SOLIDWORKS did not create the weldment environment feature.",
+            )
+
     def _state(self, model: Any, *, update_cut_list: bool) -> dict[str, Any]:
         feature = self.api.first_feature(model)
         structural_count = 0
+        has_weldment_environment = False
         cut_items: list[dict[str, Any]] = []
         count = 0
         while feature is not None:
@@ -177,7 +229,9 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                     "Weldment feature lookup exceeded its bounded item limit.",
                 )
             type_name = self.api.feature_type(feature)
-            if type_name in _STRUCTURAL_MEMBER_FEATURE_TYPES:
+            if type_name == _WELDMENT_ENV_FEATURE_TYPE:
+                has_weldment_environment = True
+            elif type_name in _STRUCTURAL_MEMBER_FEATURE_TYPES:
                 structural_count += 1
             elif type_name == _CUT_LIST_TYPE:
                 folder = self.api._member(feature, "GetSpecificFeature2")
@@ -199,7 +253,7 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                         )
             feature = self.api.next_feature(feature)
         return {
-            "has_weldment": structural_count > 0,
+            "has_weldment": has_weldment_environment or structural_count > 0,
             "structural_member_count": structural_count,
             "cut_list_items": cut_items,
         }

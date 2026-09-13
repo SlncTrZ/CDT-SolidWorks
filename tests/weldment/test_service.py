@@ -105,3 +105,20 @@ def test_missing_cut_list_fails_acceptance() -> None:
     else:
         raise AssertionError("expected WeldmentMutationError")
     assert "persist" not in runtime.calls
+
+
+def test_structural_member_rejects_whitespace_profile_configuration() -> None:
+    runtime = FakeRuntime()
+    bad = StructuralMemberSpec(
+        "Frame",
+        ("seg-1",),
+        r"C:\\ProgramData\\SOLIDWORKS\\profiles\\square tube.sldlfp",
+        profile_configuration="   ",
+    )
+    try:
+        WeldmentService(runtime).add_structural_member(target(), bad)
+    except WeldmentValidationError as exc:
+        assert "configuration" in str(exc)
+    else:
+        raise AssertionError("expected WeldmentValidationError")
+    assert runtime.calls == []
