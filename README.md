@@ -2,7 +2,7 @@
 
 Independent SOLIDWORKS MCP provider for the CDT engineering program.
 
-> Status: **Mechanical 90 lanes A–D integrated for the current bounded native surface on SOLIDWORKS 2024 SP0.1; weighted coverage audit pending** · Spec pin: `CDT_Engineer@643019c`
+> Status: **bounded Mechanical 90 A–D provider surface integrated and native-verified on SOLIDWORKS 2024 SP0.1; mature 90–95 release gate not yet met** · Spec pin: `CDT_Engineer@643019c`
 
 ## Repository role
 
@@ -28,7 +28,7 @@ The provider has native Windows evidence for:
 - part mass/volume/area, center of mass, inertia, bounding box, and geometry-sanity evaluation;
 - rebuild/error validation and bounded path policy.
 
-Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset is now registered in the provider and has passed a public-wrapper native smoke on SOLIDWORKS 2024. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated, and no >=90/100 Mechanical Core score is claimed until the weighted audit is completed.
+Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset is now registered in the provider and has passed a public-wrapper native smoke on SOLIDWORKS 2024. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated. The post-integration weighted audit confirms the mature 90–95 Mechanical Core release threshold is **not yet met**; unaccepted families remain explicitly partial/unavailable.
 
 ## Correctness rules
 
