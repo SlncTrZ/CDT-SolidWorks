@@ -10,6 +10,9 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import INVALID_PARAMS
 
 from cdt_solidworks.auth.config import NetworkAuthConfig
+from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
+from cdt_solidworks.integration.server import build_integrated_network_app
+from cdt_solidworks.native.models import ApplicationProbe, NativeCallResult
 from cdt_solidworks.server.factory import ServerConfig, build_network_app
 
 
@@ -144,3 +147,54 @@ async def test_unexpected_tool_failure_does_not_leak_exception_or_secret(tmp_pat
     assert "test-only-secret" not in rendered
     assert "runtimeerror" not in rendered.lower()
     assert "test-only-secret" not in caplog.text
+
+
+class _IntegrationProbeSession:
+    session_id = "integration-probe"
+
+    def probe(self, *, version=None, timeout=3.0):
+        return NativeCallResult.success(
+            ApplicationProbe(
+                prog_id="SldWorks.Application",
+                registered=True,
+                running=True,
+                revision="34.0",
+                version_year=2026,
+            ),
+            call_id="probe-call",
+        )
+
+
+class _UnusedDocumentService:
+    pass
+
+
+@pytest.mark.asyncio
+async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path: Path) -> None:
+    runtime = IntegratedProviderRuntime(
+        allowed_roots=(tmp_path,),
+        session=_IntegrationProbeSession(),
+        document_service=_UnusedDocumentService(),
+    )
+    app = build_integrated_network_app(_config(tmp_path), runtime=runtime)
+    transport = httpx2.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=transport,
+            base_url="https://solidworks.example.test",
+            headers={"authorization": f"Bearer {AUTH_ENV['CDT_SOLIDWORKS_BEARER_TOKEN']}"},
+        ) as http_client:
+            target = streamable_http_client(
+                RESOURCE_URL,
+                http_client=http_client,
+                terminate_on_close=False,
+            )
+            async with Client(target) as client:
+                valid = await client.call_tool("application_probe")
+                with pytest.raises(MCPError) as exc_info:
+                    await client.call_tool("application_probe", {"unexpected": True})
+
+    assert valid.is_error is False
+    assert exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in exc_info.value.message.lower()

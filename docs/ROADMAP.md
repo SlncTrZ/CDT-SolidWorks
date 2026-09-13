@@ -21,7 +21,7 @@ Windows COM/.NET automation backend
 SolidWorks application/document
 ```
 
-Reference: `_private/reference/solidworks/solidworks-automation-skill` — MIT.
+Reference upstream: `wzyn20051216/solidworks-automation-skill` — MIT; implementation pins exact provenance before reuse.
 
 Reuse is allowed under license with attribution, but the provider contract/auth/error surface must be normalized to CDT/SlncTrZ.
 

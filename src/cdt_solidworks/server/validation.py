@@ -10,14 +10,33 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import INVALID_PARAMS
 
 
-_NO_ARGUMENT_TOOLS = frozenset({"help", "system_status", "system_capabilities"})
+_TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
+    "help": frozenset(),
+    "system_status": frozenset(),
+    "system_capabilities": frozenset(),
+    "application_probe": frozenset({"version"}),
+    "application_connect": frozenset({"policy", "version", "visible"}),
+    "application_disconnect": frozenset(),
+    "document_open": frozenset({"path", "expected_type", "configuration", "read_only"}),
+    "document_info": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_save": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_save_as": frozenset({"target_path", "session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_close": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_reopen": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_list_features": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_list_bodies": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp", "visible_only"}),
+    "document_list_components": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp", "top_level_only"}),
+    "document_rebuild": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_reconcile": frozenset({"call_id", "path", "expected_type", "should_be_open"}),
+}
+
 
 
 async def strict_platform_tool_inputs(
     ctx: ServerRequestContext[Any, Any],
     call_next: Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
 ) -> HandlerResult:
-    """Reject unknown arguments for provider-owned zero-argument platform tools.
+    """Reject unknown arguments for the current provider-owned MCP tool surface.
 
     MCP SDK argument models are permissive toward unknown keys by default. This
     pre-validation middleware makes the provider contract fail loud instead of
@@ -33,16 +52,21 @@ async def strict_platform_tool_inputs(
 
     tool_name = params.get("name")
     arguments = params.get("arguments")
-    if tool_name in _NO_ARGUMENT_TOOLS and arguments not in (None, {}):
+    allowed = _TOOL_ARGUMENTS.get(str(tool_name))
+    if allowed is not None:
+        if arguments is None:
+            arguments = {}
         if not isinstance(arguments, dict):
             raise MCPError(
                 code=INVALID_PARAMS,
-                message="Invalid params: arguments must be an empty object.",
+                message="Invalid params: arguments must be an object.",
             )
-        unexpected = ", ".join(sorted(str(key) for key in arguments))
-        raise MCPError(
-            code=INVALID_PARAMS,
-            message=f"Invalid params: unexpected field(s): {unexpected}",
-        )
+        unexpected_keys = sorted(str(key) for key in arguments if str(key) not in allowed)
+        if unexpected_keys:
+            unexpected = ", ".join(unexpected_keys)
+            raise MCPError(
+                code=INVALID_PARAMS,
+                message=f"Invalid params: unexpected field(s): {unexpected}",
+            )
 
     return await call_next(ctx)
