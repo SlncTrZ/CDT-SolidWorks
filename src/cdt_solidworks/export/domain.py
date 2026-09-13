@@ -24,8 +24,14 @@ class ExportPostconditionError(RuntimeError):
 
 class ExportFormat(str, Enum):
     STEP = "step"
+    STEP_242 = "step_242"
     IGES = "iges"
+    PARASOLID = "parasolid"
+    STL = "stl"
+    THREE_MF = "3mf"
     PDF = "pdf"
+    DXF = "dxf"
+    DWG = "dwg"
     NATIVE = "native"
 
 
@@ -54,6 +60,7 @@ class ArtifactInspection:
     source_configuration: str | None
     drawing_sheet: str | None
     detected_extension: str | None = None
+    byte_size: int | None = None
 
 
 class Exporter(Protocol):
@@ -73,10 +80,26 @@ class ExportService:
 
     _EXTENSIONS: dict[ExportFormat, frozenset[str]] = {
         ExportFormat.STEP: frozenset({".step", ".stp"}),
+        ExportFormat.STEP_242: frozenset({".step", ".stp"}),
         ExportFormat.IGES: frozenset({".iges", ".igs"}),
+        ExportFormat.PARASOLID: frozenset({".x_t", ".x_b"}),
+        ExportFormat.STL: frozenset({".stl"}),
+        ExportFormat.THREE_MF: frozenset({".3mf"}),
         ExportFormat.PDF: frozenset({".pdf"}),
+        ExportFormat.DXF: frozenset({".dxf"}),
+        ExportFormat.DWG: frozenset({".dwg"}),
         ExportFormat.NATIVE: frozenset({".sldprt", ".sldasm", ".slddrw"}),
     }
+    _GEOMETRY_FORMATS = frozenset(
+        {
+            ExportFormat.STEP,
+            ExportFormat.STEP_242,
+            ExportFormat.IGES,
+            ExportFormat.PARASOLID,
+            ExportFormat.STL,
+            ExportFormat.THREE_MF,
+        }
+    )
 
     def __init__(
         self,
@@ -112,9 +135,11 @@ class ExportService:
                 )
         elif request.format is ExportFormat.NATIVE:
             raise ExportPostconditionError("native_artifact_type_unverified")
+        if inspection.byte_size is not None and inspection.byte_size <= 0:
+            raise ExportPostconditionError("artifact_empty")
         if not inspection.readable:
             raise ExportPostconditionError("artifact_unreadable")
-        if request.format in {ExportFormat.STEP, ExportFormat.IGES} and not inspection.geometry_verified:
+        if request.format in self._GEOMETRY_FORMATS and not inspection.geometry_verified:
             raise ExportPostconditionError("geometry_not_verified")
 
         if (
@@ -140,6 +165,8 @@ class ExportService:
     def _validate_request(self, request: ExportRequest) -> None:
         self._require_identity("source_document_id", request.source_document_id)
         self._require_identity("target_path", request.target_path)
+        if not isinstance(request.format, ExportFormat):
+            raise ExportRefusal("invalid_format")
         if request.source_configuration is not None:
             self._require_identity(
                 "source_configuration", request.source_configuration
