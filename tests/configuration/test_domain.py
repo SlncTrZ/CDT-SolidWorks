@@ -3,6 +3,7 @@ import unittest
 from cdt_solidworks.configuration.domain import (
     ConfigurationPostconditionError,
     ConfigurationService,
+    RebuildReport,
 )
 
 
@@ -47,6 +48,9 @@ class FakeConfigurationAdapter:
 
     def read_component_state(self, document_id, configuration, component_id):
         return self.configs[configuration]["components"].get(component_id)
+
+    def rebuild_document(self, document_id):
+        return RebuildReport(ok=True)
 
 
 class ConfigurationServiceTests(unittest.TestCase):
