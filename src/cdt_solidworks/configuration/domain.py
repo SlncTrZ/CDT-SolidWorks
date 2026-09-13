@@ -1,8 +1,9 @@
-"""Configuration domain contract for lane D."""
+"""Configuration, equation, and custom-property domain contract for Agent C."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Protocol
 
 
@@ -21,6 +22,21 @@ class ConfigurationPostconditionError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class RebuildReport:
+    ok: bool
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EquationSnapshot:
+    identity: str
+    expression: str
+    value: float | None
+    is_global_variable: bool
+    disabled: bool = False
+
+
+@dataclass(frozen=True)
 class ConfigurationSnapshot:
     name: str
     dimensions: tuple[tuple[str, float | None], ...]
@@ -35,6 +51,12 @@ class ConfigurationAdapter(Protocol):
         self, document_id: str, name: str, parent: str | None
     ) -> None: ...
 
+    def delete_configuration(self, document_id: str, name: str) -> None: ...
+
+    def rename_configuration(
+        self, document_id: str, old_name: str, new_name: str
+    ) -> None: ...
+
     def activate_configuration(self, document_id: str, name: str) -> None: ...
 
     def read_active_configuration(self, document_id: str) -> str: ...
@@ -43,17 +65,87 @@ class ConfigurationAdapter(Protocol):
         self, document_id: str, configuration: str, dimension_name: str
     ) -> float | None: ...
 
+    def set_dimension(
+        self,
+        document_id: str,
+        configuration: str,
+        dimension_name: str,
+        value: float,
+    ) -> None: ...
+
     def read_property(
-        self, document_id: str, configuration: str, property_name: str
+        self,
+        document_id: str,
+        configuration: str | None,
+        property_name: str,
     ) -> str | None: ...
+
+    def set_property(
+        self,
+        document_id: str,
+        configuration: str | None,
+        property_name: str,
+        value: str,
+    ) -> None: ...
+
+    def delete_property(
+        self,
+        document_id: str,
+        configuration: str | None,
+        property_name: str,
+    ) -> None: ...
+
+    def read_feature_state(
+        self, document_id: str, configuration: str, feature_id: str
+    ) -> str | None: ...
+
+    def set_feature_suppressed(
+        self,
+        document_id: str,
+        configuration: str,
+        feature_id: str,
+        suppressed: bool,
+    ) -> None: ...
 
     def read_component_state(
         self, document_id: str, configuration: str, component_id: str
     ) -> str | None: ...
 
+    def set_component_suppressed(
+        self,
+        document_id: str,
+        configuration: str,
+        component_id: str,
+        suppressed: bool,
+    ) -> None: ...
+
+    def read_component_configuration(
+        self, document_id: str, configuration: str, component_id: str
+    ) -> str | None: ...
+
+    def set_component_configuration(
+        self,
+        document_id: str,
+        configuration: str,
+        component_id: str,
+        referenced_configuration: str,
+    ) -> None: ...
+
+    def list_equations(self, document_id: str) -> tuple[EquationSnapshot, ...]: ...
+
+    def add_equation(self, document_id: str, expression: str) -> str: ...
+
+    def set_equation(
+        self, document_id: str, identity: str, expression: str
+    ) -> None: ...
+
+    def delete_equation(self, document_id: str, identity: str) -> None: ...
+
+    def rebuild_document(self, document_id: str) -> RebuildReport: ...
+
 
 class ConfigurationService:
-    """Ensures activation and configuration-local state are verified by read-back."""
+    """Enforces explicit configuration identity and post-mutation read-back."""
 
     def __init__(self, adapter: ConfigurationAdapter) -> None:
         self._adapter = adapter
@@ -61,7 +153,7 @@ class ConfigurationService:
     def list(self, document_id: str) -> tuple[str, ...]:
         self._require_identity("document_id", document_id)
         names = tuple(self._adapter.list_configurations(document_id))
-        if any(not name.strip() for name in names):
+        if any(not isinstance(name, str) or not name.strip() for name in names):
             raise ConfigurationPostconditionError("invalid_configuration_identity")
         if len(set(names)) != len(names):
             raise ConfigurationPostconditionError("duplicate_configuration_identity")
@@ -79,10 +171,52 @@ class ConfigurationService:
         if name in self.list(document_id):
             raise ConfigurationRefusal("configuration_exists", name)
         self._adapter.create_configuration(document_id, name, parent)
+        self._require_rebuild(document_id)
         if name not in self.list(document_id):
             raise ConfigurationPostconditionError(
                 "configuration_create_readback_missing", name
             )
+
+    def delete(self, document_id: str, name: str) -> None:
+        self._require_identity("document_id", document_id)
+        self._require_identity("configuration_name", name)
+        names = self.list(document_id)
+        if name not in names:
+            raise ConfigurationRefusal("missing_configuration", name)
+        if self._adapter.read_active_configuration(document_id) == name:
+            raise ConfigurationRefusal("cannot_delete_active_configuration", name)
+        if len(names) <= 1:
+            raise ConfigurationRefusal("cannot_delete_last_configuration")
+        self._adapter.delete_configuration(document_id, name)
+        self._require_rebuild(document_id)
+        if name in self.list(document_id):
+            raise ConfigurationPostconditionError(
+                "configuration_delete_readback_present", name
+            )
+
+    def rename(self, document_id: str, old_name: str, new_name: str) -> str:
+        self._require_identity("document_id", document_id)
+        self._require_identity("configuration_name", old_name)
+        self._require_identity("configuration_name", new_name)
+        names = self.list(document_id)
+        if old_name not in names:
+            raise ConfigurationRefusal("missing_configuration", old_name)
+        if new_name in names:
+            raise ConfigurationRefusal("configuration_exists", new_name)
+        was_active = self._adapter.read_active_configuration(document_id) == old_name
+        self._adapter.rename_configuration(document_id, old_name, new_name)
+        self._require_rebuild(document_id)
+        after = self.list(document_id)
+        if old_name in after or new_name not in after:
+            raise ConfigurationPostconditionError(
+                "configuration_rename_readback_mismatch",
+                f"old={old_name}, new={new_name}",
+            )
+        if was_active and self._adapter.read_active_configuration(document_id) != new_name:
+            raise ConfigurationPostconditionError(
+                "configuration_active_rename_readback_mismatch", new_name
+            )
+        return new_name
 
     def activate(self, document_id: str, name: str) -> str:
         self._require_identity("document_id", document_id)
@@ -96,6 +230,195 @@ class ConfigurationService:
                 "activation_readback_mismatch", f"expected={name}, actual={active}"
             )
         return active
+
+    def set_dimension(
+        self,
+        document_id: str,
+        configuration: str,
+        dimension_name: str,
+        value: float,
+    ) -> float:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("dimension_identity", dimension_name)
+        normalized = self._finite_value(value, "invalid_dimension_value")
+        self._adapter.set_dimension(
+            document_id, configuration, dimension_name, normalized
+        )
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_dimension(
+            document_id, configuration, dimension_name
+        )
+        if actual is None or not math.isclose(
+            float(actual), normalized, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ConfigurationPostconditionError("dimension_readback_mismatch")
+        return float(actual)
+
+    def set_property(
+        self,
+        document_id: str,
+        configuration: str | None,
+        property_name: str,
+        value: str,
+    ) -> str:
+        self._require_identity("document_id", document_id)
+        self._require_identity("property_identity", property_name)
+        if configuration is not None:
+            self._require_configuration_target(document_id, configuration)
+        if not isinstance(value, str):
+            raise ConfigurationRefusal("invalid_property_value")
+        self._adapter.set_property(document_id, configuration, property_name, value)
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_property(document_id, configuration, property_name)
+        if actual != value:
+            raise ConfigurationPostconditionError(
+                "property_readback_mismatch", f"expected={value}, actual={actual}"
+            )
+        return actual
+
+    def delete_property(
+        self,
+        document_id: str,
+        configuration: str | None,
+        property_name: str,
+    ) -> None:
+        self._require_identity("document_id", document_id)
+        self._require_identity("property_identity", property_name)
+        if configuration is not None:
+            self._require_configuration_target(document_id, configuration)
+        self._adapter.delete_property(document_id, configuration, property_name)
+        self._require_rebuild(document_id)
+        if self._adapter.read_property(document_id, configuration, property_name) is not None:
+            raise ConfigurationPostconditionError(
+                "property_delete_readback_present", property_name
+            )
+
+    def set_feature_suppressed(
+        self,
+        document_id: str,
+        configuration: str,
+        feature_id: str,
+        suppressed: bool,
+    ) -> str:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("feature_identity", feature_id)
+        self._require_bool("feature_suppression", suppressed)
+        self._adapter.set_feature_suppressed(
+            document_id, configuration, feature_id, suppressed
+        )
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_feature_state(document_id, configuration, feature_id)
+        expected = "suppressed" if suppressed else "resolved"
+        if actual != expected:
+            raise ConfigurationPostconditionError(
+                "feature_suppression_readback_mismatch", str(actual)
+            )
+        return actual
+
+    def set_component_suppressed(
+        self,
+        document_id: str,
+        configuration: str,
+        component_id: str,
+        suppressed: bool,
+    ) -> str:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("component_identity", component_id)
+        self._require_bool("component_suppression", suppressed)
+        self._adapter.set_component_suppressed(
+            document_id, configuration, component_id, suppressed
+        )
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_component_state(
+            document_id, configuration, component_id
+        )
+        expected = "suppressed" if suppressed else "resolved"
+        if actual != expected:
+            raise ConfigurationPostconditionError(
+                "component_suppression_readback_mismatch", str(actual)
+            )
+        return actual
+
+    def set_component_configuration(
+        self,
+        document_id: str,
+        configuration: str,
+        component_id: str,
+        referenced_configuration: str,
+    ) -> str:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("component_identity", component_id)
+        self._require_identity("referenced_configuration", referenced_configuration)
+        self._adapter.set_component_configuration(
+            document_id,
+            configuration,
+            component_id,
+            referenced_configuration,
+        )
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_component_configuration(
+            document_id, configuration, component_id
+        )
+        if actual != referenced_configuration:
+            raise ConfigurationPostconditionError(
+                "component_configuration_readback_mismatch", str(actual)
+            )
+        return actual
+
+    def list_equations(self, document_id: str) -> tuple[EquationSnapshot, ...]:
+        self._require_identity("document_id", document_id)
+        equations = tuple(self._adapter.list_equations(document_id))
+        identities: list[str] = []
+        for equation in equations:
+            self._require_identity("equation_identity", equation.identity)
+            if not isinstance(equation.expression, str) or "=" not in equation.expression:
+                raise ConfigurationPostconditionError(
+                    "invalid_equation_expression", equation.identity
+                )
+            identities.append(equation.identity)
+        if len(set(identities)) != len(identities):
+            raise ConfigurationPostconditionError("duplicate_equation_identity")
+        return equations
+
+    def add_equation(self, document_id: str, expression: str) -> EquationSnapshot:
+        self._require_identity("document_id", document_id)
+        identity = self._equation_identity(expression)
+        if identity in {item.identity for item in self.list_equations(document_id)}:
+            raise ConfigurationRefusal("equation_exists", identity)
+        returned_identity = self._adapter.add_equation(document_id, expression)
+        if returned_identity != identity:
+            raise ConfigurationPostconditionError(
+                "equation_identity_readback_mismatch", str(returned_identity)
+            )
+        self._require_rebuild(document_id)
+        return self._require_equation(document_id, identity, expression)
+
+    def set_equation(
+        self, document_id: str, identity: str, expression: str
+    ) -> EquationSnapshot:
+        self._require_identity("document_id", document_id)
+        self._require_identity("equation_identity", identity)
+        expression_identity = self._equation_identity(expression)
+        if expression_identity != identity:
+            raise ConfigurationRefusal(
+                "equation_identity_change_not_allowed",
+                f"expected={identity}, actual={expression_identity}",
+            )
+        self._require_equation(document_id, identity)
+        self._adapter.set_equation(document_id, identity, expression)
+        self._require_rebuild(document_id)
+        return self._require_equation(document_id, identity, expression)
+
+    def delete_equation(self, document_id: str, identity: str) -> None:
+        self._require_identity("document_id", document_id)
+        self._require_identity("equation_identity", identity)
+        self._require_equation(document_id, identity)
+        self._adapter.delete_equation(document_id, identity)
+        self._require_rebuild(document_id)
+        if identity in {item.identity for item in self.list_equations(document_id)}:
+            raise ConfigurationPostconditionError(
+                "equation_delete_readback_present", identity
+            )
 
     def query_state(
         self,
@@ -172,6 +495,56 @@ class ConfigurationService:
             )
         return first, second
 
+    def _require_configuration_target(self, document_id: str, configuration: str) -> None:
+        self._require_identity("document_id", document_id)
+        self._require_identity("configuration_name", configuration)
+        if configuration not in self.list(document_id):
+            raise ConfigurationRefusal("missing_configuration", configuration)
+
+    def _require_rebuild(self, document_id: str) -> None:
+        report = self._adapter.rebuild_document(document_id)
+        if not report.ok or report.errors:
+            raise ConfigurationPostconditionError(
+                "rebuild_failed", "; ".join(report.errors)
+            )
+
+    def _require_equation(
+        self,
+        document_id: str,
+        identity: str,
+        expected_expression: str | None = None,
+    ) -> EquationSnapshot:
+        match = next(
+            (item for item in self.list_equations(document_id) if item.identity == identity),
+            None,
+        )
+        if match is None:
+            raise ConfigurationRefusal("missing_equation", identity)
+        if expected_expression is not None:
+            actual_canonical = self._canonical_equation_expression(match.expression)
+            expected_canonical = self._canonical_equation_expression(expected_expression)
+            if actual_canonical != expected_canonical:
+                raise ConfigurationPostconditionError(
+                    "equation_expression_readback_mismatch", match.expression
+                )
+        return match
+
+    @staticmethod
+    def _canonical_equation_expression(expression: str) -> str:
+        if not isinstance(expression, str) or "=" not in expression:
+            raise ConfigurationRefusal("invalid_equation_expression")
+        left, right = expression.split("=", 1)
+        return f"{left.strip()} = {right.strip()}"
+
+    @staticmethod
+    def _equation_identity(expression: str) -> str:
+        if not isinstance(expression, str) or "=" not in expression:
+            raise ConfigurationRefusal("invalid_equation_expression")
+        identity = expression.split("=", 1)[0].strip()
+        if not identity:
+            raise ConfigurationRefusal("invalid_equation_identity")
+        return identity
+
     @staticmethod
     def _require_identity(label: str, value: str) -> None:
         if not isinstance(value, str) or not value.strip():
@@ -183,3 +556,18 @@ class ConfigurationService:
             raise ConfigurationRefusal(f"invalid_{label}_identity")
         if len(set(values)) != len(values):
             raise ConfigurationRefusal(f"duplicate_{label}_identity")
+
+    @staticmethod
+    def _finite_value(value: float, reason: str) -> float:
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationRefusal(reason) from exc
+        if not math.isfinite(normalized):
+            raise ConfigurationRefusal(reason)
+        return normalized
+
+    @staticmethod
+    def _require_bool(label: str, value: bool) -> None:
+        if not isinstance(value, bool):
+            raise ConfigurationRefusal(f"invalid_{label}")
