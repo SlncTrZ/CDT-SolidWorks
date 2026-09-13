@@ -1,6 +1,6 @@
 # CDT-SolidWorks Tool Guide
 
-> Status: native CAD-core acceptance verified on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-13
+> Status: A–C callable native surface + bounded Lane D native acceptance verified on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-13
 
 ## Current callable surface
 
@@ -10,6 +10,8 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 
 | Tool | Current native scope |
 | --- | --- |
+| `sketch_create_geometry` | Bounded explicit sketch geometry in an opened part: line, centerline, circle, arc, ellipse, point, cubic spline |
+| `sketch_get` | Read back one explicit native sketch by stable sketch identity |
 | `sketch_create_rectangle` | New part, Front/Top/Right plane, rectangular 2D sketch |
 | `part_create_rect_extrude` | New rectangular solid boss |
 | `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
@@ -17,6 +19,13 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `part_split_by_plane` | Split using Front/Top/Right standard plane |
 | `sheet_metal_create_base_flange` | Base flange with thickness/bend-radius read-back |
 | `surface_create_extrude` | Line-profile surface extrusion |
+| `body_inspect` | Read bounded solid/surface-body state and identity |
+| `body_combine` | Explicit body Boolean `add` / `subtract` / `common` on named bodies |
+| `surface_thicken` | Thicken one explicitly named surface body with solid-body read-back |
+| `sheet_metal_inspect` | Read accepted Base Flange / Flat Pattern state |
+| `sheet_metal_set_flattened` | Persist Flat Pattern suppression state |
+| `weldment_inspect` | Read structural-member and cut-list state |
+| `weldment_create_structural_member` | Create a structural member from an allowed `.sldlfp` profile and named path sketch |
 | `assembly_create` | Insert native part/assembly components at XYZ placements |
 | `assembly_add_coincident_plane_mate` | Coincident standard-plane mate |
 | `assembly_components_list` | Explicit recursive/non-recursive native component read-back |
@@ -39,7 +48,18 @@ Paths are constrained to configured allowed roots. Create operations refuse to o
 
 The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes part creation, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly creation, component state/configuration persistence, Coincident/Parallel/Perpendicular/Distance/Angle mate creation, Distance mate editing, configuration lifecycle, configuration-specific dimensions/properties/feature suppression, equation/global-variable CRUD, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
 
-Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet because Cut/Revolve and additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed. Drawing and export remain unavailable until their native integration gates pass.
+Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet because Cut/Revolve and additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed.
+
+## Lane D native acceptance — registration pending
+
+Lane D has passed production native acceptance on SOLIDWORKS 2024 SP0.1 for the following bounded subset, but these operations are **not part of the current callable tool table above until shared registrar/validation wiring and public-wrapper smoke tests are complete**:
+
+- drawing creation, additional sheet creation, and a source-associated non-dangling **Front** model view;
+- STEP, IGES, Parasolid, STL, and 3MF export from native parts with independent `LoadFile4` geometry verification;
+- PDF, DXF, and DWG export from native drawings with persisted artifact checks;
+- part mass/volume/surface-area, center-of-mass, inertia, approximate bounding box, and geometry-sanity read-back.
+
+The acceptance boundary deliberately excludes projected/section/detail views, drawing dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF export, measurement/interference tools, and native MBD/DimXpert/PMI. Those remain unavailable until their own deterministic native gates pass.
 
 ## Add-in capability status
 

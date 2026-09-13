@@ -34,6 +34,8 @@ Document access is disabled unless deployment configuration supplies at least on
 
 The following bounded operations have native SOLIDWORKS 2024 acceptance evidence:
 
+- `sketch_create_geometry` — create bounded explicit sketch geometry in an opened native part.
+- `sketch_get` — read one explicit native sketch with stable identity/read-back.
 - `sketch_create_rectangle` — create a rectangular 2D sketch in a new native part.
 - `part_create_rect_extrude` — create a rectangular sketch plus one solid boss extrude.
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
@@ -41,6 +43,13 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
 - `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.
 - `surface_create_extrude` — create an extruded surface and verify surface-body read-back.
+- `body_inspect` — inspect bounded native solid/surface-body state.
+- `body_combine` — run named-body Boolean Add/Subtract/Common with native read-back.
+- `surface_thicken` — thicken one named surface body and verify resulting solid state.
+- `sheet_metal_inspect` — inspect accepted Base Flange and Flat Pattern state.
+- `sheet_metal_set_flattened` — persist Flat Pattern suppression state.
+- `weldment_inspect` — inspect structural-member and cut-list state.
+- `weldment_create_structural_member` — create a structural member from an allowed profile root and named path sketch.
 - `assembly_create` — create an assembly from explicit native component paths and XYZ placements.
 - `assembly_add_coincident_plane_mate` — create one coincident mate between a component standard plane and an assembly standard plane.
 - `assembly_components_list` — list native assembly components by explicit document identity.
@@ -63,6 +72,7 @@ All CAD paths are constrained by the same configured path policy as document ope
 
 Granular native capability keys are used for the accepted surface:
 
+- `solidworks.sketch.geometry`
 - `solidworks.sketch.rectangle`
 - `solidworks.part.extrude`
 - `solidworks.part.multibody`
@@ -70,6 +80,13 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.part.split`
 - `solidworks.sheet_metal.base_flange`
 - `solidworks.surface.extrude`
+- `solidworks.body.inspect`
+- `solidworks.body.combine`
+- `solidworks.surface.thicken`
+- `solidworks.sheet_metal.inspect`
+- `solidworks.sheet_metal.flat_pattern`
+- `solidworks.weldment.cut_list`
+- `solidworks.weldment.structural_member`
 - `solidworks.assembly.components`
 - `solidworks.assembly.component_state`
 - `solidworks.assembly.component_configuration`
@@ -85,7 +102,9 @@ Granular native capability keys are used for the accepted surface:
 
 Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support` until the remaining parametric feature family, including production Cut/Revolve coverage, is complete. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
 
-`solidworks.drawing`, `solidworks.export`, and `solidworks.license` remain unavailable at provider level until their corresponding native adapters/probes satisfy acceptance criteria.
+Lane D has native acceptance evidence for drawing lifecycle (create/sheet/Front view), STEP/IGES/Parasolid/STL/3MF geometry export, PDF/DXF/DWG drawing export, and bounded part evaluation. Shared provider registration is still being integrated, so those Lane D operations must not be treated as callable provider tools until registrar/validation wiring and public-wrapper native smoke tests complete. Broad `solidworks.drawing`, `solidworks.export`, and `solidworks.evaluation` remain partial rather than implying family-wide support; `solidworks.license` remains unavailable.
+
+The Lane D acceptance boundary still excludes projected/section/detail views, dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF, measurement/interference, and native MBD/DimXpert/PMI.
 
 `solidworks.simulation.study` is declared but `implemented=false`: native Simulation integration has not been built. Motion and Routing likewise remain outside the callable provider surface until their typed adapters and native gates exist. Add-ins are intended to load on demand rather than require Start Up. `solidworks.flow_simulation` and `solidworks.electrical` remain `implemented=false` until dedicated installation/license/API probes and native evidence exist.
 

@@ -2,7 +2,7 @@
 
 Independent SOLIDWORKS MCP provider for the CDT engineering program.
 
-> Status: **native CAD core operational on SOLIDWORKS 2024 SP0.1** · Spec pin: `CDT_Engineer@643019c`
+> Status: **Mechanical 90 lanes A–D completed; bounded native subsets accepted; provider integration in progress on SOLIDWORKS 2024 SP0.1** · Spec pin: `CDT_Engineer@643019c`
 
 ## Repository role
 
@@ -13,17 +13,22 @@ This repo owns SOLIDWORKS-native runtime code, tests, Windows COM integration an
 The provider has native Windows evidence for:
 
 - application/session lifecycle and document open/query/save/close/reopen;
-- rectangular 2D sketch creation;
+- bounded sketch geometry creation/query, including line/centerline/circle/arc/ellipse/point/spline plus rectangular sketch primitives;
 - solid extrude and multi-body creation;
-- body Combine and Split;
-- sheet-metal Base Flange;
-- extruded surfaces;
+- body inspection plus bounded Boolean combine operations and core Combine/Split workflows;
+- sheet-metal Base Flange plus accepted sheet-metal inspection/flat-pattern state;
+- extruded surfaces plus accepted surface thickening;
+- weldment/cut-list inspection plus structural-member creation when profile roots are configured;
 - assembly component insertion plus fix/float, suppress/resolve, and referenced-configuration state;
 - Coincident, Parallel, Perpendicular, Distance, and Angle mate creation, with accepted Coincident suppression and Distance value editing;
 - bounded configuration lifecycle, configuration-specific dimensions/properties/feature suppression, and equation/global-variable CRUD;
+- drawing creation, sheet creation, and a non-dangling Front model view;
+- STEP, IGES, Parasolid, STL, and 3MF geometry export with independent SOLIDWORKS reopen/read-back;
+- PDF, DXF, and DWG drawing export with persisted artifact verification;
+- part mass/volume/area, center of mass, inertia, bounding box, and geometry-sanity evaluation;
 - rebuild/error validation and bounded path policy.
 
-The provider intentionally does **not** claim full part, assembly, configuration, drawing, Simulation, Motion, Routing, Flow Simulation or Electrical coverage until each capability family has production wiring and native acceptance evidence. Assembly and configuration promotion is granular; unverified mate families, design-table behavior, and other uncovered subfamilies remain partial/unavailable.
+Mechanical 90 Lane D has passed native acceptance, but its shared registrar/validation/provider wiring is still being completed. Therefore drawing/export/evaluation evidence is documented here as **native-accepted**, not yet as part of the current callable MCP tool list. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated.
 
 ## Correctness rules
 
