@@ -13,7 +13,14 @@ from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.native.errors import NativeRuntimeError, failure_from_exception
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
 from cdt_solidworks.native.rebuild import rebuild_document
-from cdt_solidworks.part.models import CutSpec, FeatureKind, FeatureSnapshot, ProfileRef
+from cdt_solidworks.part.models import (
+    CutSpec,
+    FeatureKind,
+    FeatureSnapshot,
+    ProfileRef,
+    RevolveCutSpec,
+    RevolveSpec,
+)
 from cdt_solidworks.part.native import NativePartBinding, PartNativeRuntime
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult
 from cdt_solidworks.part.service import (
@@ -57,36 +64,41 @@ def _transforms_close(first: tuple[float, ...], second: tuple[float, ...]) -> bo
 
 
 def _require_standard_reference_plane(
-    api: Any, model: Any, profile: Any, sketch_id: str
+    api: Any,
+    model: Any,
+    profile: Any,
+    sketch_id: str,
+    feature_label: str = "Cut Extrude",
+    context_stage: str = "part_cut_context",
 ) -> None:
-    """Fail closed unless the cut profile is on Front/Top/Right reference planes."""
+    """Fail closed unless a profile is on Front/Top/Right reference planes."""
     sketch = api._member(profile, "GetSpecificFeature2")
     if sketch is None:
         raise NativeRuntimeError(
             "cad_precondition_failed",
-            "part_cut_context",
+            context_stage,
             f"Sketch {sketch_id!r} did not expose a native sketch object.",
         )
     reference, entity_type = api.sketch_reference_entity(sketch)
     if reference is None:
         raise NativeRuntimeError(
             "cad_precondition_failed",
-            "part_cut_context",
+            context_stage,
             f"Sketch {sketch_id!r} has no stable native reference entity.",
         )
     if int(entity_type) != _SW_SEL_DATUM_PLANES:
         raise NativeRuntimeError(
             "cad_precondition_failed",
-            "part_cut_context",
-            "Cut Extrude currently rejects face-backed sketches; use a standard reference plane sketch.",
+            context_stage,
+            f"{feature_label} currently rejects face-backed sketches; use a standard reference plane sketch.",
         )
 
     reference_transform = _reference_transform(api, reference)
     if len(reference_transform) != 16:
         raise NativeRuntimeError(
             "cad_precondition_failed",
-            "part_cut_context",
-            "Cut Extrude could not read the sketch reference-plane transform.",
+            context_stage,
+            f"{feature_label} could not read the sketch reference-plane transform.",
         )
 
     feature = api.first_feature(model)
@@ -110,8 +122,8 @@ def _require_standard_reference_plane(
 
     raise NativeRuntimeError(
         "cad_precondition_failed",
-        "part_cut_context",
-        "Cut Extrude currently accepts only sketches on a standard reference plane.",
+        context_stage,
+        f"{feature_label} currently accepts only sketches on a standard reference plane.",
     )
 
 
@@ -153,6 +165,17 @@ class IntegratedPartFeatureService:
                         self.api, model, profile, sketch_id
                     )
                 ),
+                revolve_profile_validator=lambda model, profile, sketch_id: (
+                    _require_standard_reference_plane(
+                        self.api,
+                        model,
+                        profile,
+                        sketch_id,
+                        "Revolve",
+                        "part_revolve_context",
+                    )
+                ),
+                null_dispatch=getattr(self.api, "null_dispatch", lambda: None),
             )
             service = PartService(runtime)
         self.service = service
@@ -203,6 +226,305 @@ class IntegratedPartFeatureService:
                 call_id=call_id,
                 dispatched=isinstance(exc, PartMutationError),
             )
+
+    def revolve(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        axis_ref: str,
+        angle_deg: float,
+    ) -> NativeCallResult[Any]:
+        return self._revolve_like(
+            path=path,
+            expected_revision=expected_revision,
+            sketch_id=sketch_id,
+            name=name,
+            axis_ref=axis_ref,
+            angle_deg=angle_deg,
+            is_cut=False,
+        )
+
+    def revolve_cut(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        axis_ref: str,
+        angle_deg: float,
+    ) -> NativeCallResult[Any]:
+        return self._revolve_like(
+            path=path,
+            expected_revision=expected_revision,
+            sketch_id=sketch_id,
+            name=name,
+            axis_ref=axis_ref,
+            angle_deg=angle_deg,
+            is_cut=True,
+        )
+
+    def _revolve_like(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        axis_ref: str,
+        angle_deg: float,
+        is_cut: bool,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        stage = "part_revolve_cut" if is_cut else "part_revolve"
+        try:
+            target = self._target(path, expected_revision)
+            if not isinstance(sketch_id, str) or not sketch_id.strip():
+                raise PartValidationError("sketch_id must be a non-empty string")
+            if not isinstance(name, str) or not name.strip():
+                raise PartValidationError("name must be a non-empty string")
+            if not isinstance(axis_ref, str) or axis_ref.strip() != "profile_centerline":
+                raise PartValidationError(
+                    "axis_ref must be exactly 'profile_centerline' for native Revolve"
+                )
+            if isinstance(angle_deg, bool) or not isinstance(angle_deg, (int, float)):
+                raise PartValidationError("angle_deg must be numeric")
+            angle = float(angle_deg)
+            if not math.isfinite(angle) or angle <= 0.0 or angle > 360.0:
+                raise PartValidationError("angle_deg must be finite and in the range (0, 360]")
+            spec_cls = RevolveCutSpec if is_cut else RevolveSpec
+            spec = spec_cls(
+                name=name,
+                profile=ProfileRef(sketch_id),
+                axis_ref="profile_centerline",
+                angle_deg=angle,
+            )
+            mutation = (
+                self.service.revolve_cut(target, spec)
+                if is_cut
+                else self.service.revolve(target, spec)
+            )
+            return NativeCallResult.success(
+                mutation, call_id=call_id, dispatched=True
+            )
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, stage),
+                call_id=call_id,
+                dispatched=isinstance(exc, PartMutationError),
+            )
+
+    def reconcile_revolve(
+        self,
+        *,
+        call_id: str,
+        path: str,
+        name: str,
+        axis_ref: str,
+        angle_deg: float,
+        is_cut: bool,
+        timeout: float | None = None,
+    ) -> NativeCallResult[FeatureSnapshot]:
+        """Verify an uncertain boss/cut Revolve and clear quarantine on success."""
+        local_call_id = uuid.uuid4().hex
+        try:
+            if self.session is None or self.api is None:
+                raise PartValidationError(
+                    "revolve reconciliation requires a bound native session"
+                )
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise PartValidationError("call_id must be a non-empty string")
+            source = self.path_policy.validate_open(path)
+            if Path(source).suffix.lower() != _PART_EXT:
+                raise PartValidationError(
+                    "revolve reconciliation requires a native .SLDPRT document"
+                )
+            if not isinstance(name, str) or not name.strip():
+                raise PartValidationError("name must be a non-empty string")
+            if not isinstance(axis_ref, str) or axis_ref.strip() != "profile_centerline":
+                raise PartValidationError(
+                    "axis_ref must be exactly 'profile_centerline' for native Revolve reconciliation"
+                )
+            if isinstance(angle_deg, bool) or not isinstance(angle_deg, (int, float)):
+                raise PartValidationError("angle_deg must be numeric")
+            expected_angle = float(angle_deg)
+            if (
+                not math.isfinite(expected_angle)
+                or expected_angle <= 0.0
+                or expected_angle > 360.0
+            ):
+                raise PartValidationError(
+                    "angle_deg must be finite and in the range (0, 360]"
+                )
+            if not isinstance(is_cut, bool):
+                raise PartValidationError("is_cut must be boolean")
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "part_revolve_reconcile"),
+                call_id=local_call_id,
+                dispatched=False,
+            )
+
+        def verifier(app: Any) -> FeatureSnapshot:
+            model = self.api.get_open_document(app, source)
+            if model is None:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Target part is not open while reconciling the uncertain Revolve mutation.",
+                )
+            if int(self.api.document_type(model)) != 1:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Resolved document is not a part during Revolve reconciliation.",
+                )
+            actual_path = self.path_policy.canonical(
+                self.api.document_path(model) or source
+            )
+            if actual_path != source:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Resolved part identity changed during Revolve reconciliation.",
+                )
+            feature = self.api._member(model, "FeatureByName", name)
+            if feature is None:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Expected Revolve feature does not exist after the uncertain native call.",
+                )
+            native_type = str(self.api.feature_type(feature) or "").strip()
+            if native_type == "ICE":
+                native_type = str(
+                    self.api._member(feature, "GetTypeName") or ""
+                ).strip()
+            accepted_types = {"RevCut", "RevolveCut"} if is_cut else {"Revolution", "Revolve"}
+            if native_type not in accepted_types:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Feature identity exists but is not the expected boss/cut Revolve type.",
+                    details={"actual_feature_type": native_type},
+                )
+            definition = self.api._member(feature, "GetDefinition")
+            if definition is None:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Revolve feature definition is unavailable during reconciliation.",
+                )
+            null_dispatch = getattr(self.api, "null_dispatch", lambda: None)()
+            if not bool(
+                self.api._member(
+                    definition, "AccessSelections", model, null_dispatch
+                )
+            ):
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "SOLIDWORKS did not grant access to Revolve selections during reconciliation.",
+                )
+            try:
+                axis = self.api._member(definition, "Axis")
+                if axis is None:
+                    raise NativeRuntimeError(
+                        "reconciliation_mismatch",
+                        "part_revolve_reconcile",
+                        "Revolve reconciliation found no axis selection.",
+                    )
+                if not bool(self.api._member(axis, "ConstructionGeometry")):
+                    raise NativeRuntimeError(
+                        "reconciliation_mismatch",
+                        "part_revolve_reconcile",
+                        "Revolve axis is not construction geometry.",
+                    )
+                if int(self.api._member(axis, "GetType")) != 0:
+                    raise NativeRuntimeError(
+                        "reconciliation_mismatch",
+                        "part_revolve_reconcile",
+                        "Revolve axis is not a sketch line.",
+                    )
+                actual_angle = math.degrees(
+                    float(
+                        self.api._member(
+                            definition, "GetRevolutionAngle", True
+                        )
+                    )
+                )
+                if not math.isclose(
+                    actual_angle,
+                    expected_angle,
+                    rel_tol=0.0,
+                    abs_tol=1e-7,
+                ):
+                    raise NativeRuntimeError(
+                        "reconciliation_mismatch",
+                        "part_revolve_reconcile",
+                        "Revolve angle does not match the uncertain request.",
+                        details={
+                            "expected_angle_deg": expected_angle,
+                            "actual_angle_deg": actual_angle,
+                        },
+                    )
+                actual_boss = bool(
+                    self.api._member(definition, "IsBossFeature")
+                )
+                if actual_boss is is_cut:
+                    raise NativeRuntimeError(
+                        "reconciliation_mismatch",
+                        "part_revolve_reconcile",
+                        "Revolve boss/cut state does not match the uncertain request.",
+                    )
+            finally:
+                self.api._member(definition, "ReleaseSelectionAccess")
+
+            rebuild = rebuild_document(
+                model, self.api, max_features=_MAX_FEATURES
+            )
+            if not rebuild.success:
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Part does not rebuild cleanly after the uncertain Revolve mutation.",
+                )
+            if not self.api.bodies(model, 0, False):
+                raise NativeRuntimeError(
+                    "reconciliation_mismatch",
+                    "part_revolve_reconcile",
+                    "Part has no solid body after the uncertain Revolve mutation.",
+                )
+            return FeatureSnapshot(
+                feature_id=self.api.feature_name(feature),
+                name=self.api.feature_name(feature),
+                kind=(
+                    FeatureKind.REVOLVE_CUT
+                    if is_cut
+                    else FeatureKind.REVOLVE
+                ),
+                parameters={
+                    "axis_ref": "profile_centerline",
+                    "angle_deg": actual_angle,
+                },
+                suppressed=False,
+            )
+
+        return self.session.reconcile(
+            call_id,
+            verifier,
+            stage="part_revolve_reconcile",
+            timeout=(
+                self.default_timeout
+                if timeout is None
+                else max(0.0, float(timeout))
+            ),
+        )
 
     def reconcile_cut(
         self,

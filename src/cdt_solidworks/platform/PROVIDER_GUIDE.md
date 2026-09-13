@@ -41,6 +41,9 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
 - `part_cut_extrude` — create a blind or through-all Cut Extrude from a sketch on a Front/Top/Right standard reference plane using path + revision identity.
 - `part_cut_reconcile` — reconcile an uncertain Cut Extrude by native call ID and expected feature definition; quarantine clears only after rebuild/body verification succeeds.
+- `part_revolve` — create a solid Revolve from a standard-plane sketch containing exactly one construction centerline; `axis_ref` is intentionally bounded to `profile_centerline`.
+- `part_revolve_cut` — create a Revolve Cut using the same bounded profile-centerline and angle contract.
+- `part_revolve_reconcile` — reconcile an uncertain boss/cut Revolve by call ID; verifies native type, axis, angle, rebuild and solid body before clearing quarantine.
 - `part_combine_all_bodies` — Boolean-add all solid bodies and verify the result is one solid body.
 - `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
 - `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.

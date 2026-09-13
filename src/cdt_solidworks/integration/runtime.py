@@ -271,6 +271,22 @@ class IntegratedProviderRuntime:
                 dependencies=("solidworks",),
             ),
             CapabilityState(
+                name="solidworks.part.revolve",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.revolve_cut",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
                 name="solidworks.part.multibody",
                 implemented=cad_implemented,
                 available=cad_available,

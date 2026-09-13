@@ -15,6 +15,8 @@ from cdt_solidworks.part.models import (
     CutSpec,
     FeatureKind,
     FeatureSnapshot,
+    RevolveCutSpec,
+    RevolveSpec,
 )
 from cdt_solidworks.part.runtime import DocumentTarget, MutationReceipt, RebuildResult, ResolvedDocument
 
@@ -22,6 +24,9 @@ T = TypeVar("T")
 _SW_END_BLIND = 0
 _SW_END_THROUGH_ALL = 1
 _SW_START_SKETCH_PLANE = 0
+_SW_SEL_REVOLVE_AXIS = 16
+_SW_SKETCH_LINE = 0
+_PROFILE_CENTERLINE_AXIS = "profile_centerline"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,8 @@ class PartNativeRuntime:
         body_name: Callable[[Any], str],
         rebuild_verifier: Callable[[Any], RebuildResult],
         cut_profile_validator: Callable[[Any, Any, str], None] | None = None,
+        revolve_profile_validator: Callable[[Any, Any, str], None] | None = None,
+        null_dispatch: Callable[[], Any] | None = None,
     ) -> None:
         self._execute = executor
         self._resolve_binding = binding_resolver
@@ -63,6 +70,8 @@ class PartNativeRuntime:
         self._body_name = body_name
         self._rebuild = rebuild_verifier
         self._cut_profile_validator = cut_profile_validator
+        self._revolve_profile_validator = revolve_profile_validator
+        self._null_dispatch = null_dispatch or (lambda: None)
 
     def resolve_document(self, target: DocumentTarget) -> ResolvedDocument:
         def operation(app: Any) -> ResolvedDocument:
@@ -151,6 +160,136 @@ class PartNativeRuntime:
 
         return self._execute(operation, stage="part_cut_native", mutation=True)
 
+    def create_revolve(
+        self, document: ResolvedDocument, spec: RevolveSpec
+    ) -> MutationReceipt:
+        return self._create_revolve_feature(document, spec, is_cut=False)
+
+    def create_revolve_cut(
+        self, document: ResolvedDocument, spec: RevolveCutSpec
+    ) -> MutationReceipt:
+        return self._create_revolve_feature(document, spec, is_cut=True)
+
+    def _create_revolve_feature(
+        self,
+        document: ResolvedDocument,
+        spec: RevolveSpec | RevolveCutSpec,
+        *,
+        is_cut: bool,
+    ) -> MutationReceipt:
+        stage = "part_revolve_cut_native" if is_cut else "part_revolve_native"
+
+        def operation(app: Any) -> MutationReceipt:
+            binding = self._binding_from_document(app, document)
+            model = binding.model
+            profile = self._member(model, "FeatureByName", spec.profile.sketch_id)
+            if profile is None or self._native_feature_type(profile) != "ProfileFeature":
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    stage,
+                    "The requested revolve profile could not be resolved as a native sketch feature.",
+                )
+            if spec.axis_ref != _PROFILE_CENTERLINE_AXIS:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    stage,
+                    "Native revolve currently accepts only axis_ref='profile_centerline'.",
+                )
+            if self._revolve_profile_validator is not None:
+                self._revolve_profile_validator(model, profile, spec.profile.sketch_id)
+
+            sketch = self._member(profile, "GetSpecificFeature2")
+            if sketch is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    stage,
+                    "The revolve profile did not expose a native sketch object.",
+                )
+            segments = self._as_tuple(self._member(sketch, "GetSketchSegments"))
+            construction = tuple(
+                segment
+                for segment in segments
+                if bool(self._member(segment, "ConstructionGeometry"))
+            )
+            if len(construction) != 1:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    stage,
+                    "Revolve profile must contain exactly one construction centerline.",
+                    details={"construction_segment_count": len(construction)},
+                )
+            axis = construction[0]
+            if int(self._member(axis, "GetType")) != _SW_SKETCH_LINE:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    stage,
+                    "Revolve profile centerline must be a construction line.",
+                )
+
+            self._member(model, "ClearSelection2", True)
+            if not bool(self._member(profile, "Select2", False, 0)):
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    stage,
+                    "The requested revolve profile could not be selected.",
+                )
+            selection_manager = self._member(model, "SelectionManager")
+            select_data = self._member(selection_manager, "CreateSelectData")
+            select_data.Mark = _SW_SEL_REVOLVE_AXIS
+            if not bool(self._member(axis, "Select4", True, select_data)):
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    stage,
+                    "The profile construction centerline could not be selected as the revolve axis.",
+                )
+
+            angle_rad = math.radians(float(spec.angle_deg))
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "FeatureRevolve2",
+                True,   # single direction
+                True,   # solid revolve
+                False,  # non-thin feature
+                bool(is_cut),
+                False,  # do not reverse direction
+                False,  # no shared up-to entity
+                _SW_END_BLIND,
+                _SW_END_BLIND,
+                angle_rad,
+                0.0,
+                False,
+                False,
+                0.0,
+                0.0,
+                0,
+                0.0,
+                0.0,
+                True,   # merge boss result / accepted cut behavior
+                False,  # feature scope disabled
+                True,   # auto-select affected bodies
+            )
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    stage,
+                    "SOLIDWORKS did not create the requested revolve feature.",
+                )
+            try:
+                feature.Name = spec.name
+            except Exception:
+                pass
+            identity = self._feature_name(feature).strip()
+            if not identity:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    stage,
+                    "Created revolve returned an empty feature identity.",
+                )
+            return MutationReceipt(identity)
+
+        return self._execute(operation, stage=stage, mutation=True)
+
     def rebuild(self, document: ResolvedDocument) -> RebuildResult:
         def operation(app: Any) -> RebuildResult:
             return self._rebuild(self._binding_from_document(app, document).model)
@@ -163,44 +302,126 @@ class PartNativeRuntime:
             feature = self._member(model, "FeatureByName", feature_id)
             if feature is None:
                 return None
-            if self._native_feature_type(feature) != "Cut":
-                return None
-            definition = self._member(feature, "GetDefinition")
-            if definition is None:
-                raise NativeRuntimeError(
-                    "cad_postcondition_failed",
-                    "part_feature_readback",
-                    "Cut feature definition was unavailable during native read-back.",
-                )
-            end_condition = int(self._member(definition, "GetEndCondition", True))
-            parameters: dict[str, float | str | bool | int] = {
-                "through_all": end_condition == _SW_END_THROUGH_ALL,
-            }
-            if end_condition == _SW_END_BLIND:
-                depth_m = float(self._member(definition, "GetDepth", True))
-                if not math.isfinite(depth_m) or depth_m <= 0.0:
+            native_type = self._native_feature_type(feature)
+            if native_type == "Cut":
+                definition = self._member(feature, "GetDefinition")
+                if definition is None:
                     raise NativeRuntimeError(
                         "cad_postcondition_failed",
                         "part_feature_readback",
-                        "Blind cut returned an invalid native depth.",
+                        "Cut feature definition was unavailable during native read-back.",
                     )
-                parameters["depth_mm"] = depth_m * 1000.0
-            elif end_condition != _SW_END_THROUGH_ALL:
+                end_condition = int(self._member(definition, "GetEndCondition", True))
+                parameters: dict[str, float | str | bool | int] = {
+                    "through_all": end_condition == _SW_END_THROUGH_ALL,
+                }
+                if end_condition == _SW_END_BLIND:
+                    depth_m = float(self._member(definition, "GetDepth", True))
+                    if not math.isfinite(depth_m) or depth_m <= 0.0:
+                        raise NativeRuntimeError(
+                            "cad_postcondition_failed",
+                            "part_feature_readback",
+                            "Blind cut returned an invalid native depth.",
+                        )
+                    parameters["depth_mm"] = depth_m * 1000.0
+                elif end_condition != _SW_END_THROUGH_ALL:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "part_feature_readback",
+                        "Cut feature returned an unaccepted end condition.",
+                        details={"end_condition": end_condition},
+                    )
+                return FeatureSnapshot(
+                    feature_id=self._feature_name(feature),
+                    name=self._feature_name(feature),
+                    kind=FeatureKind.CUT,
+                    parameters=parameters,
+                    suppressed=False,
+                )
+            if native_type in {"Revolution", "Revolve", "RevCut", "RevolveCut"}:
+                return self._read_revolve_feature(model, feature, native_type)
+            return None
+
+        return self._execute(operation, stage="part_feature_readback", mutation=False)
+
+    def _read_revolve_feature(
+        self, model: Any, feature: Any, native_type: str
+    ) -> FeatureSnapshot:
+        definition = self._member(feature, "GetDefinition")
+        if definition is None:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Revolve feature definition was unavailable during native read-back.",
+            )
+        accessed = bool(
+            self._member(
+                definition,
+                "AccessSelections",
+                model,
+                self._null_dispatch(),
+            )
+        )
+        if not accessed:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "SOLIDWORKS did not grant access to revolve-defining selections.",
+            )
+        try:
+            axis = self._member(definition, "Axis")
+            if axis is None:
                 raise NativeRuntimeError(
                     "cad_postcondition_failed",
                     "part_feature_readback",
-                    "Cut feature returned an unaccepted end condition.",
-                    details={"end_condition": end_condition},
+                    "Revolve feature returned no axis selection.",
                 )
-            return FeatureSnapshot(
-                feature_id=self._feature_name(feature),
-                name=self._feature_name(feature),
-                kind=FeatureKind.CUT,
-                parameters=parameters,
-                suppressed=False,
-            )
+            if not bool(self._member(axis, "ConstructionGeometry")):
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Revolve axis is not construction geometry.",
+                )
+            if int(self._member(axis, "GetType")) != _SW_SKETCH_LINE:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Revolve axis is not a sketch line.",
+                )
+            angle_rad = float(self._member(definition, "GetRevolutionAngle", True))
+            angle_deg = math.degrees(angle_rad)
+            if (
+                not math.isfinite(angle_deg)
+                or angle_deg <= 0.0
+                or angle_deg > 360.0 + 1e-9
+            ):
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Revolve feature returned an invalid revolution angle.",
+                    details={"angle_deg": angle_deg},
+                )
+            is_boss = bool(self._member(definition, "IsBossFeature"))
+        finally:
+            self._member(definition, "ReleaseSelectionAccess")
 
-        return self._execute(operation, stage="part_feature_readback", mutation=False)
+        inferred_cut = native_type in {"RevCut", "RevolveCut"}
+        if inferred_cut == is_boss:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Revolve feature type disagrees with its boss/cut definition state.",
+            )
+        return FeatureSnapshot(
+            feature_id=self._feature_name(feature),
+            name=self._feature_name(feature),
+            kind=FeatureKind.REVOLVE if is_boss else FeatureKind.REVOLVE_CUT,
+            parameters={
+                "axis_ref": _PROFILE_CENTERLINE_AXIS,
+                "angle_deg": angle_deg,
+            },
+            suppressed=False,
+        )
 
     def list_bodies(self, document: ResolvedDocument) -> tuple[BodySnapshot, ...]:
         def operation(app: Any) -> tuple[BodySnapshot, ...]:

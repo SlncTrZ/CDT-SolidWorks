@@ -109,6 +109,21 @@ def test_cut_context_rejects_face_backed_sketch_before_feature_dispatch() -> Non
         _require_standard_reference_plane(_ContextApi(), model, profile, "FaceSketch")
 
 
+def test_revolve_context_reports_revolve_stage() -> None:
+    model = _model_with_refplanes(*tuple(_plane_transform(seed) for seed in (1.0, 10.0, 20.0)))
+    profile = _Profile(_Sketch(object(), 2))
+    with pytest.raises(Exception) as exc_info:
+        _require_standard_reference_plane(
+            _ContextApi(),
+            model,
+            profile,
+            "RevolveSketch",
+            "Revolve",
+            "part_revolve_context",
+        )
+    assert getattr(exc_info.value, "stage", None) == "part_revolve_context"
+
+
 class _NativeModel:
     LengthUnit = 0
 
@@ -467,3 +482,234 @@ def test_uncertain_cut_requires_feature_specific_reconcile_before_next_mutation(
     finally:
         release_cut.set()
         session.close_dispatcher(timeout=1.0)
+
+
+class _RevolveAxis:
+    ConstructionGeometry = True
+
+    @staticmethod
+    def GetType():
+        return 0
+
+
+class _RevolveDefinition:
+    def __init__(self, *, angle_deg: float, is_boss: bool):
+        self.Axis = _RevolveAxis()
+        self._angle_rad = __import__('math').radians(angle_deg)
+        self._is_boss = is_boss
+        self.accessed = False
+        self.released = False
+
+    def AccessSelections(self, model, component):
+        self.accessed = True
+        return True
+
+    def ReleaseSelectionAccess(self):
+        self.released = True
+
+    def GetRevolutionAngle(self, forward):
+        assert forward is True
+        return self._angle_rad
+
+    def IsBossFeature(self):
+        return self._is_boss
+
+
+class _RevolveFeature:
+    def __init__(self, name: str, feature_type: str, definition: _RevolveDefinition):
+        self.Name = name
+        self._feature_type = feature_type
+        self._definition = definition
+
+    def GetTypeName2(self):
+        return self._feature_type
+
+    def GetDefinition(self):
+        return self._definition
+
+    def GetNextFeature(self):
+        return None
+
+    def GetErrorCode2(self, *args):
+        return 0
+
+
+class _RevolveBody:
+    Name = "Body1"
+
+
+class _RevolveReconcileModel:
+    LengthUnit = 0
+
+    def __init__(self, path: str, feature: _RevolveFeature):
+        self.path = path
+        self.feature = feature
+
+    def FeatureByName(self, name):
+        return self.feature if name == self.feature.Name else None
+
+    def ForceRebuild3(self, top_only):
+        return True
+
+
+class _RevolveReconcileApi:
+    def __init__(self, model: _RevolveReconcileModel):
+        self.model = model
+
+    def get_open_document(self, app, path):
+        return self.model if path == self.model.path else None
+
+    @staticmethod
+    def document_type(model):
+        return 1
+
+    @staticmethod
+    def document_path(model):
+        return model.path
+
+    @staticmethod
+    def feature_type(feature):
+        return feature.GetTypeName2()
+
+    @staticmethod
+    def feature_name(feature):
+        return feature.Name
+
+    @staticmethod
+    def bodies(model, body_type, visible_only):
+        return (_RevolveBody(),)
+
+    @staticmethod
+    def force_rebuild(model, top_only):
+        return model.ForceRebuild3(top_only)
+
+    @staticmethod
+    def first_feature(model):
+        return model.feature
+
+    @staticmethod
+    def next_feature(feature):
+        return feature.GetNextFeature()
+
+    @staticmethod
+    def feature_error(feature):
+        return (0, False)
+
+    @staticmethod
+    def null_dispatch():
+        return None
+
+    @staticmethod
+    def _member(obj, name, *args):
+        value = getattr(obj, name)
+        return value(*args) if callable(value) else value
+
+
+class _RevolveReconcileSession:
+    session_id = "revolve-reconcile-session"
+
+    def __init__(self, api: _RevolveReconcileApi):
+        self.api = api
+        self.calls = []
+
+    def reconcile(self, call_id, verifier, *, stage, timeout):
+        from cdt_solidworks.native.errors import failure_from_exception
+
+        self.calls.append((call_id, stage, timeout))
+        try:
+            value = verifier(object())
+        except Exception as exc:
+            return NativeCallResult.failed(
+                failure_from_exception(exc, stage),
+                call_id=call_id,
+                dispatched=True,
+            )
+        return NativeCallResult.success(value, call_id=call_id, dispatched=True)
+
+
+@pytest.mark.parametrize(
+    ("feature_type", "is_boss", "expected_kind", "expected_is_cut"),
+    (
+        ("Revolution", True, "revolve", False),
+        ("RevCut", False, "revolve_cut", True),
+    ),
+)
+def test_revolve_reconcile_verifies_exact_native_type_axis_angle_and_body(
+    tmp_path: Path,
+    feature_type: str,
+    is_boss: bool,
+    expected_kind: str,
+    expected_is_cut: bool,
+) -> None:
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"fixture")
+    definition = _RevolveDefinition(angle_deg=135.0, is_boss=is_boss)
+    feature = _RevolveFeature("AcceptedRevolve", feature_type, definition)
+    model = _RevolveReconcileModel(str(part.resolve()), feature)
+    session = _RevolveReconcileSession(_RevolveReconcileApi(model))
+    service = IntegratedPartFeatureService(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        service=object(),
+        default_timeout=2.0,
+    )
+
+    result = service.reconcile_revolve(
+        call_id="revolve-call-42",
+        path=str(part),
+        name="AcceptedRevolve",
+        axis_ref="profile_centerline",
+        angle_deg=135.0,
+        is_cut=expected_is_cut,
+    )
+
+    assert result.state is NativeCallState.SUCCESS
+    assert result.call_id == "revolve-call-42"
+    assert result.value is not None
+    assert result.value.kind.value == expected_kind
+    assert result.value.parameters["axis_ref"] == "profile_centerline"
+    assert result.value.parameters["angle_deg"] == pytest.approx(135.0)
+    assert definition.accessed is True and definition.released is True
+    assert session.calls == [("revolve-call-42", "part_revolve_reconcile", 2.0)]
+
+
+@pytest.mark.parametrize(
+    ("requested_angle", "requested_is_cut", "failure_fragment"),
+    (
+        (90.0, False, "angle"),
+        (135.0, True, "boss/cut"),
+    ),
+)
+def test_revolve_reconcile_rejects_mismatched_postcondition(
+    tmp_path: Path,
+    requested_angle: float,
+    requested_is_cut: bool,
+    failure_fragment: str,
+) -> None:
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"fixture")
+    definition = _RevolveDefinition(angle_deg=135.0, is_boss=True)
+    feature = _RevolveFeature("AcceptedRevolve", "Revolution", definition)
+    model = _RevolveReconcileModel(str(part.resolve()), feature)
+    session = _RevolveReconcileSession(_RevolveReconcileApi(model))
+    service = IntegratedPartFeatureService(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        service=object(),
+        default_timeout=2.0,
+    )
+
+    result = service.reconcile_revolve(
+        call_id="revolve-call-43",
+        path=str(part),
+        name="AcceptedRevolve",
+        axis_ref="profile_centerline",
+        angle_deg=requested_angle,
+        is_cut=requested_is_cut,
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.call_id == "revolve-call-43"
+    assert result.failure is not None
+    assert result.failure.code == "reconciliation_mismatch"
+    assert failure_fragment.lower() in result.failure.message.lower()

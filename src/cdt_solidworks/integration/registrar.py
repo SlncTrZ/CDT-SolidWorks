@@ -316,6 +316,83 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             )
 
         @server.tool(
+            name="part_revolve",
+            description=(
+                "Create a native solid Revolve from one standard-plane sketch that contains exactly one "
+                "construction centerline; axis_ref must be profile_centerline."
+            ),
+        )
+        def part_revolve(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            name: str,
+            axis_ref: str,
+            angle_deg: float,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.revolve(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    name=name,
+                    axis_ref=axis_ref,
+                    angle_deg=angle_deg,
+                )
+            )
+
+        @server.tool(
+            name="part_revolve_cut",
+            description=(
+                "Create a native Revolve Cut from one standard-plane sketch that contains exactly one "
+                "construction centerline; axis_ref must be profile_centerline."
+            ),
+        )
+        def part_revolve_cut(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            name: str,
+            axis_ref: str,
+            angle_deg: float,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.revolve_cut(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    name=name,
+                    axis_ref=axis_ref,
+                    angle_deg=angle_deg,
+                )
+            )
+
+        @server.tool(
+            name="part_revolve_reconcile",
+            description=(
+                "Reconcile an uncertain boss/cut Revolve by native call ID and exact angle/axis/type postcondition."
+            ),
+        )
+        def part_revolve_reconcile(
+            call_id: str,
+            path: str,
+            name: str,
+            axis_ref: str,
+            angle_deg: float,
+            is_cut: bool,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.reconcile_revolve(
+                    call_id=call_id,
+                    path=path,
+                    name=name,
+                    axis_ref=axis_ref,
+                    angle_deg=angle_deg,
+                    is_cut=is_cut,
+                )
+            )
+
+        @server.tool(
             name="part_cut_reconcile",
             description=(
                 "Reconcile an uncertain Cut Extrude using its native call ID and expected feature "
