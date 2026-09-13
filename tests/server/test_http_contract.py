@@ -246,6 +246,20 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                             "unexpected": True,
                         },
                     )
+                with pytest.raises(MCPError) as hole_exc_info:
+                    await client.call_tool(
+                        "part_simple_hole",
+                        {
+                            "path": str(tmp_path / "part.SLDPRT"),
+                            "expected_revision": 1,
+                            "name": "Hole1",
+                            "diameter_mm": 5.0,
+                            "face_ref": "bbox:+z",
+                            "center_mm": [0.0, 0.0],
+                            "through_all": True,
+                            "unexpected": True,
+                        },
+                    )
                 with pytest.raises(MCPError) as revolve_exc_info:
                     await client.call_tool(
                         "part_revolve",
@@ -297,6 +311,8 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
     assert "unexpected" in sketch_exc_info.value.message.lower()
     assert part_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in part_exc_info.value.message.lower()
+    assert hole_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in hole_exc_info.value.message.lower()
     assert revolve_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in revolve_exc_info.value.message.lower()
     assert body_exc_info.value.code == INVALID_PARAMS

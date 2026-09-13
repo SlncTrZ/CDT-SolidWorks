@@ -17,6 +17,8 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
 | `part_cut_extrude` | Native blind or through-all Cut Extrude from a sketch on Front/Top/Right standard reference planes in an opened millimeter part; path + revision identity required |
 | `part_cut_reconcile` | Reconcile an uncertain Cut Extrude by native call ID; clears quarantine only after expected Cut definition, clean rebuild, and solid-body verification |
+| `part_simple_hole` | Native single-center blind/through-all Simple Hole on a one-solid-body part using `face_ref=bbox:+z`; selected face must be planar with outward +Z normal; center is model-space `[x_mm, y_mm]` |
+| `part_simple_hole_reconcile` | Reconcile uncertain Simple Hole by call ID; verifies native type, diameter, center, end condition/depth, rebuild and solid body |
 | `part_revolve` | Native solid Revolve from a Front/Top/Right sketch with exactly one construction centerline; `axis_ref=profile_centerline`; angle `(0, 360]` degrees |
 | `part_revolve_cut` | Native Revolve Cut with the same bounded profile-centerline/angle contract |
 | `part_revolve_reconcile` | Reconcile uncertain boss/cut Revolve by call ID; verifies type, centerline axis, angle, rebuild and solid body before clearing quarantine |

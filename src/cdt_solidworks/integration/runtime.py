@@ -271,6 +271,14 @@ class IntegratedProviderRuntime:
                 dependencies=("solidworks",),
             ),
             CapabilityState(
+                name="solidworks.part.simple_hole",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
                 name="solidworks.part.revolve",
                 implemented=part_feature_implemented,
                 available=part_feature_available,

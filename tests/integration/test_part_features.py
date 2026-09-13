@@ -115,3 +115,86 @@ def test_revolve_wrappers_accept_only_profile_centerline_alias(tmp_path: Path) -
     assert bad_axis.state is NativeCallState.FAILURE and bad_axis.dispatched is False
     assert bad_angle.state is NativeCallState.FAILURE and bad_angle.dispatched is False
     assert len(domain.calls) == before
+
+
+def test_simple_hole_wrapper_is_bounded_to_single_bbox_plus_z_center(tmp_path: Path) -> None:
+    from cdt_solidworks.part.models import FeatureKind, FeatureSnapshot, PartMutationResult
+
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"part")
+
+    class Domain(_PartDomain):
+        def hole(self, target, spec, *, postconditions=None):
+            self.calls.append(("hole", target, spec))
+            parameters = {
+                "diameter_mm": spec.diameter_mm,
+                "face_ref": spec.face_ref,
+                "center_count": len(spec.centers_mm),
+                "through_all": spec.through_all,
+            }
+            if spec.depth_mm is not None:
+                parameters["depth_mm"] = spec.depth_mm
+            parameters["center_x_mm"] = spec.centers_mm[0][0]
+            parameters["center_y_mm"] = spec.centers_mm[0][1]
+            return PartMutationResult(
+                FeatureSnapshot("Hole1", spec.name, FeatureKind.HOLE, parameters),
+                (BodySnapshot("Body1", Bounds3D(-50, -40, 0, 50, 40, 20)),),
+            )
+
+    domain = Domain()
+    service = IntegratedPartFeatureService(
+        path_policy=DocumentPathPolicy((tmp_path,)), service=domain
+    )
+
+    blind = service.simple_hole(
+        path=str(part), expected_revision=7, name="Hole1",
+        diameter_mm=6.0, face_ref="bbox:+z", center_mm=(10.0, -5.0),
+        through_all=False, depth_mm=12.0,
+    )
+    through = service.simple_hole(
+        path=str(part), expected_revision=8, name="Hole2",
+        diameter_mm=5.0, face_ref="bbox:+z", center_mm=(0.0, 0.0),
+        through_all=True,
+    )
+    assert blind.state is NativeCallState.SUCCESS
+    assert through.state is NativeCallState.SUCCESS
+
+    before = len(domain.calls)
+    bad_face = service.simple_hole(
+        path=str(part), expected_revision=9, name="Bad",
+        diameter_mm=5.0, face_ref="Face1", center_mm=(0.0, 0.0),
+        through_all=True,
+    )
+    bad_depth = service.simple_hole(
+        path=str(part), expected_revision=9, name="Bad2",
+        diameter_mm=5.0, face_ref="bbox:+z", center_mm=(0.0, 0.0),
+        through_all=False,
+    )
+    assert bad_face.state is NativeCallState.FAILURE and bad_face.dispatched is False
+    assert bad_depth.state is NativeCallState.FAILURE and bad_depth.dispatched is False
+    assert len(domain.calls) == before
+
+    class WrongCenterDomain(Domain):
+        def hole(self, target, spec, *, postconditions=None):
+            result = super().hole(target, spec, postconditions=postconditions)
+            params = dict(result.feature.parameters)
+            params["center_x_mm"] = params["center_x_mm"] + 1.0
+            return PartMutationResult(
+                FeatureSnapshot(
+                    result.feature.feature_id,
+                    result.feature.name,
+                    result.feature.kind,
+                    params,
+                ),
+                result.bodies,
+            )
+
+    wrong = IntegratedPartFeatureService(
+        path_policy=DocumentPathPolicy((tmp_path,)), service=WrongCenterDomain()
+    ).simple_hole(
+        path=str(part), expected_revision=9, name="WrongCenter",
+        diameter_mm=5.0, face_ref="bbox:+z", center_mm=(0.0, 0.0),
+        through_all=True,
+    )
+    assert wrong.state is NativeCallState.FAILURE
+    assert wrong.dispatched is True

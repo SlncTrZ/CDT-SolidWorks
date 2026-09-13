@@ -15,6 +15,7 @@ from cdt_solidworks.part.models import (
     CutSpec,
     FeatureKind,
     FeatureSnapshot,
+    HoleSpec,
     RevolveCutSpec,
     RevolveSpec,
 )
@@ -27,6 +28,9 @@ _SW_START_SKETCH_PLANE = 0
 _SW_SEL_REVOLVE_AXIS = 16
 _SW_SKETCH_LINE = 0
 _PROFILE_CENTERLINE_AXIS = "profile_centerline"
+_BBOX_PLUS_Z_FACE = "bbox:+z"
+_SW_SEL_FACES = 2
+_SW_SELECT_DEFAULT = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +163,168 @@ class PartNativeRuntime:
             return MutationReceipt(identity)
 
         return self._execute(operation, stage="part_cut_native", mutation=True)
+
+    def create_hole(
+        self, document: ResolvedDocument, spec: HoleSpec
+    ) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            binding = self._binding_from_document(app, document)
+            model = binding.model
+            if spec.face_ref != _BBOX_PLUS_Z_FACE:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Native simple hole currently accepts only face_ref='bbox:+z'.",
+                )
+            if len(spec.centers_mm) != 1:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Native simple hole currently accepts exactly one center.",
+                    details={"center_count": len(spec.centers_mm)},
+                )
+            center_x_mm, center_y_mm = spec.centers_mm[0]
+            bodies = self._as_tuple(self._bodies(model, 0, False))
+            if len(bodies) != 1:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Native simple hole currently requires exactly one solid body.",
+                    details={"solid_body_count": len(bodies)},
+                )
+            bounds = self._solid_bounds_m(bodies)
+            min_x, min_y, min_z, max_x, max_y, max_z = bounds
+            x = float(center_x_mm) / 1000.0
+            y = float(center_y_mm) / 1000.0
+            tolerance = 1e-9
+            if not (min_x - tolerance <= x <= max_x + tolerance) or not (
+                min_y - tolerance <= y <= max_y + tolerance
+            ):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Simple hole center lies outside the selected body bounding box.",
+                    details={
+                        "center_mm": [float(center_x_mm), float(center_y_mm)],
+                        "bbox_xy_mm": [
+                            min_x * 1000.0,
+                            min_y * 1000.0,
+                            max_x * 1000.0,
+                            max_y * 1000.0,
+                        ],
+                    },
+                )
+
+            span_z = max_z - min_z
+            ray_z = max_z + max(span_z, 0.01)
+            self._member(model, "ClearSelection2", True)
+            extension = self._member(model, "Extension")
+            selected = bool(
+                self._member(
+                    extension,
+                    "SelectByRay",
+                    x,
+                    y,
+                    ray_z,
+                    0.0,
+                    0.0,
+                    -1.0,
+                    1e-6,
+                    _SW_SEL_FACES,
+                    False,
+                    0,
+                    _SW_SELECT_DEFAULT,
+                )
+            )
+            if not selected:
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    "part_hole_native",
+                    "No face was intersected by the bounded +Z hole-selection ray.",
+                )
+            selection_manager = self._member(model, "SelectionManager")
+            face = self._member(selection_manager, "GetSelectedObject6", 1, -1)
+            if face is None:
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    "part_hole_native",
+                    "The bounded hole-selection ray did not resolve a native face.",
+                )
+            surface = self._member(face, "GetSurface")
+            if surface is None or not bool(self._member(surface, "IsPlane")):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Native simple hole currently requires the selected +Z outer face to be planar.",
+                )
+            normal = self._as_tuple(self._member(face, "Normal"))
+            if len(normal) != 3:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Selected simple-hole face did not expose a three-value normal.",
+                )
+            nx, ny, nz = (float(value) for value in normal)
+            if not all(math.isfinite(value) for value in (nx, ny, nz)) or (
+                abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9
+            ):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "face_ref='bbox:+z' requires a planar face with outward normal +Z.",
+                    details={"face_normal": [nx, ny, nz]},
+                )
+
+            manager = self._member(model, "FeatureManager")
+            end_type = _SW_END_THROUGH_ALL if spec.through_all else _SW_END_BLIND
+            depth_m = 0.0 if spec.through_all else float(spec.depth_mm or 0.0) / 1000.0
+            feature = self._member(
+                manager,
+                "SimpleHole2",
+                float(spec.diameter_mm) / 1000.0,
+                True,
+                False,
+                False,
+                end_type,
+                _SW_END_BLIND,
+                depth_m,
+                0.0,
+                False,
+                False,
+                False,
+                False,
+                0.0,
+                0.0,
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                False,
+                False,
+                False,
+            )
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_hole_native",
+                    "SOLIDWORKS did not create the requested simple hole feature.",
+                )
+            try:
+                feature.Name = spec.name
+            except Exception:
+                pass
+            identity = self._feature_name(feature).strip()
+            if not identity:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_hole_native",
+                    "Created simple hole returned an empty feature identity.",
+                )
+            return MutationReceipt(identity)
+
+        return self._execute(operation, stage="part_hole_native", mutation=True)
 
     def create_revolve(
         self, document: ResolvedDocument, spec: RevolveSpec
@@ -338,11 +504,127 @@ class PartNativeRuntime:
                     parameters=parameters,
                     suppressed=False,
                 )
+            if native_type in {"Hole", "SketchHole", "SimpleHole"}:
+                return self._read_simple_hole_feature(model, feature)
             if native_type in {"Revolution", "Revolve", "RevCut", "RevolveCut"}:
                 return self._read_revolve_feature(model, feature, native_type)
             return None
 
         return self._execute(operation, stage="part_feature_readback", mutation=False)
+
+    def _read_simple_hole_feature(
+        self, model: Any, feature: Any
+    ) -> FeatureSnapshot:
+        definition = self._member(feature, "GetDefinition")
+        if definition is None:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Simple hole feature definition was unavailable during native read-back.",
+            )
+        if not bool(
+            self._member(
+                definition,
+                "AccessSelections",
+                model,
+                self._null_dispatch(),
+            )
+        ):
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "SOLIDWORKS did not grant access to simple-hole selections.",
+            )
+        try:
+            diameter_m = float(self._member(definition, "Diameter"))
+            end_type = int(self._member(definition, "Type"))
+            if not math.isfinite(diameter_m) or diameter_m <= 0.0:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Simple hole returned an invalid diameter.",
+                )
+            parameters: dict[str, float | str | bool | int] = {
+                "diameter_mm": diameter_m * 1000.0,
+                "face_ref": _BBOX_PLUS_Z_FACE,
+                "center_count": 1,
+                "through_all": end_type == _SW_END_THROUGH_ALL,
+            }
+            if end_type == _SW_END_BLIND:
+                depth_m = float(self._member(definition, "Depth"))
+                if not math.isfinite(depth_m) or depth_m <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "part_feature_readback",
+                        "Blind simple hole returned an invalid depth.",
+                    )
+                parameters["depth_mm"] = depth_m * 1000.0
+            elif end_type != _SW_END_THROUGH_ALL:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Simple hole returned an unaccepted end condition.",
+                    details={"end_condition": end_type},
+                )
+        finally:
+            self._member(definition, "ReleaseSelectionAccess")
+        center_x_mm, center_y_mm = self._simple_hole_center_mm(feature)
+        parameters["center_x_mm"] = center_x_mm
+        parameters["center_y_mm"] = center_y_mm
+        return FeatureSnapshot(
+            feature_id=self._feature_name(feature),
+            name=self._feature_name(feature),
+            kind=FeatureKind.HOLE,
+            parameters=parameters,
+            suppressed=False,
+        )
+
+    def _simple_hole_center_mm(self, feature: Any) -> tuple[float, float]:
+        subfeatures: list[Any] = []
+        subfeature = self._member(feature, "GetFirstSubFeature")
+        visited = 0
+        while subfeature is not None:
+            visited += 1
+            if visited > 16:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_readback",
+                    "Simple-hole subfeature traversal exceeded its bounded limit.",
+                )
+            if self._native_feature_type(subfeature) == "ProfileFeature":
+                subfeatures.append(subfeature)
+            subfeature = self._member(subfeature, "GetNextSubFeature")
+        if len(subfeatures) != 1:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Simple hole must expose exactly one profile subfeature for center read-back.",
+                details={"profile_subfeature_count": len(subfeatures)},
+            )
+        sketch = self._member(subfeatures[0], "GetSpecificFeature2")
+        if sketch is None:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Simple-hole profile subfeature did not expose a native sketch.",
+            )
+        points = self._as_tuple(self._member(sketch, "GetSketchPoints2"))
+        if len(points) != 1:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Simple-hole profile must contain exactly one sketch point.",
+                details={"sketch_point_count": len(points)},
+            )
+        x = float(self._member(points[0], "X")) * 1000.0
+        y = float(self._member(points[0], "Y")) * 1000.0
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Simple-hole sketch point returned non-finite center coordinates.",
+            )
+        return x, y
 
     def _read_revolve_feature(
         self, model: Any, feature: Any, native_type: str
@@ -470,6 +752,33 @@ class PartNativeRuntime:
             if underlying:
                 return underlying
         return type_name
+
+    def _solid_bounds_m(self, bodies: tuple[Any, ...]) -> tuple[float, float, float, float, float, float]:
+        boxes: list[tuple[float, float, float, float, float, float]] = []
+        for body in bodies:
+            raw = self._as_tuple(self._member(body, "GetBodyBox"))
+            if len(raw) != 6:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Solid body did not expose a six-value bounding box.",
+                )
+            values = tuple(float(value) for value in raw)
+            if not all(math.isfinite(value) for value in values):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_native",
+                    "Solid body bounding box contained a non-finite value.",
+                )
+            boxes.append(values)
+        return (
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            min(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+            max(box[4] for box in boxes),
+            max(box[5] for box in boxes),
+        )
 
     def _binding_from_document(self, app: Any, document: ResolvedDocument) -> NativePartBinding:
         binding = self._resolve_binding(

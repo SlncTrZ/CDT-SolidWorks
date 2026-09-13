@@ -32,6 +32,8 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "sketch_get": frozenset({"path", "expected_revision", "sketch_id"}),
     "part_cut_extrude": frozenset({"path", "expected_revision", "sketch_id", "name", "through_all", "depth_mm"}),
     "part_cut_reconcile": frozenset({"call_id", "path", "name", "through_all", "depth_mm"}),
+    "part_simple_hole": frozenset({"path", "expected_revision", "name", "diameter_mm", "face_ref", "center_mm", "through_all", "depth_mm"}),
+    "part_simple_hole_reconcile": frozenset({"call_id", "path", "name", "diameter_mm", "face_ref", "center_mm", "through_all", "depth_mm"}),
     "part_revolve": frozenset({"path", "expected_revision", "sketch_id", "name", "axis_ref", "angle_deg"}),
     "part_revolve_cut": frozenset({"path", "expected_revision", "sketch_id", "name", "axis_ref", "angle_deg"}),
     "part_revolve_reconcile": frozenset({"call_id", "path", "name", "axis_ref", "angle_deg", "is_cut"}),

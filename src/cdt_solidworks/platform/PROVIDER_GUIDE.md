@@ -41,6 +41,8 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
 - `part_cut_extrude` — create a blind or through-all Cut Extrude from a sketch on a Front/Top/Right standard reference plane using path + revision identity.
 - `part_cut_reconcile` — reconcile an uncertain Cut Extrude by native call ID and expected feature definition; quarantine clears only after rebuild/body verification succeeds.
+- `part_simple_hole` — create one blind or through-all native Simple Hole on a one-solid-body part using only `face_ref=bbox:+z`, one model-space X/Y center and a planar face with outward +Z normal; arbitrary face identities, multi-body targeting and multi-center holes remain intentionally unexposed.
+- `part_simple_hole_reconcile` — reconcile an uncertain Simple Hole by call ID; verifies persisted native type, diameter, center, end condition/depth, rebuild and solid body before clearing quarantine.
 - `part_revolve` — create a solid Revolve from a standard-plane sketch containing exactly one construction centerline; `axis_ref` is intentionally bounded to `profile_centerline`.
 - `part_revolve_cut` — create a Revolve Cut using the same bounded profile-centerline and angle contract.
 - `part_revolve_reconcile` — reconcile an uncertain boss/cut Revolve by call ID; verifies native type, axis, angle, rebuild and solid body before clearing quarantine.

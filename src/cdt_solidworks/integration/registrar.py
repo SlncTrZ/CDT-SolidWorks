@@ -316,6 +316,66 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             )
 
         @server.tool(
+            name="part_simple_hole",
+            description=(
+                "Create one native blind or through-all Simple Hole on the bounded bbox:+z planar face "
+                "using one model-space X/Y center and explicit diameter; call document_save separately to persist."
+            ),
+        )
+        def part_simple_hole(
+            path: str,
+            expected_revision: int,
+            name: str,
+            diameter_mm: float,
+            face_ref: str,
+            center_mm: list[float],
+            through_all: bool,
+            depth_mm: float | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.simple_hole(
+                    path=path,
+                    expected_revision=expected_revision,
+                    name=name,
+                    diameter_mm=diameter_mm,
+                    face_ref=face_ref,
+                    center_mm=center_mm,
+                    through_all=through_all,
+                    depth_mm=depth_mm,
+                )
+            )
+
+        @server.tool(
+            name="part_simple_hole_reconcile",
+            description=(
+                "Reconcile an uncertain Simple Hole by native call ID; verifies type, diameter, center, "
+                "end condition/depth, rebuild and solid body before clearing quarantine."
+            ),
+        )
+        def part_simple_hole_reconcile(
+            call_id: str,
+            path: str,
+            name: str,
+            diameter_mm: float,
+            face_ref: str,
+            center_mm: list[float],
+            through_all: bool,
+            depth_mm: float | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.reconcile_simple_hole(
+                    call_id=call_id,
+                    path=path,
+                    name=name,
+                    diameter_mm=diameter_mm,
+                    face_ref=face_ref,
+                    center_mm=center_mm,
+                    through_all=through_all,
+                    depth_mm=depth_mm,
+                )
+            )
+
+        @server.tool(
             name="part_revolve",
             description=(
                 "Create a native solid Revolve from one standard-plane sketch that contains exactly one "

@@ -713,3 +713,187 @@ def test_revolve_reconcile_rejects_mismatched_postcondition(
     assert result.failure is not None
     assert result.failure.code == "reconciliation_mismatch"
     assert failure_fragment.lower() in result.failure.message.lower()
+
+
+class _HolePoint:
+    def __init__(self, x_m: float, y_m: float):
+        self.X = x_m
+        self.Y = y_m
+        self.Z = 0.0
+
+
+class _HoleSketch:
+    def __init__(self, x_m: float, y_m: float):
+        self.point = _HolePoint(x_m, y_m)
+
+    def GetSketchPoints2(self):
+        return (self.point,)
+
+
+class _HoleProfileFeature:
+    Name = "HoleSketch"
+
+    def __init__(self, x_m: float, y_m: float):
+        self.sketch = _HoleSketch(x_m, y_m)
+
+    def GetTypeName2(self):
+        return "ProfileFeature"
+
+    def GetSpecificFeature2(self):
+        return self.sketch
+
+    def GetNextSubFeature(self):
+        return None
+
+
+class _HoleDefinition:
+    def __init__(self, *, diameter_mm: float, through_all: bool, depth_mm: float | None):
+        self.Diameter = diameter_mm / 1000.0
+        self.Type = 1 if through_all else 0
+        self.Depth = 0.0 if depth_mm is None else depth_mm / 1000.0
+        self.accessed = False
+        self.released = False
+
+    def AccessSelections(self, model, component):
+        self.accessed = True
+        return True
+
+    def ReleaseSelectionAccess(self):
+        self.released = True
+
+
+class _HoleReconcileFeature:
+    def __init__(
+        self,
+        name: str,
+        *,
+        diameter_mm: float,
+        center_mm: tuple[float, float],
+        through_all: bool,
+        depth_mm: float | None,
+        feature_type: str = "SketchHole",
+    ):
+        self.Name = name
+        self.definition = _HoleDefinition(
+            diameter_mm=diameter_mm,
+            through_all=through_all,
+            depth_mm=depth_mm,
+        )
+        self.profile = _HoleProfileFeature(
+            center_mm[0] / 1000.0, center_mm[1] / 1000.0
+        )
+        self.feature_type = feature_type
+
+    def GetTypeName2(self):
+        return self.feature_type
+
+    def GetDefinition(self):
+        return self.definition
+
+    def GetFirstSubFeature(self):
+        return self.profile
+
+    def GetNextFeature(self):
+        return None
+
+
+def _hole_reconcile_service(tmp_path: Path, feature: _HoleReconcileFeature):
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"fixture")
+    model = _RevolveReconcileModel(str(part.resolve()), feature)
+    session = _RevolveReconcileSession(_RevolveReconcileApi(model))
+    service = IntegratedPartFeatureService(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        service=object(),
+        default_timeout=2.0,
+    )
+    return part, session, service
+
+
+@pytest.mark.parametrize(
+    ("through_all", "depth_mm"),
+    ((False, 12.0), (True, None)),
+)
+def test_simple_hole_reconcile_verifies_type_diameter_center_end_condition_and_body(
+    tmp_path: Path, through_all: bool, depth_mm: float | None
+) -> None:
+    feature = _HoleReconcileFeature(
+        "AcceptedHole",
+        diameter_mm=6.0,
+        center_mm=(10.0, -5.0),
+        through_all=through_all,
+        depth_mm=depth_mm,
+    )
+    part, session, service = _hole_reconcile_service(tmp_path, feature)
+
+    result = service.reconcile_simple_hole(
+        call_id="hole-call-42",
+        path=str(part),
+        name="AcceptedHole",
+        diameter_mm=6.0,
+        face_ref="bbox:+z",
+        center_mm=(10.0, -5.0),
+        through_all=through_all,
+        depth_mm=depth_mm,
+    )
+
+    assert result.state is NativeCallState.SUCCESS
+    assert result.call_id == "hole-call-42"
+    assert result.value is not None
+    assert result.value.kind.value == "hole"
+    assert result.value.parameters["center_x_mm"] == pytest.approx(10.0)
+    assert result.value.parameters["center_y_mm"] == pytest.approx(-5.0)
+    assert result.value.parameters["diameter_mm"] == pytest.approx(6.0)
+    assert result.value.parameters["through_all"] is through_all
+    if depth_mm is None:
+        assert "depth_mm" not in result.value.parameters
+    else:
+        assert result.value.parameters["depth_mm"] == pytest.approx(depth_mm)
+    assert feature.definition.accessed is True
+    assert feature.definition.released is True
+    assert session.calls == [("hole-call-42", "part_simple_hole_reconcile", 2.0)]
+
+
+@pytest.mark.parametrize(
+    ("requested_diameter", "requested_center", "requested_through", "requested_depth", "fragment"),
+    (
+        (7.0, (10.0, -5.0), False, 12.0, "diameter"),
+        (6.0, (11.0, -5.0), False, 12.0, "center"),
+        (6.0, (10.0, -5.0), True, None, "end condition"),
+        (6.0, (10.0, -5.0), False, 10.0, "depth"),
+    ),
+)
+def test_simple_hole_reconcile_rejects_mismatched_postcondition(
+    tmp_path: Path,
+    requested_diameter: float,
+    requested_center: tuple[float, float],
+    requested_through: bool,
+    requested_depth: float | None,
+    fragment: str,
+) -> None:
+    feature = _HoleReconcileFeature(
+        "AcceptedHole",
+        diameter_mm=6.0,
+        center_mm=(10.0, -5.0),
+        through_all=False,
+        depth_mm=12.0,
+    )
+    part, _session, service = _hole_reconcile_service(tmp_path, feature)
+
+    result = service.reconcile_simple_hole(
+        call_id="hole-call-43",
+        path=str(part),
+        name="AcceptedHole",
+        diameter_mm=requested_diameter,
+        face_ref="bbox:+z",
+        center_mm=requested_center,
+        through_all=requested_through,
+        depth_mm=requested_depth,
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.call_id == "hole-call-43"
+    assert result.failure is not None
+    assert result.failure.code == "reconciliation_mismatch"
+    assert fragment in result.failure.message.lower()
