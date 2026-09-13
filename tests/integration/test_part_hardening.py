@@ -1,0 +1,469 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from cdt_solidworks.document.path_policy import DocumentPathPolicy
+from cdt_solidworks.integration.part import (
+    IntegratedPartFeatureService,
+    _require_standard_reference_plane,
+)
+from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
+
+
+class _Transform:
+    def __init__(self, values):
+        self.ArrayData = tuple(values)
+
+
+class _Plane:
+    def __init__(self, values):
+        self.Transform = _Transform(values)
+
+
+class _Feature:
+    def __init__(self, feature_type, *, specific=None, next_feature=None):
+        self.feature_type = feature_type
+        self.specific = specific
+        self.next_feature = next_feature
+
+    def GetSpecificFeature2(self):
+        return self.specific
+
+    def GetNextFeature(self):
+        return self.next_feature
+
+
+class _Sketch:
+    def __init__(self, reference, entity_type):
+        self.reference = reference
+        self.entity_type = entity_type
+
+
+class _Profile:
+    def __init__(self, sketch):
+        self.sketch = sketch
+
+    def GetSpecificFeature2(self):
+        return self.sketch
+
+
+class _ContextApi:
+    @staticmethod
+    def _member(obj, name, *args):
+        value = getattr(obj, name)
+        return value(*args) if callable(value) else value
+
+    @staticmethod
+    def feature_type(feature):
+        return feature.feature_type
+
+    @staticmethod
+    def first_feature(model):
+        return model.first
+
+    @staticmethod
+    def next_feature(feature):
+        return feature.GetNextFeature()
+
+    @staticmethod
+    def sketch_reference_entity(sketch):
+        return sketch.reference, sketch.entity_type
+
+
+def _plane_transform(seed: float):
+    values = [0.0] * 16
+    values[0] = seed
+    values[5] = seed + 1.0
+    values[10] = seed + 2.0
+    values[15] = 1.0
+    return tuple(values)
+
+
+def _model_with_refplanes(*transforms):
+    features = [_Feature("RefPlane", specific=_Plane(values)) for values in transforms]
+    for current, next_feature in zip(features, features[1:]):
+        current.next_feature = next_feature
+    return SimpleNamespace(first=features[0] if features else None)
+
+
+def test_cut_context_accepts_only_first_three_standard_reference_planes() -> None:
+    transforms = tuple(_plane_transform(seed) for seed in (1.0, 10.0, 20.0, 30.0))
+    model = _model_with_refplanes(*transforms)
+    api = _ContextApi()
+
+    accepted = _Profile(_Sketch(_Plane(transforms[1]), 4))
+    _require_standard_reference_plane(api, model, accepted, "TopSketch")
+
+    custom = _Profile(_Sketch(_Plane(transforms[3]), 4))
+    with pytest.raises(RuntimeError, match="standard reference plane"):
+        _require_standard_reference_plane(api, model, custom, "CustomPlaneSketch")
+
+
+def test_cut_context_rejects_face_backed_sketch_before_feature_dispatch() -> None:
+    model = _model_with_refplanes(*tuple(_plane_transform(seed) for seed in (1.0, 10.0, 20.0)))
+    profile = _Profile(_Sketch(object(), 2))  # swSelFACES
+    with pytest.raises(RuntimeError, match="face-backed"):
+        _require_standard_reference_plane(_ContextApi(), model, profile, "FaceSketch")
+
+
+class _NativeModel:
+    LengthUnit = 0
+
+    def __init__(self, path: str):
+        self.path = path
+
+
+class _TimeoutApi:
+    def __init__(self, model):
+        self.model = model
+
+    def get_open_document(self, app, path):
+        return self.model if path == self.model.path else None
+
+    @staticmethod
+    def document_type(model):
+        return 1
+
+    @staticmethod
+    def document_path(model):
+        return model.path
+
+    @staticmethod
+    def update_stamp(model):
+        return 7
+
+    @staticmethod
+    def active_configuration(model):
+        return "Default"
+
+    @staticmethod
+    def _member(obj, name, *args):
+        value = getattr(obj, name)
+        return value(*args) if callable(value) else value
+
+    @staticmethod
+    def feature_name(feature):
+        return feature.Name
+
+    @staticmethod
+    def feature_type(feature):
+        return feature.GetTypeName2()
+
+    @staticmethod
+    def bodies(model, body_type, visible_only):
+        return ()
+
+    @staticmethod
+    def body_name(body):
+        return ""
+
+    @staticmethod
+    def sketch_reference_entity(sketch):
+        raise AssertionError("mutation operation must not run after injected timeout")
+
+
+class _TimeoutSession:
+    def __init__(self, model):
+        self.api = _TimeoutApi(model)
+        self.stages = []
+
+    def execute(self, operation, *, stage, timeout, mutation):
+        self.stages.append((stage, mutation))
+        if stage == "part_resolve_document":
+            return NativeCallResult.success(operation(object()), call_id="resolve-1", dispatched=True)
+        if stage == "part_cut_native":
+            return NativeCallResult(
+                state=NativeCallState.UNCERTAIN_AFTER_DISPATCH,
+                call_id="cut-native-timeout-42",
+                failure=NativeFailure(
+                    code="uncertain_state",
+                    stage=stage,
+                    message="Native call timed out after dispatch.",
+                    retryable=False,
+                ),
+                dispatched=True,
+            )
+        raise AssertionError(f"unexpected follow-up stage after uncertain mutation: {stage}")
+
+
+def test_cut_timeout_preserves_uncertain_state_call_id_and_stops_follow_up(tmp_path: Path) -> None:
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"fixture")
+    model = _NativeModel(str(part.resolve()))
+    session = _TimeoutSession(model)
+    service = IntegratedPartFeatureService(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        default_timeout=1.0,
+    )
+
+    result = service.cut_extrude(
+        path=str(part),
+        expected_revision=7,
+        sketch_id="CutSketch",
+        name="Cut1",
+        through_all=True,
+    )
+
+    assert result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH
+    assert result.call_id == "cut-native-timeout-42"
+    assert result.dispatched is True
+    assert result.failure is not None and result.failure.retryable is False
+    assert session.stages == [
+        ("part_resolve_document", False),
+        ("part_cut_native", True),
+    ]
+
+
+def test_uncertain_cut_requires_feature_specific_reconcile_before_next_mutation(tmp_path: Path) -> None:
+    import threading
+
+    from cdt_solidworks.native.session import SolidWorksSession
+
+    part = tmp_path / "part.SLDPRT"
+    part.write_bytes(b"fixture")
+    release_cut = threading.Event()
+    cut_finished = threading.Event()
+    standard = tuple(_plane_transform(seed) for seed in (1.0, 10.0, 20.0))
+
+    class FeatureDefinition:
+        def GetEndCondition(self, forward):
+            return 1
+
+        def GetDepth(self, forward):
+            return 0.0
+
+    class ProfileFeature:
+        Name = "CutSketch"
+
+        def __init__(self):
+            self.sketch = _Sketch(_Plane(standard[0]), 4)
+
+        def GetTypeName2(self):
+            return "ProfileFeature"
+
+        def GetSpecificFeature2(self):
+            return self.sketch
+
+        def Select2(self, append, mark):
+            return True
+
+    class CutFeature:
+        Name = "AcceptedCut"
+
+        def GetTypeName2(self):
+            return "ICE"
+
+        def GetTypeName(self):
+            return "Cut"
+
+        def GetDefinition(self):
+            return FeatureDefinition()
+
+        def GetNextFeature(self):
+            return None
+
+        def GetErrorCode2(self, *args):
+            return 0
+
+    class RefFeature(_Feature):
+        Name = "Ref"
+
+        def GetTypeName2(self):
+            return "RefPlane"
+
+        def GetErrorCode2(self, *args):
+            return 0
+
+    class Body:
+        Name = "Body1"
+
+        def GetBodyBox(self):
+            return (0.0, 0.0, 0.0, 0.1, 0.06, 0.02)
+
+    class FeatureManager:
+        def __init__(self, model):
+            self.model = model
+
+        def FeatureCut3(self, *args):
+            assert release_cut.wait(timeout=2.0)
+            feature = CutFeature()
+            self.model.cut = feature
+            self.model.update_stamp = 8
+            self.model.last_ref.next_feature = feature
+            cut_finished.set()
+            return feature
+
+    class Model:
+        LengthUnit = 0
+
+        def __init__(self):
+            self.path = str(part.resolve())
+            self.update_stamp = 7
+            refs = [RefFeature("RefPlane", specific=_Plane(values)) for values in standard]
+            for current, next_feature in zip(refs, refs[1:]):
+                current.next_feature = next_feature
+            self.first = refs[0]
+            self.last_ref = refs[-1]
+            self.profile = ProfileFeature()
+            self.cut = None
+            self.FeatureManager = FeatureManager(self)
+
+        def FeatureByName(self, name):
+            if name == "CutSketch":
+                return self.profile
+            if self.cut is not None and name == self.cut.Name:
+                return self.cut
+            return None
+
+        def ClearSelection2(self, clear_all):
+            return True
+
+        def ForceRebuild3(self, top_only):
+            return True
+
+        def GetBodies2(self, body_type, visible_only):
+            return (Body(),)
+
+    model = Model()
+
+    class Api:
+        def initialize_thread(self):
+            return None
+
+        def uninitialize_thread(self):
+            return None
+
+        def get_open_document(self, app, path):
+            return model if path == model.path else None
+
+        @staticmethod
+        def document_type(doc):
+            return 1
+
+        @staticmethod
+        def document_path(doc):
+            return doc.path
+
+        @staticmethod
+        def document_title(doc):
+            return "part.SLDPRT"
+
+        @staticmethod
+        def update_stamp(doc):
+            return doc.update_stamp
+
+        @staticmethod
+        def active_configuration(doc):
+            return "Default"
+
+        @staticmethod
+        def _member(obj, name, *args):
+            value = getattr(obj, name)
+            return value(*args) if callable(value) else value
+
+        @staticmethod
+        def feature_name(feature):
+            return feature.Name
+
+        @staticmethod
+        def feature_type(feature):
+            return feature.GetTypeName2()
+
+        @staticmethod
+        def feature_error(feature):
+            return (0, False)
+
+        @staticmethod
+        def force_rebuild(doc, top_only):
+            return bool(doc.ForceRebuild3(top_only))
+
+        @staticmethod
+        def first_feature(doc):
+            return doc.first
+
+        @staticmethod
+        def next_feature(feature):
+            return feature.GetNextFeature()
+
+        @staticmethod
+        def bodies(doc, body_type, visible_only):
+            return tuple(doc.GetBodies2(body_type, visible_only))
+
+        @staticmethod
+        def body_name(body):
+            return body.Name
+
+        @staticmethod
+        def sketch_reference_entity(sketch):
+            return sketch.reference, sketch.entity_type
+
+    session = SolidWorksSession(api=Api())
+    session._application = model
+    service = IntegratedPartFeatureService(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        default_timeout=0.05,
+    )
+    try:
+        uncertain = service.cut_extrude(
+            path=str(part),
+            expected_revision=7,
+            sketch_id="CutSketch",
+            name="AcceptedCut",
+            through_all=True,
+        )
+        assert uncertain.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH
+        assert uncertain.dispatched is True
+        assert session.uncertain_call_id == uncertain.call_id
+
+        blocked = session.execute(
+            lambda app: True,
+            stage="blocked_follow_up",
+            timeout=0.2,
+            mutation=True,
+        )
+        assert blocked.state is NativeCallState.FAILURE
+        assert blocked.dispatched is False
+        assert blocked.failure is not None and blocked.failure.code == "uncertain_state"
+
+        release_cut.set()
+        assert cut_finished.wait(timeout=1.0)
+
+        mismatch = service.reconcile_cut(
+            call_id=uncertain.call_id,
+            path=str(part),
+            name="WrongCut",
+            through_all=True,
+            timeout=1.0,
+        )
+        assert mismatch.state is NativeCallState.FAILURE
+        assert mismatch.failure is not None
+        assert mismatch.failure.code == "reconciliation_mismatch"
+        assert session.uncertain_call_id == uncertain.call_id
+
+        reconciled = service.reconcile_cut(
+            call_id=uncertain.call_id,
+            path=str(part),
+            name="AcceptedCut",
+            through_all=True,
+            timeout=1.0,
+        )
+        assert reconciled.state is NativeCallState.SUCCESS
+        assert reconciled.value is not None
+        assert reconciled.value.kind.value == "cut"
+        assert session.uncertain_call_id is None
+
+        allowed = session.execute(
+            lambda app: True,
+            stage="post_reconcile_mutation",
+            timeout=0.2,
+            mutation=True,
+        )
+        assert allowed.state is NativeCallState.SUCCESS
+    finally:
+        release_cut.set()
+        session.close_dispatcher(timeout=1.0)

@@ -35,3 +35,35 @@ def test_member_still_invokes_zero_argument_com_method_wrapper() -> None:
     owner = _Owner()
 
     assert WindowsComApi._member(owner, "GetTitle") == "Part1"
+
+
+def test_sketch_reference_entity_uses_typed_byref_integer() -> None:
+    class Ref:
+        def __init__(self) -> None:
+            self.value = 0
+
+    created = []
+
+    class Client:
+        @staticmethod
+        def VARIANT(flags, value):
+            created.append((flags, value))
+            return Ref()
+
+    class PythonCom:
+        VT_BYREF = 0x4000
+        VT_I4 = 3
+
+    class Sketch:
+        def GetReferenceEntity(self, entity_type):
+            entity_type.value = 4
+            return "plane-object"
+
+    api = WindowsComApi()
+    api._client = Client()
+    api._pythoncom = PythonCom()
+    reference, entity_type = api.sketch_reference_entity(Sketch())
+
+    assert reference == "plane-object"
+    assert entity_type == 4
+    assert created == [(PythonCom.VT_BYREF | PythonCom.VT_I4, 0)]

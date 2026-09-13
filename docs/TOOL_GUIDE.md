@@ -15,7 +15,8 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `sketch_create_rectangle` | New part, Front/Top/Right plane, rectangular 2D sketch |
 | `part_create_rect_extrude` | New rectangular solid boss |
 | `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
-| `part_cut_extrude` | Native blind or through-all Cut Extrude from one explicit sketch in an opened millimeter part; path + revision identity required |
+| `part_cut_extrude` | Native blind or through-all Cut Extrude from a sketch on Front/Top/Right standard reference planes in an opened millimeter part; path + revision identity required |
+| `part_cut_reconcile` | Reconcile an uncertain Cut Extrude by native call ID; clears quarantine only after expected Cut definition, clean rebuild, and solid-body verification |
 | `part_combine_all_bodies` | Boolean Add of all current solid bodies |
 | `part_split_by_plane` | Split using Front/Top/Right standard plane |
 | `sheet_metal_create_base_flange` | Base flange with thickness/bend-radius read-back |

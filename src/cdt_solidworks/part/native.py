@@ -52,6 +52,7 @@ class PartNativeRuntime:
         bodies: Callable[[Any, int, bool], tuple[Any, ...]],
         body_name: Callable[[Any], str],
         rebuild_verifier: Callable[[Any], RebuildResult],
+        cut_profile_validator: Callable[[Any, Any, str], None] | None = None,
     ) -> None:
         self._execute = executor
         self._resolve_binding = binding_resolver
@@ -61,6 +62,7 @@ class PartNativeRuntime:
         self._bodies = bodies
         self._body_name = body_name
         self._rebuild = rebuild_verifier
+        self._cut_profile_validator = cut_profile_validator
 
     def resolve_document(self, target: DocumentTarget) -> ResolvedDocument:
         def operation(app: Any) -> ResolvedDocument:
@@ -86,6 +88,8 @@ class PartNativeRuntime:
                     "part_cut_native",
                     "The requested profile sketch could not be resolved as a native sketch feature.",
                 )
+            if self._cut_profile_validator is not None:
+                self._cut_profile_validator(model, profile, spec.profile.sketch_id)
             self._member(model, "ClearSelection2", True)
             if not bool(self._member(profile, "Select2", False, 0)):
                 raise NativeRuntimeError(

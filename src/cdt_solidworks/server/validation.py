@@ -31,6 +31,7 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "sketch_create_geometry": frozenset({"path", "expected_revision", "name", "plane", "entities"}),
     "sketch_get": frozenset({"path", "expected_revision", "sketch_id"}),
     "part_cut_extrude": frozenset({"path", "expected_revision", "sketch_id", "name", "through_all", "depth_mm"}),
+    "part_cut_reconcile": frozenset({"call_id", "path", "name", "through_all", "depth_mm"}),
     "body_inspect": frozenset({"path"}),
     "body_combine": frozenset({"path", "operation", "body_names", "main_body_name"}),
     "surface_thicken": frozenset({"path", "surface_body_name", "thickness_mm", "side", "merge"}),

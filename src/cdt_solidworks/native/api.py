@@ -241,6 +241,15 @@ class WindowsComApi:
         except Exception:
             return str(self._member(body, "GetName"))
 
+    def sketch_reference_entity(self, sketch: Any) -> tuple[Any | None, int]:
+        """Return a sketch reference entity and its swSelectType_e value."""
+        self._require_client()
+        entity_type = self._client.VARIANT(
+            self._pythoncom.VT_BYREF | self._pythoncom.VT_I4, 0
+        )
+        reference = sketch.GetReferenceEntity(entity_type)
+        return reference, int(entity_type.value)
+
     def null_dispatch(self) -> Any:
         self._require_client()
         return self._client.VARIANT(self._pythoncom.VT_DISPATCH, None)

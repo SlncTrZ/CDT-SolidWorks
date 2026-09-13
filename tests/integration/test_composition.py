@@ -215,7 +215,7 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "document_close", "document_reopen", "document_list_features",
         "document_list_bodies", "document_list_components", "document_rebuild",
         "document_reconcile", "sketch_create_geometry", "sketch_get",
-        "part_cut_extrude", "body_inspect", "body_combine", "surface_thicken",
+        "part_cut_extrude", "part_cut_reconcile", "body_inspect", "body_combine", "surface_thicken",
         "sheet_metal_inspect", "sheet_metal_set_flattened",
         "weldment_inspect", "weldment_create_structural_member",
         "sketch_create_rectangle", "part_create_rect_extrude",

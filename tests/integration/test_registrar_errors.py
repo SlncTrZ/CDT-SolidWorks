@@ -30,6 +30,7 @@ def test_domain_postcondition_and_state_conflicts_map_to_conflict() -> None:
         "cad_selection_failed",
         "cad_mutation_failed",
         "cad_postcondition_failed",
+        "reconciliation_mismatch",
         "configuration_exists",
         "cannot_delete_active_configuration",
         "cannot_delete_last_configuration",

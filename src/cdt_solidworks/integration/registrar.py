@@ -46,6 +46,7 @@ def _error_code(native_code: str) -> str:
         "cannot_delete_last_configuration",
         "equation_exists",
         "rebuild_failed",
+        "reconciliation_mismatch",
         "native_export_incomplete",
         "artifact_format_mismatch",
         "artifact_extension_mismatch",
@@ -308,6 +309,30 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     path=path,
                     expected_revision=expected_revision,
                     sketch_id=sketch_id,
+                    name=name,
+                    through_all=through_all,
+                    depth_mm=depth_mm,
+                )
+            )
+
+        @server.tool(
+            name="part_cut_reconcile",
+            description=(
+                "Reconcile an uncertain Cut Extrude using its native call ID and expected feature "
+                "postcondition; quarantine clears only after feature, rebuild, and body verification pass."
+            ),
+        )
+        def part_cut_reconcile(
+            call_id: str,
+            path: str,
+            name: str,
+            through_all: bool,
+            depth_mm: float | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.reconcile_cut(
+                    call_id=call_id,
+                    path=path,
                     name=name,
                     through_all=through_all,
                     depth_mm=depth_mm,

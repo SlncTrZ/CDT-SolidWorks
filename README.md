@@ -14,7 +14,7 @@ The provider has native Windows evidence for:
 
 - application/session lifecycle and document open/query/save/close/reopen;
 - bounded sketch geometry creation/query, including line/centerline/circle/arc/ellipse/point/spline plus rectangular sketch primitives;
-- solid extrude, native blind/through-all Cut Extrude, and multi-body creation;
+- solid extrude, hardened blind/through-all Cut Extrude on standard reference-plane sketches with feature-specific uncertainty reconciliation, and multi-body creation;
 - body inspection plus bounded Boolean combine operations and core Combine/Split workflows;
 - sheet-metal Base Flange plus accepted sheet-metal inspection/flat-pattern state;
 - extruded surfaces plus accepted surface thickening;

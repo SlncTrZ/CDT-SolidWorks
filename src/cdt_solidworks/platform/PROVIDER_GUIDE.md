@@ -39,7 +39,8 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `sketch_create_rectangle` — create a rectangular 2D sketch in a new native part.
 - `part_create_rect_extrude` — create a rectangular sketch plus one solid boss extrude.
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
-- `part_cut_extrude` — create a blind or through-all Cut Extrude from one explicit sketch using path + revision identity.
+- `part_cut_extrude` — create a blind or through-all Cut Extrude from a sketch on a Front/Top/Right standard reference plane using path + revision identity.
+- `part_cut_reconcile` — reconcile an uncertain Cut Extrude by native call ID and expected feature definition; quarantine clears only after rebuild/body verification succeeds.
 - `part_combine_all_bodies` — Boolean-add all solid bodies and verify the result is one solid body.
 - `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
 - `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.
