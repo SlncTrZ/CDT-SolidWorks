@@ -31,6 +31,10 @@ class _FakeSketchService:
     pass
 
 
+class _FakePartFeatureService:
+    pass
+
+
 class _FakeBodyService:
     pass
 
@@ -88,6 +92,7 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
         sketch_service=_FakeSketchService(),
+        part_feature_service=_FakePartFeatureService(),
         body_service=_FakeBodyService(),
         surface_service=_FakeSurfaceService(),
         sheetmetal_service=_FakeSheetMetalService(),
@@ -111,6 +116,8 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.sketch.rectangle"].available is True
     assert states["solidworks.sketch.geometry"].implemented is True
     assert states["solidworks.sketch.geometry"].available is True
+    assert states["solidworks.part.cut_extrude"].implemented is True
+    assert states["solidworks.part.cut_extrude"].available is True
     assert states["solidworks.part.combine"].implemented is True
     assert states["solidworks.sheet_metal.base_flange"].implemented is True
     assert states["solidworks.surface.extrude"].implemented is True
@@ -188,6 +195,7 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
         sketch_service=_FakeSketchService(),
+        part_feature_service=_FakePartFeatureService(),
         body_service=_FakeBodyService(),
         surface_service=_FakeSurfaceService(),
         sheetmetal_service=_FakeSheetMetalService(),
@@ -207,7 +215,7 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "document_close", "document_reopen", "document_list_features",
         "document_list_bodies", "document_list_components", "document_rebuild",
         "document_reconcile", "sketch_create_geometry", "sketch_get",
-        "body_inspect", "body_combine", "surface_thicken",
+        "part_cut_extrude", "body_inspect", "body_combine", "surface_thicken",
         "sheet_metal_inspect", "sheet_metal_set_flattened",
         "weldment_inspect", "weldment_create_structural_member",
         "sketch_create_rectangle", "part_create_rect_extrude",

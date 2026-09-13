@@ -33,6 +33,9 @@ def _error_code(native_code: str) -> str:
         return ErrorCode.NOT_FOUND.value
     if native_code in {
         "cad_precondition_failed",
+        "cad_selection_failed",
+        "cad_mutation_failed",
+        "cad_postcondition_failed",
         "document_already_exists",
         "stale_document_context",
         "document_context_mismatch",
@@ -281,6 +284,33 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             return _result_payload(
                 runtime.sketch_service.get(
                     path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
+    if runtime.part_feature_service is not None:
+        @server.tool(
+            name="part_cut_extrude",
+            description=(
+                "Create a native blind or through-all Cut Extrude from one explicitly named sketch "
+                "in an opened millimeter part using path + revision identity; call document_save separately to persist."
+            ),
+        )
+        def part_cut_extrude(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            name: str,
+            through_all: bool,
+            depth_mm: float | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.cut_extrude(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    name=name,
+                    through_all=through_all,
+                    depth_mm=depth_mm,
                 )
             )
 

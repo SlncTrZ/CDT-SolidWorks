@@ -39,6 +39,7 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `sketch_create_rectangle` — create a rectangular 2D sketch in a new native part.
 - `part_create_rect_extrude` — create a rectangular sketch plus one solid boss extrude.
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
+- `part_cut_extrude` — create a blind or through-all Cut Extrude from one explicit sketch using path + revision identity.
 - `part_combine_all_bodies` — Boolean-add all solid bodies and verify the result is one solid body.
 - `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
 - `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.
@@ -82,6 +83,7 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.sketch.geometry`
 - `solidworks.sketch.rectangle`
 - `solidworks.part.extrude`
+- `solidworks.part.cut_extrude`
 - `solidworks.part.multibody`
 - `solidworks.part.combine`
 - `solidworks.part.split`
@@ -120,7 +122,7 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.evaluation.bounding_box`
 - `solidworks.evaluation.geometry_sanity`
 
-Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support` until the remaining parametric feature family, including production Cut/Revolve coverage, is complete. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
+Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support`: native Cut Extrude is now promoted, but Revolve and the remaining parametric feature family still require their own production native gates. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
 
 Lane D's bounded drawing lifecycle, STEP/IGES/Parasolid/STL/3MF geometry export, PDF/DXF/DWG drawing export, and part evaluation are now callable and have passed public-wrapper native smoke. Broad `solidworks.drawing`, `solidworks.export`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
 

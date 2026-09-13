@@ -15,6 +15,7 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `sketch_create_rectangle` | New part, Front/Top/Right plane, rectangular 2D sketch |
 | `part_create_rect_extrude` | New rectangular solid boss |
 | `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
+| `part_cut_extrude` | Native blind or through-all Cut Extrude from one explicit sketch in an opened millimeter part; path + revision identity required |
 | `part_combine_all_bodies` | Boolean Add of all current solid bodies |
 | `part_split_by_plane` | Split using Front/Top/Right standard plane |
 | `sheet_metal_create_base_flange` | Base flange with thickness/bend-radius read-back |
@@ -53,9 +54,9 @@ Paths are constrained to configured allowed roots. Create operations refuse to o
 
 ## Verification status
 
-The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes part creation, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly creation, component state/configuration persistence, Coincident/Parallel/Perpendicular/Distance/Angle mate creation, Distance mate editing, configuration lifecycle, configuration-specific dimensions/properties/feature suppression, equation/global-variable CRUD, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
+The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes part creation, blind/through-all Cut Extrude with save/reopen and volume read-back, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly creation, component state/configuration persistence, Coincident/Parallel/Perpendicular/Distance/Angle mate creation, Distance mate editing, configuration lifecycle, configuration-specific dimensions/properties/feature suppression, equation/global-variable CRUD, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
 
-Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet because Cut/Revolve and additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed.
+Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet: Cut Extrude is promoted, while Revolve and the remaining parametric feature families plus additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed.
 
 ## Lane D accepted boundary
 

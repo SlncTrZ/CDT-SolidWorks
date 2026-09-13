@@ -177,6 +177,10 @@ class _UnusedSketchService:
     pass
 
 
+class _UnusedPartFeatureService:
+    pass
+
+
 class _UnusedDrawingService:
     pass
 
@@ -197,6 +201,7 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
         document_service=_UnusedDocumentService(),
         cad_service=_UnusedCadService(),
         sketch_service=_UnusedSketchService(),
+        part_feature_service=_UnusedPartFeatureService(),
         drawing_service=_UnusedDrawingService(),
         export_service=_UnusedExportService(),
         evaluation_service=_UnusedEvaluationService(),
@@ -226,6 +231,18 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                             "path": str(tmp_path / "part.SLDPRT"),
                             "expected_revision": 1,
                             "sketch_id": "Sketch1",
+                            "unexpected": True,
+                        },
+                    )
+                with pytest.raises(MCPError) as part_exc_info:
+                    await client.call_tool(
+                        "part_cut_extrude",
+                        {
+                            "path": str(tmp_path / "part.SLDPRT"),
+                            "expected_revision": 1,
+                            "sketch_id": "CutSketch",
+                            "name": "Cut1",
+                            "through_all": True,
                             "unexpected": True,
                         },
                     )
@@ -265,6 +282,8 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
     assert "unexpected" in exc_info.value.message.lower()
     assert sketch_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in sketch_exc_info.value.message.lower()
+    assert part_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in part_exc_info.value.message.lower()
     assert body_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in body_exc_info.value.message.lower()
     assert cad_exc_info.value.code == INVALID_PARAMS

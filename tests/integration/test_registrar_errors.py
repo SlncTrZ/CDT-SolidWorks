@@ -27,6 +27,9 @@ def test_domain_missing_codes_map_to_not_found() -> None:
 
 def test_domain_postcondition_and_state_conflicts_map_to_conflict() -> None:
     for code in (
+        "cad_selection_failed",
+        "cad_mutation_failed",
+        "cad_postcondition_failed",
         "configuration_exists",
         "cannot_delete_active_configuration",
         "cannot_delete_last_configuration",

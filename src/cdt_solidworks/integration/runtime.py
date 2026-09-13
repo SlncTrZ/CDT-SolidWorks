@@ -15,6 +15,7 @@ from cdt_solidworks.native.cad_core import CadCoreService
 from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.native.session import SolidWorksSession
 from cdt_solidworks.integration.sketch import IntegratedSketchService
+from cdt_solidworks.integration.part import IntegratedPartFeatureService
 from cdt_solidworks.integration.assembly_config import (
     IntegratedAssemblyService,
     IntegratedConfigurationService,
@@ -40,6 +41,7 @@ class IntegratedProviderRuntime:
         document_service: Any | None = None,
         cad_service: Any | None = None,
         sketch_service: Any | None = None,
+        part_feature_service: Any | None = None,
         body_service: Any | None = None,
         surface_service: Any | None = None,
         sheetmetal_service: Any | None = None,
@@ -64,6 +66,11 @@ class IntegratedProviderRuntime:
         self.sketch_service = sketch_service
         if self.sketch_service is None and hasattr(self.session, "api"):
             self.sketch_service = IntegratedSketchService(
+                self.session, path_policy=self.path_policy
+            )
+        self.part_feature_service = part_feature_service
+        if self.part_feature_service is None and hasattr(self.session, "api"):
+            self.part_feature_service = IntegratedPartFeatureService(
                 self.session, path_policy=self.path_policy
             )
         self.body_service = body_service
@@ -145,6 +152,9 @@ class IntegratedProviderRuntime:
         sketch_implemented = self.sketch_service is not None
         sketch_available = sketch_implemented and available
         sketch_reason = integrated_reason if sketch_implemented else deferred_reason
+        part_feature_implemented = self.part_feature_service is not None
+        part_feature_available = part_feature_implemented and available
+        part_feature_reason = integrated_reason if part_feature_implemented else deferred_reason
         body_implemented = self.body_service is not None
         body_available = body_implemented and available
         body_reason = integrated_reason if body_implemented else deferred_reason
@@ -249,6 +259,14 @@ class IntegratedProviderRuntime:
                 implemented=cad_implemented,
                 available=cad_available,
                 reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.cut_extrude",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
