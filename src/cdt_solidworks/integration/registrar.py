@@ -43,7 +43,21 @@ def _error_code(native_code: str) -> str:
         "cannot_delete_last_configuration",
         "equation_exists",
         "rebuild_failed",
-    } or native_code.endswith("_readback_mismatch"):
+        "native_export_incomplete",
+        "artifact_format_mismatch",
+        "artifact_extension_mismatch",
+        "artifact_empty",
+        "artifact_unreadable",
+        "geometry_not_verified",
+        "feature_errors_present",
+        "invalid_mass_properties",
+        "invalid_bounding_box",
+        "invalid_geometry_sanity",
+    } or (
+        native_code.endswith("_readback_mismatch")
+        or native_code.endswith("_readback_missing")
+        or native_code.startswith("dangling_")
+    ):
         return ErrorCode.CONFLICT.value
     if (
         native_code.startswith("path_")
@@ -54,6 +68,7 @@ def _error_code(native_code: str) -> str:
             "document_type_mismatch",
             "document_extension_mismatch",
             "document_type_unknown",
+            "format_extension_mismatch",
             "mate_alignment_not_supported",
             "mate_value_not_supported",
             "mate_value_required",
@@ -430,6 +445,108 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         @server.tool(name="configuration_equation_delete", description="Delete one explicit equation/global-variable identity and verify absence after rebuild.")
         def configuration_equation_delete(path: str, identity: str) -> dict[str, Any]:
             return _result_payload(runtime.configuration_service.delete_equation(path, identity))
+
+    if runtime.drawing_service is not None:
+        @server.tool(
+            name="drawing_create",
+            description=(
+                "Create a native SOLIDWORKS drawing using the active default drawing template; "
+                "the output must be a new .SLDDRW path under an allowed root."
+            ),
+        )
+        def drawing_create(output_path: str) -> dict[str, Any]:
+            return _result_payload(runtime.drawing_service.create(output_path))
+
+        @server.tool(
+            name="drawing_sheet_create",
+            description=(
+                "Create and rebuild one additional sheet in an explicitly addressed native drawing."
+            ),
+        )
+        def drawing_sheet_create(path: str, sheet_name: str) -> dict[str, Any]:
+            return _result_payload(runtime.drawing_service.create_sheet(path, sheet_name))
+
+        @server.tool(
+            name="drawing_front_view_create",
+            description=(
+                "Create the native-accepted Front model view on one explicit drawing sheet from "
+                "one native part source; broader view families remain unavailable."
+            ),
+        )
+        def drawing_front_view_create(
+            path: str, sheet_name: str, source_part_path: str
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_front_view(
+                    path, sheet_name, source_part_path
+                )
+            )
+
+    if runtime.export_service is not None:
+        @server.tool(
+            name="export_document",
+            description=(
+                "Export only native-accepted source/format pairs: part to STEP/IGES/Parasolid/"
+                "STL/3MF, or drawing to PDF/DXF/DWG. Existing targets are never overwritten."
+            ),
+        )
+        def export_document(
+            source_path: str,
+            target_path: str,
+            format: Literal[
+                "step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg"
+            ],
+            source_configuration: str | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.export_service.export(
+                    source_path,
+                    target_path,
+                    format,
+                    source_configuration=source_configuration,
+                )
+            )
+
+    if runtime.evaluation_service is not None:
+        @server.tool(
+            name="evaluation_mass_properties",
+            description=(
+                "Read validated mass, volume, surface area, center of mass, and inertia from "
+                "one native part; this tool is read-only."
+            ),
+        )
+        def evaluation_mass_properties(
+            path: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.mass_properties(path, configuration)
+            )
+
+        @server.tool(
+            name="evaluation_bounding_box",
+            description=(
+                "Read a validated approximate native part bounding box in SOLIDWORKS system units."
+            ),
+        )
+        def evaluation_bounding_box(
+            path: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.bounding_box(path, configuration)
+            )
+
+        @server.tool(
+            name="evaluation_geometry_sanity",
+            description=(
+                "Read bounded part body/feature-error sanity and fail when native feature errors exist."
+            ),
+        )
+        def evaluation_geometry_sanity(
+            path: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.geometry_sanity(path, configuration)
+            )
 
     if runtime.cad_service is None:
         return

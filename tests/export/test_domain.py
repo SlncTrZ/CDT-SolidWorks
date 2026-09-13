@@ -99,9 +99,12 @@ class ExportServiceTests(unittest.TestCase):
 
     def test_partial_native_export_cannot_pass(self):
         self.exporter.result = NativeExportResult(
-            completed=False, partial=True, errors=("translator failed",)
+            completed=False,
+            partial=True,
+            errors=("translator failed",),
+            call_id="native-export-42",
         )
-        with self.assertRaisesRegex(ExportPostconditionError, "native_export_incomplete"):
+        with self.assertRaises(ExportPostconditionError) as caught:
             self.service.export(
                 ExportRequest(
                     source_document_id="part-1",
@@ -109,6 +112,9 @@ class ExportServiceTests(unittest.TestCase):
                     format=ExportFormat.STEP,
                 )
             )
+        self.assertEqual("native_state_uncertain", caught.exception.reason)
+        self.assertEqual("native-export-42", caught.exception.call_id)
+        self.assertIn("translator failed", caught.exception.detail or "")
 
     def test_step_requires_independent_geometry_verification(self):
         self.inspector.inspection = ArtifactInspection(

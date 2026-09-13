@@ -7,6 +7,7 @@ from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
 from cdt_solidworks.integration.server import build_integrated_server
 from cdt_solidworks.native.models import ApplicationProbe, NativeCallResult
 from cdt_solidworks.server.factory import ServerConfig
+from cdt_solidworks.server.validation import _TOOL_ARGUMENTS
 
 
 class _FakeSession:
@@ -54,6 +55,18 @@ class _FakeConfigurationService:
     pass
 
 
+class _FakeDrawingService:
+    pass
+
+
+class _FakeExportService:
+    pass
+
+
+class _FakeEvaluationService:
+    pass
+
+
 def _success_probe(*, registered: bool, running: bool) -> NativeCallResult[ApplicationProbe]:
     return NativeCallResult.success(
         ApplicationProbe(
@@ -81,6 +94,9 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         weldment_service=_FakeWeldmentService(),
         assembly_service=_FakeAssemblyService(),
         configuration_service=_FakeConfigurationService(),
+        drawing_service=_FakeDrawingService(),
+        export_service=_FakeExportService(),
+        evaluation_service=_FakeEvaluationService(),
     )
     context = runtime.runtime_context()
     states = {item.name: item for item in context.capabilities}
@@ -123,6 +139,20 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.configuration.equations"].available is True
     assert states["solidworks.configurations"].implemented is False
     assert states["solidworks.configurations"].reason == "partial_native_support"
+    assert states["solidworks.drawing.lifecycle"].available is True
+    assert states["solidworks.drawing.front_view"].available is True
+    assert states["solidworks.drawing"].implemented is False
+    assert states["solidworks.drawing"].reason == "partial_native_support"
+    for export_name in ("step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg"):
+        assert states[f"solidworks.export.{export_name}"].available is True
+    assert states["solidworks.export"].implemented is False
+    assert states["solidworks.export"].reason == "partial_native_support"
+    assert states["solidworks.evaluation.mass_properties"].available is True
+    assert states["solidworks.evaluation.bounding_box"].available is True
+    assert states["solidworks.evaluation.geometry_sanity"].available is True
+    assert states["solidworks.evaluation"].implemented is False
+    assert states["solidworks.evaluation"].reason == "partial_native_support"
+    assert states["solidworks.mbd"].implemented is False
     assert states["solidworks.simulation.study"].implemented is False
     assert states["solidworks.simulation.study"].reason == "native_adapter_not_integrated"
     assert states["solidworks.flow_simulation"].implemented is False
@@ -164,6 +194,9 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         weldment_service=_FakeWeldmentService(),
         assembly_service=_FakeAssemblyService(),
         configuration_service=_FakeConfigurationService(),
+        drawing_service=_FakeDrawingService(),
+        export_service=_FakeExportService(),
+        evaluation_service=_FakeEvaluationService(),
     )
     server = build_integrated_server(ServerConfig.in_process(guide_path=guide), runtime=runtime)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
@@ -191,7 +224,11 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "configuration_delete_property", "configuration_set_feature_suppressed",
         "configuration_equations_list", "configuration_equation_add",
         "configuration_equation_set", "configuration_equation_delete",
+        "drawing_create", "drawing_sheet_create", "drawing_front_view_create",
+        "export_document", "evaluation_mass_properties",
+        "evaluation_bounding_box", "evaluation_geometry_sanity",
     } <= names
+    assert names <= set(_TOOL_ARGUMENTS)
 
 
 def test_runtime_context_exposes_license_probe_as_unimplemented() -> None:

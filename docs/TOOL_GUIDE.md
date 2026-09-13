@@ -1,6 +1,6 @@
 # CDT-SolidWorks Tool Guide
 
-> Status: A–C callable native surface + bounded Lane D native acceptance verified on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-13
+> Status: bounded Mechanical 90 A–D provider surface callable and native-verified on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-13
 
 ## Current callable surface
 
@@ -41,6 +41,13 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `configuration_set_property` / `configuration_delete_property` | Document/configuration custom property mutation |
 | `configuration_set_feature_suppressed` | Configuration-specific feature suppression |
 | `configuration_equations_list` / `configuration_equation_add` / `configuration_equation_set` / `configuration_equation_delete` | Equation/global-variable CRUD with canonical read-back |
+| `drawing_create` | Create a new native `.SLDDRW` using the configured/default SOLIDWORKS drawing template |
+| `drawing_sheet_create` | Add and rebuild one explicit drawing sheet |
+| `drawing_front_view_create` | Create the native-accepted Front model view from one native part source |
+| `export_document` | Part → STEP/IGES/Parasolid/STL/3MF or drawing → PDF/DXF/DWG; target overwrite refused |
+| `evaluation_mass_properties` | Read validated part mass, volume, surface area, center of mass, and inertia |
+| `evaluation_bounding_box` | Read a validated approximate part bounding box |
+| `evaluation_geometry_sanity` | Read body/feature-error sanity and fail on native feature errors |
 
 Paths are constrained to configured allowed roots. Create operations refuse to overwrite an existing native document. Unknown tool fields fail loud instead of being silently discarded.
 
@@ -50,16 +57,9 @@ The production native services have been exercised on SOLIDWORKS 2024 through pr
 
 Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet because Cut/Revolve and additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed.
 
-## Lane D native acceptance — registration pending
+## Lane D accepted boundary
 
-Lane D has passed production native acceptance on SOLIDWORKS 2024 SP0.1 for the following bounded subset, but these operations are **not part of the current callable tool table above until shared registrar/validation wiring and public-wrapper smoke tests are complete**:
-
-- drawing creation, additional sheet creation, and a source-associated non-dangling **Front** model view;
-- STEP, IGES, Parasolid, STL, and 3MF export from native parts with independent `LoadFile4` geometry verification;
-- PDF, DXF, and DWG export from native drawings with persisted artifact checks;
-- part mass/volume/surface-area, center-of-mass, inertia, approximate bounding box, and geometry-sanity read-back.
-
-The acceptance boundary deliberately excludes projected/section/detail views, drawing dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF export, measurement/interference tools, and native MBD/DimXpert/PMI. Those remain unavailable until their own deterministic native gates pass.
+The callable Lane D surface above has passed a public-wrapper native smoke on SOLIDWORKS 2024 SP0.1. Geometry exports are independently reopened and checked through SOLIDWORKS; drawing exports persist non-empty typed artifacts; evaluation is read-only. The accepted boundary deliberately excludes projected/section/detail views, drawing dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF export, measurement/interference tools, and native MBD/DimXpert/PMI. Those remain unavailable until their own deterministic native gates pass.
 
 ## Add-in capability status
 

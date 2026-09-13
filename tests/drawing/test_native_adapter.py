@@ -1,8 +1,12 @@
 import unittest
 
-from cdt_solidworks.drawing.domain import DrawingService
+from cdt_solidworks.drawing.domain import DrawingPostconditionError, DrawingService
 from cdt_solidworks.drawing.native import SolidWorksDrawingAdapter
-from cdt_solidworks.native.models import NativeCallResult
+from cdt_solidworks.native.models import (
+    NativeCallResult,
+    NativeCallState,
+    NativeFailure,
+)
 
 
 class FakePathPolicy:
@@ -145,6 +149,21 @@ class FakeSession:
         return NativeCallResult.success(operation(self.app), call_id=stage)
 
 
+class UncertainSession(FakeSession):
+    def execute(self, operation, *, stage, timeout, mutation):
+        return NativeCallResult(
+            state=NativeCallState.UNCERTAIN_AFTER_DISPATCH,
+            call_id="native-call-42",
+            failure=NativeFailure(
+                code="timeout_after_dispatch",
+                stage=stage,
+                message="Timed out after dispatch.",
+                retryable=False,
+            ),
+            dispatched=True,
+        )
+
+
 class SolidWorksDrawingAdapterTests(unittest.TestCase):
     def setUp(self):
         self.target = r"C:\drawings\fixture.SLDDRW"
@@ -182,6 +201,17 @@ class SolidWorksDrawingAdapterTests(unittest.TestCase):
         self.assertFalse(view.dangling)
         self.assertEqual(r"C:\models\part.SLDPRT", view.source_model_path)
         self.assertEqual("front", view.view_kind)
+
+    def test_mutation_timeout_after_dispatch_preserves_uncertain_call_identity(self):
+        adapter = SolidWorksDrawingAdapter(
+            UncertainSession(self.api, self.app),
+            path_policy=FakePathPolicy(),
+            default_timeout=5.0,
+        )
+        with self.assertRaises(DrawingPostconditionError) as caught:
+            adapter.create_drawing(self.target, r"C:\templates\a3.drwdot")
+        self.assertEqual("native_state_uncertain", caught.exception.reason)
+        self.assertIn("call_id=native-call-42", caught.exception.detail or "")
 
 
 if __name__ == "__main__":

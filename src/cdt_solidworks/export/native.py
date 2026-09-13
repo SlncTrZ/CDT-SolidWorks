@@ -149,6 +149,7 @@ class SolidWorksExporter:
                 completed=False,
                 partial=result.state.value == "uncertain_after_dispatch",
                 errors=tuple(errors),
+                call_id=result.call_id,
             )
         return result.value
 

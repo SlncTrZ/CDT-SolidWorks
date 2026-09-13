@@ -177,6 +177,18 @@ class _UnusedSketchService:
     pass
 
 
+class _UnusedDrawingService:
+    pass
+
+
+class _UnusedExportService:
+    pass
+
+
+class _UnusedEvaluationService:
+    pass
+
+
 @pytest.mark.asyncio
 async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path: Path) -> None:
     runtime = IntegratedProviderRuntime(
@@ -185,6 +197,9 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
         document_service=_UnusedDocumentService(),
         cad_service=_UnusedCadService(),
         sketch_service=_UnusedSketchService(),
+        drawing_service=_UnusedDrawingService(),
+        export_service=_UnusedExportService(),
+        evaluation_service=_UnusedEvaluationService(),
     )
     app = build_integrated_network_app(_config(tmp_path), runtime=runtime)
     transport = httpx2.ASGITransport(app=app)
@@ -234,6 +249,16 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                             "unexpected": True,
                         },
                     )
+                with pytest.raises(MCPError) as export_exc_info:
+                    await client.call_tool(
+                        "export_document",
+                        {
+                            "source_path": str(tmp_path / "part.SLDPRT"),
+                            "target_path": str(tmp_path / "part.step"),
+                            "format": "step",
+                            "unexpected": True,
+                        },
+                    )
 
     assert valid.is_error is False
     assert exc_info.value.code == INVALID_PARAMS
@@ -244,3 +269,5 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
     assert "unexpected" in body_exc_info.value.message.lower()
     assert cad_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in cad_exc_info.value.message.lower()
+    assert export_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in export_exc_info.value.message.lower()

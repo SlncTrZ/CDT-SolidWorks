@@ -70,6 +70,13 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "configuration_equation_add": frozenset({"path", "expression"}),
     "configuration_equation_set": frozenset({"path", "identity", "expression"}),
     "configuration_equation_delete": frozenset({"path", "identity"}),
+    "drawing_create": frozenset({"output_path"}),
+    "drawing_sheet_create": frozenset({"path", "sheet_name"}),
+    "drawing_front_view_create": frozenset({"path", "sheet_name", "source_part_path"}),
+    "export_document": frozenset({"source_path", "target_path", "format", "source_configuration"}),
+    "evaluation_mass_properties": frozenset({"path", "configuration"}),
+    "evaluation_bounding_box": frozenset({"path", "configuration"}),
+    "evaluation_geometry_sanity": frozenset({"path", "configuration"}),
 }
 
 

@@ -16,9 +16,16 @@ class ExportRefusal(RuntimeError):
 
 
 class ExportPostconditionError(RuntimeError):
-    def __init__(self, reason: str, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        detail: str | None = None,
+        *,
+        call_id: str | None = None,
+    ) -> None:
         self.reason = reason
         self.detail = detail
+        self.call_id = call_id
         super().__init__(reason if detail is None else f"{reason}: {detail}")
 
 
@@ -49,6 +56,7 @@ class NativeExportResult:
     completed: bool
     partial: bool
     errors: tuple[str, ...] = ()
+    call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,7 +125,13 @@ class ExportService:
             raise ExportRefusal("path_not_allowed", request.target_path)
 
         native = self._exporter.export(request)
-        if not native.completed or native.partial or native.errors:
+        if native.partial:
+            raise ExportPostconditionError(
+                "native_state_uncertain",
+                "; ".join(native.errors),
+                call_id=native.call_id,
+            )
+        if not native.completed or native.errors:
             raise ExportPostconditionError(
                 "native_export_incomplete", "; ".join(native.errors)
             )

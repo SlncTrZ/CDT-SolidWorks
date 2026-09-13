@@ -65,6 +65,13 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `configuration_set_property`, `configuration_delete_property` — mutate document/configuration custom properties.
 - `configuration_set_feature_suppressed` — set feature suppression for one explicit configuration.
 - `configuration_equations_list`, `configuration_equation_add`, `configuration_equation_set`, `configuration_equation_delete` — bounded equation/global-variable CRUD.
+- `drawing_create` — create one new native drawing under the configured path policy.
+- `drawing_sheet_create` — add and rebuild one explicit drawing sheet.
+- `drawing_front_view_create` — create the native-accepted Front view from one native part source.
+- `export_document` — export only accepted source/format pairs: part → STEP/IGES/Parasolid/STL/3MF, drawing → PDF/DXF/DWG.
+- `evaluation_mass_properties` — read validated part mass/volume/area, center of mass, and inertia.
+- `evaluation_bounding_box` — read a validated approximate part bounding box.
+- `evaluation_geometry_sanity` — read body/error sanity and fail when native feature errors exist.
 
 All CAD paths are constrained by the same configured path policy as document operations. The provider does not expose arbitrary macros, scripts, COM method names, or raw native API argument lists.
 
@@ -99,10 +106,23 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.configuration.properties`
 - `solidworks.configuration.feature_suppression`
 - `solidworks.configuration.equations`
+- `solidworks.drawing.lifecycle`
+- `solidworks.drawing.front_view`
+- `solidworks.export.step`
+- `solidworks.export.iges`
+- `solidworks.export.parasolid`
+- `solidworks.export.stl`
+- `solidworks.export.3mf`
+- `solidworks.export.pdf`
+- `solidworks.export.dxf`
+- `solidworks.export.dwg`
+- `solidworks.evaluation.mass_properties`
+- `solidworks.evaluation.bounding_box`
+- `solidworks.evaluation.geometry_sanity`
 
 Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support` until the remaining parametric feature family, including production Cut/Revolve coverage, is complete. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
 
-Lane D has native acceptance evidence for drawing lifecycle (create/sheet/Front view), STEP/IGES/Parasolid/STL/3MF geometry export, PDF/DXF/DWG drawing export, and bounded part evaluation. Shared provider registration is still being integrated, so those Lane D operations must not be treated as callable provider tools until registrar/validation wiring and public-wrapper native smoke tests complete. Broad `solidworks.drawing`, `solidworks.export`, and `solidworks.evaluation` remain partial rather than implying family-wide support; `solidworks.license` remains unavailable.
+Lane D's bounded drawing lifecycle, STEP/IGES/Parasolid/STL/3MF geometry export, PDF/DXF/DWG drawing export, and part evaluation are now callable and have passed public-wrapper native smoke. Broad `solidworks.drawing`, `solidworks.export`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
 
 The Lane D acceptance boundary still excludes projected/section/detail views, dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF, measurement/interference, and native MBD/DimXpert/PMI.
 

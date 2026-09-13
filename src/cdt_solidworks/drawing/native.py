@@ -354,6 +354,13 @@ class SolidWorksDrawingAdapter:
             timeout=self._default_timeout,
             mutation=mutation,
         )
+        if result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH:
+            detail = result.state.value
+            if result.failure is not None:
+                detail = f"{result.failure.code}@{result.failure.stage}"
+            raise DrawingPostconditionError(
+                "native_state_uncertain", f"call_id={result.call_id}; {detail}"
+            )
         if result.state is not NativeCallState.SUCCESS:
             detail = result.state.value
             if result.failure is not None:

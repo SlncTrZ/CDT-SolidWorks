@@ -19,6 +19,11 @@ from cdt_solidworks.integration.assembly_config import (
     IntegratedAssemblyService,
     IntegratedConfigurationService,
 )
+from cdt_solidworks.integration.drawing_export_eval import (
+    IntegratedDrawingService,
+    IntegratedEvaluationService,
+    IntegratedExportService,
+)
 from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
 
 
@@ -41,6 +46,9 @@ class IntegratedProviderRuntime:
         weldment_service: Any | None = None,
         assembly_service: Any | None = None,
         configuration_service: Any | None = None,
+        drawing_service: Any | None = None,
+        export_service: Any | None = None,
+        evaluation_service: Any | None = None,
     ) -> None:
         self.version = version
         self.session = session if session is not None else SolidWorksSession()
@@ -66,6 +74,9 @@ class IntegratedProviderRuntime:
         self.weldment_profiles_configured = bool(self.weldment_profile_roots) or weldment_service is not None
         self.assembly_service = assembly_service
         self.configuration_service = configuration_service
+        self.drawing_service = drawing_service
+        self.export_service = export_service
+        self.evaluation_service = evaluation_service
         if hasattr(self.session, "api"):
             if self.body_service is None:
                 self.body_service = BodyNativeAdapter(self.session, path_policy=self.path_policy)
@@ -85,6 +96,18 @@ class IntegratedProviderRuntime:
                 )
             if self.configuration_service is None:
                 self.configuration_service = IntegratedConfigurationService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.drawing_service is None:
+                self.drawing_service = IntegratedDrawingService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.export_service is None:
+                self.export_service = IntegratedExportService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.evaluation_service is None:
+                self.evaluation_service = IntegratedEvaluationService(
                     self.session, path_policy=self.path_policy
                 )
 
@@ -140,6 +163,15 @@ class IntegratedProviderRuntime:
         configuration_implemented = self.configuration_service is not None
         configuration_available = configuration_implemented and available
         configuration_reason = integrated_reason if configuration_implemented else deferred_reason
+        drawing_implemented = self.drawing_service is not None
+        drawing_available = drawing_implemented and available
+        drawing_reason = integrated_reason if drawing_implemented else deferred_reason
+        export_implemented = self.export_service is not None
+        export_available = export_implemented and available
+        export_reason = integrated_reason if export_implemented else deferred_reason
+        evaluation_implemented = self.evaluation_service is not None
+        evaluation_available = evaluation_implemented and available
+        evaluation_reason = integrated_reason if evaluation_implemented else deferred_reason
         assembly_components_implemented = cad_implemented or assembly_implemented
         assembly_components_available = assembly_components_implemented and available
         assembly_components_reason = integrated_reason if assembly_components_implemented else deferred_reason
@@ -445,15 +477,82 @@ class IntegratedProviderRuntime:
                 dependencies=("solidworks",),
             ),
             CapabilityState(
-                name="solidworks.drawing",
-                implemented=False,
-                available=False,
-                reason=deferred_reason,
+                name="solidworks.drawing.lifecycle",
+                implemented=drawing_implemented,
+                available=drawing_available,
+                reason=drawing_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
             CapabilityState(
+                name="solidworks.drawing.front_view",
+                implemented=drawing_implemented,
+                available=drawing_available,
+                reason=drawing_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.drawing",
+                implemented=False,
+                available=False,
+                reason=partial_reason if drawing_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.export.{name}",
+                    implemented=export_implemented,
+                    available=export_available,
+                    reason=export_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg")
+            ),
+            CapabilityState(
                 name="solidworks.export",
+                implemented=False,
+                available=False,
+                reason=partial_reason if export_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.mass_properties",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.bounding_box",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.geometry_sanity",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation",
+                implemented=False,
+                available=False,
+                reason=partial_reason if evaluation_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.mbd",
                 implemented=False,
                 available=False,
                 reason=deferred_reason,
