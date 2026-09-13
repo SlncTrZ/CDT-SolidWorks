@@ -70,6 +70,15 @@ class SolidWorksSession:
 
         def operation() -> ApplicationProbe:
             registered = bool(self.api.prog_id_registered(prog_id))
+            if self._application is not None:
+                revision = self.api.revision_number(self._application)
+                return ApplicationProbe(
+                    prog_id=prog_id,
+                    registered=registered,
+                    running=True,
+                    revision=revision,
+                    version_year=self.year_from_revision(revision),
+                )
             try:
                 app = self.api.attach_application(prog_id)
             except Exception:

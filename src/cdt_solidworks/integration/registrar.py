@@ -31,9 +31,16 @@ def _error_code(native_code: str) -> str:
         return ErrorCode.TIMEOUT.value
     if native_code in {"document_not_found", "document_not_open"}:
         return ErrorCode.NOT_FOUND.value
-    if native_code in {"stale_document_context", "document_context_mismatch", "uncertain_state"}:
+    if native_code in {
+        "cad_precondition_failed",
+        "document_already_exists",
+        "stale_document_context",
+        "document_context_mismatch",
+        "uncertain_state",
+    }:
         return ErrorCode.CONFLICT.value
     if native_code.startswith("path_") or native_code in {
+        "cad_validation_error",
         "document_type_mismatch",
         "document_extension_mismatch",
         "document_type_unknown",
@@ -207,3 +214,106 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
     @server.tool(name="document_reconcile", description="Reconcile an uncertain document mutation before dependent writes continue.")
     def document_reconcile(call_id: str, path: str, expected_type: Literal["part", "assembly", "drawing"], should_be_open: bool) -> dict[str, Any]:
         return _result_payload(runtime.document_service.reconcile_document_state(call_id, path=path, expected_type=_document_type(expected_type), should_be_open=should_be_open))
+
+
+    if runtime.cad_service is None:
+        return
+
+    @server.tool(name="sketch_create_rectangle", description="Create a native SOLIDWORKS part containing one rectangular 2D sketch on a standard plane.")
+    def sketch_create_rectangle(
+        output_path: str,
+        width_mm: float,
+        height_mm: float,
+        plane: Literal["front", "top", "right"] = "front",
+        center_x_mm: float = 0.0,
+        center_y_mm: float = 0.0,
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.create_rectangle_sketch(
+            output_path, width_mm=width_mm, height_mm=height_mm, plane=plane,
+            center_x_mm=center_x_mm, center_y_mm=center_y_mm
+        ))
+
+    @server.tool(name="part_create_rect_extrude", description="Create a rectangular sketch and native solid extrude in a new SOLIDWORKS part.")
+    def part_create_rect_extrude(
+        output_path: str,
+        width_mm: float,
+        height_mm: float,
+        depth_mm: float,
+        plane: Literal["front", "top", "right"] = "front",
+        center_x_mm: float = 0.0,
+        center_y_mm: float = 0.0,
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.create_rect_extrude(
+            output_path, width_mm=width_mm, height_mm=height_mm, depth_mm=depth_mm,
+            plane=plane, center_x_mm=center_x_mm, center_y_mm=center_y_mm
+        ))
+
+    @server.tool(name="part_add_rect_extrude", description="Add a rectangular extrusion to an existing part; merge=false creates a separate solid body.")
+    def part_add_rect_extrude(
+        path: str,
+        width_mm: float,
+        height_mm: float,
+        depth_mm: float,
+        plane: Literal["front", "top", "right"] = "front",
+        center_x_mm: float = 0.0,
+        center_y_mm: float = 0.0,
+        merge: bool = True,
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.add_rect_extrude(
+            path, width_mm=width_mm, height_mm=height_mm, depth_mm=depth_mm,
+            plane=plane, center_x_mm=center_x_mm, center_y_mm=center_y_mm, merge=merge
+        ))
+
+    @server.tool(name="part_combine_all_bodies", description="Combine all solid bodies in a native SOLIDWORKS part using Boolean Add semantics.")
+    def part_combine_all_bodies(path: str) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.combine_all_bodies(path))
+
+    @server.tool(name="part_split_by_plane", description="Split a solid part by one standard reference plane and retain resulting bodies in the part.")
+    def part_split_by_plane(path: str, plane: Literal["front", "top", "right"]) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.split_by_plane(path, plane=plane))
+
+    @server.tool(name="sheet_metal_create_base_flange", description="Create a native SOLIDWORKS sheet-metal base flange with explicit thickness and bend radius.")
+    def sheet_metal_create_base_flange(
+        output_path: str,
+        width_mm: float,
+        height_mm: float,
+        thickness_mm: float,
+        bend_radius_mm: float,
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.create_sheet_metal_base_flange(
+            output_path, width_mm=width_mm, height_mm=height_mm,
+            thickness_mm=thickness_mm, bend_radius_mm=bend_radius_mm
+        ))
+
+    @server.tool(name="surface_create_extrude", description="Create a native extruded surface from a line sketch on a standard reference plane.")
+    def surface_create_extrude(
+        output_path: str,
+        line_length_mm: float,
+        depth_mm: float,
+        plane: Literal["front", "top", "right"] = "front",
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.create_surface_extrude(
+            output_path, line_length_mm=line_length_mm, depth_mm=depth_mm, plane=plane
+        ))
+
+    @server.tool(name="assembly_create", description="Create a native assembly from explicit component paths and xyz placements in millimeters.")
+    def assembly_create(
+        output_path: str,
+        component_paths: list[str],
+        placements_mm: list[list[float]],
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.create_assembly(
+            output_path, component_paths=component_paths, placements_mm=placements_mm
+        ))
+
+    @server.tool(name="assembly_add_coincident_plane_mate", description="Create a coincident mate between a component standard plane and an assembly standard plane.")
+    def assembly_add_coincident_plane_mate(
+        path: str,
+        component_name: str,
+        component_plane: Literal["front", "top", "right"],
+        assembly_plane: Literal["front", "top", "right"],
+    ) -> dict[str, Any]:
+        return _result_payload(runtime.cad_service.add_coincident_plane_mate(
+            path, component_name=component_name, component_plane=component_plane,
+            assembly_plane=assembly_plane
+        ))

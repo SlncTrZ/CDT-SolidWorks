@@ -169,12 +169,17 @@ class _UnusedDocumentService:
     pass
 
 
+class _UnusedCadService:
+    pass
+
+
 @pytest.mark.asyncio
 async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path: Path) -> None:
     runtime = IntegratedProviderRuntime(
         allowed_roots=(tmp_path,),
         session=_IntegrationProbeSession(),
         document_service=_UnusedDocumentService(),
+        cad_service=_UnusedCadService(),
     )
     app = build_integrated_network_app(_config(tmp_path), runtime=runtime)
     transport = httpx2.ASGITransport(app=app)
@@ -194,7 +199,19 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                 valid = await client.call_tool("application_probe")
                 with pytest.raises(MCPError) as exc_info:
                     await client.call_tool("application_probe", {"unexpected": True})
+                with pytest.raises(MCPError) as cad_exc_info:
+                    await client.call_tool(
+                        "sketch_create_rectangle",
+                        {
+                            "output_path": str(tmp_path / "part.SLDPRT"),
+                            "width_mm": 20.0,
+                            "height_mm": 10.0,
+                            "unexpected": True,
+                        },
+                    )
 
     assert valid.is_error is False
     assert exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in exc_info.value.message.lower()
+    assert cad_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in cad_exc_info.value.message.lower()

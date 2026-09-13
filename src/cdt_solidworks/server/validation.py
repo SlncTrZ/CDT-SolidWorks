@@ -28,6 +28,15 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "document_list_components": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp", "top_level_only"}),
     "document_rebuild": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
     "document_reconcile": frozenset({"call_id", "path", "expected_type", "should_be_open"}),
+    "sketch_create_rectangle": frozenset({"output_path", "width_mm", "height_mm", "plane", "center_x_mm", "center_y_mm"}),
+    "part_create_rect_extrude": frozenset({"output_path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm"}),
+    "part_add_rect_extrude": frozenset({"path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm", "merge"}),
+    "part_combine_all_bodies": frozenset({"path"}),
+    "part_split_by_plane": frozenset({"path", "plane"}),
+    "sheet_metal_create_base_flange": frozenset({"output_path", "width_mm", "height_mm", "thickness_mm", "bend_radius_mm"}),
+    "surface_create_extrude": frozenset({"output_path", "line_length_mm", "depth_mm", "plane"}),
+    "assembly_create": frozenset({"output_path", "component_paths", "placements_mm"}),
+    "assembly_add_coincident_plane_mate": frozenset({"path", "component_name", "component_plane", "assembly_plane"}),
 }
 
 

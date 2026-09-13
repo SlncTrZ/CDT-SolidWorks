@@ -52,6 +52,8 @@ class WindowsComApi:
         member = getattr(obj, name)
         if args:
             return member(*args)
+        if hasattr(member, "_oleobj_"):
+            return member
         return member() if callable(member) else member
 
     def prog_id_registered(self, prog_id: str) -> bool:
@@ -238,6 +240,31 @@ class WindowsComApi:
             return str(self._member(body, "Name"))
         except Exception:
             return str(self._member(body, "GetName"))
+
+    def null_dispatch(self) -> Any:
+        self._require_client()
+        return self._client.VARIANT(self._pythoncom.VT_DISPATCH, None)
+
+    def dispatch_array(self, values: Any) -> Any:
+        self._require_client()
+        return self._client.VARIANT(
+            self._pythoncom.VT_ARRAY | self._pythoncom.VT_DISPATCH,
+            tuple(values),
+        )
+
+    def string_array(self, values: Any) -> Any:
+        self._require_client()
+        return self._client.VARIANT(
+            self._pythoncom.VT_ARRAY | self._pythoncom.VT_BSTR,
+            tuple(str(value) for value in values),
+        )
+
+    def empty_variant_array(self) -> Any:
+        self._require_client()
+        return self._client.VARIANT(
+            self._pythoncom.VT_ARRAY | self._pythoncom.VT_VARIANT,
+            (),
+        )
 
     def components(self, model: Any, top_level_only: bool) -> tuple[Any, ...]:
         value = model.GetComponents(bool(top_level_only))

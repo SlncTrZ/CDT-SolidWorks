@@ -57,6 +57,24 @@ class SolidWorksSessionTests(unittest.TestCase):
         finally:
             session.close_dispatcher(timeout=0.5)
 
+    def test_probe_prefers_bound_session_when_provider_owned_instance_is_not_in_rot(self) -> None:
+        started = object()
+        api = FakeComApi(start_app=started, attach_app=None, registered=True)
+        session = SolidWorksSession(api=api)
+        try:
+            connected = session.connect(policy=AttachPolicy.START_NEW, timeout=0.5)
+            self.assertEqual(NativeCallState.SUCCESS, connected.state)
+
+            probed = session.probe(version=2026, timeout=0.5)
+
+            self.assertEqual(NativeCallState.SUCCESS, probed.state)
+            self.assertTrue(probed.value.registered)
+            self.assertTrue(probed.value.running)
+            self.assertEqual("34.1.1", probed.value.revision)
+        finally:
+            session.disconnect(timeout=0.5)
+            session.close_dispatcher(timeout=0.5)
+
     def test_probe_reports_registered_but_not_running_without_starting(self) -> None:
         api = FakeComApi(registered=True)
         session = SolidWorksSession(api=api)
