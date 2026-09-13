@@ -1,8 +1,7 @@
-"""Lane-C runtime seam for part/sketch domain services.
+"""Mechanical-90 lane-A runtime seam for part/sketch domain services.
 
-The protocol intentionally describes semantic operations only. Agent E can adapt the
-accepted Agent-B native/document runtime to this seam without Agent C importing or
-copying Agent-B implementation details.
+The protocol exposes semantic operations only. Integration binds these methods to the
+accepted shared native/session primitives without copying or bypassing that runtime.
 """
 
 from __future__ import annotations
@@ -13,12 +12,32 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from cdt_solidworks.part.models import (
         BodySnapshot,
+        ChamferSpec,
+        CircularPatternSpec,
         CutSpec,
+        DraftSpec,
         ExtrudeSpec,
         FeatureSnapshot,
+        FilletSpec,
+        HoleSpec,
+        LinearPatternSpec,
+        LoftSpec,
+        MirrorSpec,
+        ReferenceAxisSpec,
+        ReferencePlaneSpec,
+        ReferencePointSpec,
+        RevolveCutSpec,
         RevolveSpec,
+        RibSpec,
+        ShellSpec,
+        SweepSpec,
     )
-    from cdt_solidworks.sketch.models import SketchDefinition, SketchSnapshot
+    from cdt_solidworks.sketch.models import (
+        SketchDefinition,
+        SketchDimensionSnapshot,
+        SketchRelationSnapshot,
+        SketchSnapshot,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +77,7 @@ class RebuildResult:
 
 
 class PartSketchRuntime(Protocol):
-    """Narrow service seam Agent E must bind to the accepted native runtime."""
+    """Narrow semantic seam integration must bind to the accepted native runtime."""
 
     def resolve_document(self, target: DocumentTarget) -> ResolvedDocument: ...
 
@@ -73,6 +92,35 @@ class PartSketchRuntime(Protocol):
         document: ResolvedDocument,
         sketch_id: str,
     ) -> SketchSnapshot | None: ...
+
+    def list_sketch_relations(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+    ) -> tuple[SketchRelationSnapshot, ...]: ...
+
+    def delete_sketch_relation(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        relation_id: str,
+    ) -> MutationReceipt: ...
+
+    def set_sketch_dimension(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        name: str,
+        value: float,
+        unit: str,
+    ) -> MutationReceipt: ...
+
+    def get_sketch_dimension(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        name: str,
+    ) -> SketchDimensionSnapshot | None: ...
 
     def create_extrude(
         self,
@@ -90,6 +138,103 @@ class PartSketchRuntime(Protocol):
         self,
         document: ResolvedDocument,
         spec: RevolveSpec,
+    ) -> MutationReceipt: ...
+
+    def create_revolve_cut(
+        self,
+        document: ResolvedDocument,
+        spec: RevolveCutSpec,
+    ) -> MutationReceipt: ...
+
+    def create_hole(
+        self,
+        document: ResolvedDocument,
+        spec: HoleSpec,
+    ) -> MutationReceipt: ...
+
+    def create_fillet(
+        self,
+        document: ResolvedDocument,
+        spec: FilletSpec,
+    ) -> MutationReceipt: ...
+
+    def create_chamfer(
+        self,
+        document: ResolvedDocument,
+        spec: ChamferSpec,
+    ) -> MutationReceipt: ...
+
+    def create_shell(
+        self,
+        document: ResolvedDocument,
+        spec: ShellSpec,
+    ) -> MutationReceipt: ...
+
+    def create_draft(
+        self,
+        document: ResolvedDocument,
+        spec: DraftSpec,
+    ) -> MutationReceipt: ...
+
+    def create_rib(
+        self,
+        document: ResolvedDocument,
+        spec: RibSpec,
+    ) -> MutationReceipt: ...
+
+    def create_linear_pattern(
+        self,
+        document: ResolvedDocument,
+        spec: LinearPatternSpec,
+    ) -> MutationReceipt: ...
+
+    def create_circular_pattern(
+        self,
+        document: ResolvedDocument,
+        spec: CircularPatternSpec,
+    ) -> MutationReceipt: ...
+
+    def create_mirror(
+        self,
+        document: ResolvedDocument,
+        spec: MirrorSpec,
+    ) -> MutationReceipt: ...
+
+    def create_sweep(
+        self,
+        document: ResolvedDocument,
+        spec: SweepSpec,
+    ) -> MutationReceipt: ...
+
+    def create_loft(
+        self,
+        document: ResolvedDocument,
+        spec: LoftSpec,
+    ) -> MutationReceipt: ...
+
+    def create_reference_plane(
+        self,
+        document: ResolvedDocument,
+        spec: ReferencePlaneSpec,
+    ) -> MutationReceipt: ...
+
+    def create_reference_axis(
+        self,
+        document: ResolvedDocument,
+        spec: ReferenceAxisSpec,
+    ) -> MutationReceipt: ...
+
+    def create_reference_point(
+        self,
+        document: ResolvedDocument,
+        spec: ReferencePointSpec,
+    ) -> MutationReceipt: ...
+
+    def set_feature_suppressed(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        suppressed: bool,
     ) -> MutationReceipt: ...
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...
