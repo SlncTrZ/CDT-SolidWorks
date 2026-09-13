@@ -18,11 +18,12 @@ The provider has native Windows evidence for:
 - body Combine and Split;
 - sheet-metal Base Flange;
 - extruded surfaces;
-- assembly component insertion;
-- coincident standard-plane mates;
+- assembly component insertion plus fix/float, suppress/resolve, and referenced-configuration state;
+- Coincident, Parallel, Perpendicular, Distance, and Angle mate creation, with accepted Coincident suppression and Distance value editing;
+- bounded configuration lifecycle, configuration-specific dimensions/properties/feature suppression, and equation/global-variable CRUD;
 - rebuild/error validation and bounded path policy.
 
-The provider intentionally does **not** claim full part, assembly, drawing, Simulation, Motion, Routing, Flow Simulation or Electrical coverage until each capability family has production wiring and native acceptance evidence.
+The provider intentionally does **not** claim full part, assembly, configuration, drawing, Simulation, Motion, Routing, Flow Simulation or Electrical coverage until each capability family has production wiring and native acceptance evidence. Assembly and configuration promotion is granular; unverified mate families, design-table behavior, and other uncovered subfamilies remain partial/unavailable.
 
 ## Correctness rules
 

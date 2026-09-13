@@ -333,6 +333,16 @@ class AssemblyService:
             raise AssemblyPostconditionError("duplicate_mate_identity")
         return mates
 
+    def read_mate(self, assembly_id: str, mate_id: str) -> MateSnapshot:
+        self._require_identity("assembly_id", assembly_id)
+        self._require_identity("mate_id", mate_id)
+        mate = self._adapter.read_mate(assembly_id, mate_id)
+        if mate.identity != mate_id:
+            raise AssemblyPostconditionError(
+                "mate_identity_readback_mismatch", mate.identity
+            )
+        return mate
+
     def set_mate_suppressed(
         self, assembly_id: str, mate_id: str, suppressed: bool
     ) -> MateSnapshot:

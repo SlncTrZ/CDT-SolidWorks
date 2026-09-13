@@ -237,6 +237,11 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
             mate = self.service.add_mate("asm-1", request)
             self.assertEqual(kind, mate.kind)
 
+    def test_read_mate_preserves_explicit_identity(self):
+        mate = self.service.read_mate("asm-1", "MateCoincident1")
+        self.assertEqual("MateCoincident1", mate.identity)
+        self.assertEqual(MateKind.COINCIDENT, mate.kind)
+
     def test_mate_list_has_unique_stable_identity(self):
         mates = self.service.list_mates("asm-1")
         self.assertEqual(("MateCoincident1",), tuple(item.identity for item in mates))

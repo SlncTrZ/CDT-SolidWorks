@@ -15,6 +15,10 @@ from cdt_solidworks.native.cad_core import CadCoreService
 from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.native.session import SolidWorksSession
 from cdt_solidworks.integration.sketch import IntegratedSketchService
+from cdt_solidworks.integration.assembly_config import (
+    IntegratedAssemblyService,
+    IntegratedConfigurationService,
+)
 from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
 
 
@@ -35,6 +39,8 @@ class IntegratedProviderRuntime:
         surface_service: Any | None = None,
         sheetmetal_service: Any | None = None,
         weldment_service: Any | None = None,
+        assembly_service: Any | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
         self.version = version
         self.session = session if session is not None else SolidWorksSession()
@@ -58,6 +64,8 @@ class IntegratedProviderRuntime:
         self.weldment_profile_roots = tuple(weldment_profile_roots)
         self.weldment_service = weldment_service
         self.weldment_profiles_configured = bool(self.weldment_profile_roots) or weldment_service is not None
+        self.assembly_service = assembly_service
+        self.configuration_service = configuration_service
         if hasattr(self.session, "api"):
             if self.body_service is None:
                 self.body_service = BodyNativeAdapter(self.session, path_policy=self.path_policy)
@@ -70,6 +78,14 @@ class IntegratedProviderRuntime:
                     self.session,
                     path_policy=self.path_policy,
                     profile_roots=self.weldment_profile_roots,
+                )
+            if self.assembly_service is None:
+                self.assembly_service = IntegratedAssemblyService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.configuration_service is None:
+                self.configuration_service = IntegratedConfigurationService(
+                    self.session, path_policy=self.path_policy
                 )
 
     def runtime_context(self) -> RuntimeContext:
@@ -118,6 +134,15 @@ class IntegratedProviderRuntime:
         weldment_implemented = self.weldment_service is not None
         weldment_available = weldment_implemented and available
         weldment_reason = integrated_reason if weldment_implemented else deferred_reason
+        assembly_implemented = self.assembly_service is not None
+        assembly_available = assembly_implemented and available
+        assembly_reason = integrated_reason if assembly_implemented else deferred_reason
+        configuration_implemented = self.configuration_service is not None
+        configuration_available = configuration_implemented and available
+        configuration_reason = integrated_reason if configuration_implemented else deferred_reason
+        assembly_components_implemented = cad_implemented or assembly_implemented
+        assembly_components_available = assembly_components_implemented and available
+        assembly_components_reason = integrated_reason if assembly_components_implemented else deferred_reason
         if not available:
             structural_member_available = False
             structural_member_reason = integrated_reason
@@ -309,17 +334,57 @@ class IntegratedProviderRuntime:
             ),
             CapabilityState(
                 name="solidworks.assembly.components",
-                implemented=cad_implemented,
-                available=cad_available,
-                reason=cad_reason,
+                implemented=assembly_components_implemented,
+                available=assembly_components_available,
+                reason=assembly_components_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_state",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_configuration",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
             CapabilityState(
                 name="solidworks.assembly.coincident_mate",
-                implemented=cad_implemented,
-                available=cad_available,
-                reason=cad_reason,
+                implemented=cad_implemented or assembly_implemented,
+                available=(cad_implemented or assembly_implemented) and available,
+                reason=integrated_reason if (cad_implemented or assembly_implemented) else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.common_mates",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.coincident_mate_suppression",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.distance_mate_value",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
@@ -327,7 +392,47 @@ class IntegratedProviderRuntime:
                 name="solidworks.assembly.mates",
                 implemented=False,
                 available=False,
-                reason=partial_reason if cad_implemented else deferred_reason,
+                reason=partial_reason if (cad_implemented or assembly_implemented) else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.lifecycle",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.dimension",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.properties",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.feature_suppression",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.equations",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
@@ -335,7 +440,7 @@ class IntegratedProviderRuntime:
                 name="solidworks.configurations",
                 implemented=False,
                 available=False,
-                reason=deferred_reason,
+                reason=partial_reason if configuration_implemented else deferred_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),

@@ -29,7 +29,7 @@ def _jsonable(value: Any) -> Any:
 def _error_code(native_code: str) -> str:
     if native_code.startswith("timeout"):
         return ErrorCode.TIMEOUT.value
-    if native_code in {"document_not_found", "document_not_open"}:
+    if native_code in {"document_not_found", "document_not_open"} or native_code.startswith("missing_"):
         return ErrorCode.NOT_FOUND.value
     if native_code in {
         "cad_precondition_failed",
@@ -37,14 +37,28 @@ def _error_code(native_code: str) -> str:
         "stale_document_context",
         "document_context_mismatch",
         "uncertain_state",
-    }:
+        "native_state_uncertain",
+        "configuration_exists",
+        "cannot_delete_active_configuration",
+        "cannot_delete_last_configuration",
+        "equation_exists",
+        "rebuild_failed",
+    } or native_code.endswith("_readback_mismatch"):
         return ErrorCode.CONFLICT.value
-    if native_code.startswith("path_") or native_code in {
-        "cad_validation_error",
-        "document_type_mismatch",
-        "document_extension_mismatch",
-        "document_type_unknown",
-    }:
+    if (
+        native_code.startswith("path_")
+        or native_code.startswith("invalid_")
+        or native_code.startswith("unsupported_")
+        or native_code in {
+            "cad_validation_error",
+            "document_type_mismatch",
+            "document_extension_mismatch",
+            "document_type_unknown",
+            "mate_alignment_not_supported",
+            "mate_value_not_supported",
+            "mate_value_required",
+        }
+    ):
         return ErrorCode.VALIDATION_ERROR.value
     if native_code.startswith("solidworks_") or native_code == "session_not_connected":
         return ErrorCode.PROVIDER_UNAVAILABLE.value
@@ -314,6 +328,108 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 apply_corner_treatment=apply_corner_treatment,
                 corner_treatment_type=corner_treatment_type,
             ))
+
+    if runtime.assembly_service is not None:
+        @server.tool(name="assembly_components_list", description="List native assembly components using explicit path identity; recursive traversal is bounded by the lane adapter.")
+        def assembly_components_list(path: str, recursive: bool = False) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.list_components(path, recursive=recursive))
+
+        @server.tool(name="assembly_component_set_fixed", description="Set one explicitly identified assembly component fixed or floating and verify read-back.")
+        def assembly_component_set_fixed(path: str, component_id: str, fixed: bool) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_component_fixed(path, component_id, fixed))
+
+        @server.tool(name="assembly_component_set_load_state", description="Set one component to resolved or suppressed; lightweight is intentionally not exposed without native acceptance evidence.")
+        def assembly_component_set_load_state(
+            path: str, component_id: str, state: Literal["resolved", "suppressed"]
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_component_load_state(path, component_id, state))
+
+        @server.tool(name="assembly_component_set_configuration", description="Set and read back the referenced configuration for one explicitly identified assembly component.")
+        def assembly_component_set_configuration(path: str, component_id: str, configuration: str) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_component_configuration(path, component_id, configuration))
+
+        @server.tool(name="assembly_mate_create", description="Create one native-accepted common mate: coincident, parallel, perpendicular, distance, or angle, using explicit bounded selection references.")
+        def assembly_mate_create(
+            path: str,
+            kind: Literal["coincident", "parallel", "perpendicular", "distance", "angle"],
+            selection_refs: list[str],
+            value: float | None = None,
+            alignment: Literal["aligned", "anti_aligned", "closest"] | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.create_mate(
+                path, kind=kind, selection_refs=selection_refs, value=value, alignment=alignment
+            ))
+
+        @server.tool(name="assembly_mates_list", description="List native assembly mates with stable feature identity and bounded mate-family classification.")
+        def assembly_mates_list(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.list_mates(path))
+
+        @server.tool(name="assembly_coincident_mate_set_suppressed", description="Suppress or unsuppress one mate only when read-back identifies it as a native-accepted coincident mate.")
+        def assembly_coincident_mate_set_suppressed(path: str, mate_id: str, suppressed: bool) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_coincident_mate_suppressed(path, mate_id, suppressed))
+
+        @server.tool(name="assembly_distance_mate_set_value", description="Edit one native-accepted distance mate value in system units and verify solved read-back.")
+        def assembly_distance_mate_set_value(path: str, mate_id: str, value: float) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_distance_mate_value(path, mate_id, value))
+
+    if runtime.configuration_service is not None:
+        @server.tool(name="configuration_list", description="List stable configuration identities for an explicitly addressed native part or assembly.")
+        def configuration_list(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.list(path))
+
+        @server.tool(name="configuration_create", description="Create a native configuration, optionally derived from one explicit parent, while restoring prior active context.")
+        def configuration_create(path: str, name: str, parent: str | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.create(path, name, parent))
+
+        @server.tool(name="configuration_rename", description="Rename one explicit native configuration with identity read-back.")
+        def configuration_rename(path: str, old_name: str, new_name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.rename(path, old_name, new_name))
+
+        @server.tool(name="configuration_delete", description="Delete one non-active native configuration and verify absence after rebuild.")
+        def configuration_delete(path: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.delete(path, name))
+
+        @server.tool(name="configuration_activate", description="Activate one explicit native configuration and verify exact active-configuration read-back.")
+        def configuration_activate(path: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.activate(path, name))
+
+        @server.tool(name="configuration_set_dimension", description="Set one configuration-specific model dimension in SOLIDWORKS system units, rebuild, and verify read-back.")
+        def configuration_set_dimension(path: str, configuration: str, dimension_name: str, value: float) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_dimension(path, configuration, dimension_name, value))
+
+        @server.tool(name="configuration_set_property", description="Set one document-level or configuration-specific custom property and verify read-back.")
+        def configuration_set_property(
+            path: str, property_name: str, value: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_property(path, configuration, property_name, value))
+
+        @server.tool(name="configuration_delete_property", description="Delete one document-level or configuration-specific custom property and verify absence.")
+        def configuration_delete_property(
+            path: str, property_name: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.delete_property(path, configuration, property_name))
+
+        @server.tool(name="configuration_set_feature_suppressed", description="Set one feature suppression state in one explicit configuration and verify configuration-specific read-back.")
+        def configuration_set_feature_suppressed(
+            path: str, configuration: str, feature_id: str, suppressed: bool
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_feature_suppressed(path, configuration, feature_id, suppressed))
+
+        @server.tool(name="configuration_equations_list", description="List bounded equation/global-variable identities, canonical expressions, values, and disabled state.")
+        def configuration_equations_list(path: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.list_equations(path))
+
+        @server.tool(name="configuration_equation_add", description="Add one equation/global variable, rebuild, and verify canonical identity/read-back.")
+        def configuration_equation_add(path: str, expression: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.add_equation(path, expression))
+
+        @server.tool(name="configuration_equation_set", description="Edit one existing equation without changing its stable left-hand identity, then rebuild and verify read-back.")
+        def configuration_equation_set(path: str, identity: str, expression: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_equation(path, identity, expression))
+
+        @server.tool(name="configuration_equation_delete", description="Delete one explicit equation/global-variable identity and verify absence after rebuild.")
+        def configuration_equation_delete(path: str, identity: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.delete_equation(path, identity))
 
     if runtime.cad_service is None:
         return

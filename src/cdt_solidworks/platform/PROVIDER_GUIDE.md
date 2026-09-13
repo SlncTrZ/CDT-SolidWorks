@@ -43,6 +43,19 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `surface_create_extrude` — create an extruded surface and verify surface-body read-back.
 - `assembly_create` — create an assembly from explicit native component paths and XYZ placements.
 - `assembly_add_coincident_plane_mate` — create one coincident mate between a component standard plane and an assembly standard plane.
+- `assembly_components_list` — list native assembly components by explicit document identity.
+- `assembly_component_set_fixed` — fix/float one explicit component.
+- `assembly_component_set_load_state` — set one component to the native-accepted `resolved` or `suppressed` state.
+- `assembly_component_set_configuration` — set/read back one component referenced configuration.
+- `assembly_mate_create` — create Coincident, Parallel, Perpendicular, Distance, or Angle mates using bounded selection references.
+- `assembly_mates_list` — list stable mate identity/type/state.
+- `assembly_coincident_mate_set_suppressed` — suppress/unsuppress an accepted Coincident mate.
+- `assembly_distance_mate_set_value` — edit an accepted Distance mate and verify persisted value.
+- `configuration_list`, `configuration_create`, `configuration_rename`, `configuration_delete`, `configuration_activate` — bounded configuration lifecycle.
+- `configuration_set_dimension` — set a configuration-specific model dimension.
+- `configuration_set_property`, `configuration_delete_property` — mutate document/configuration custom properties.
+- `configuration_set_feature_suppressed` — set feature suppression for one explicit configuration.
+- `configuration_equations_list`, `configuration_equation_add`, `configuration_equation_set`, `configuration_equation_delete` — bounded equation/global-variable CRUD.
 
 All CAD paths are constrained by the same configured path policy as document operations. The provider does not expose arbitrary macros, scripts, COM method names, or raw native API argument lists.
 
@@ -58,11 +71,21 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.sheet_metal.base_flange`
 - `solidworks.surface.extrude`
 - `solidworks.assembly.components`
+- `solidworks.assembly.component_state`
+- `solidworks.assembly.component_configuration`
 - `solidworks.assembly.coincident_mate`
+- `solidworks.assembly.common_mates`
+- `solidworks.assembly.coincident_mate_suppression`
+- `solidworks.assembly.distance_mate_value`
+- `solidworks.configuration.lifecycle`
+- `solidworks.configuration.dimension`
+- `solidworks.configuration.properties`
+- `solidworks.configuration.feature_suppression`
+- `solidworks.configuration.equations`
 
-Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support` until the remaining parametric feature family, including production Cut/Revolve coverage, is complete. Broad `solidworks.assembly.mates` remains partial until additional mate families are implemented and accepted.
+Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support` until the remaining parametric feature family, including production Cut/Revolve coverage, is complete. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
 
-`solidworks.configurations`, `solidworks.drawing`, `solidworks.export`, and `solidworks.license` remain unavailable at provider level until their corresponding native adapters/probes satisfy acceptance criteria.
+`solidworks.drawing`, `solidworks.export`, and `solidworks.license` remain unavailable at provider level until their corresponding native adapters/probes satisfy acceptance criteria.
 
 `solidworks.simulation.study` is declared but `implemented=false`: native Simulation integration has not been built. Motion and Routing likewise remain outside the callable provider surface until their typed adapters and native gates exist. Add-ins are intended to load on demand rather than require Start Up. `solidworks.flow_simulation` and `solidworks.electrical` remain `implemented=false` until dedicated installation/license/API probes and native evidence exist.
 

@@ -46,6 +46,14 @@ class _FakeWeldmentService:
     pass
 
 
+class _FakeAssemblyService:
+    pass
+
+
+class _FakeConfigurationService:
+    pass
+
+
 def _success_probe(*, registered: bool, running: bool) -> NativeCallResult[ApplicationProbe]:
     return NativeCallResult.success(
         ApplicationProbe(
@@ -71,6 +79,8 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         surface_service=_FakeSurfaceService(),
         sheetmetal_service=_FakeSheetMetalService(),
         weldment_service=_FakeWeldmentService(),
+        assembly_service=_FakeAssemblyService(),
+        configuration_service=_FakeConfigurationService(),
     )
     context = runtime.runtime_context()
     states = {item.name: item for item in context.capabilities}
@@ -98,9 +108,21 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.weldment.cut_list"].available is True
     assert states["solidworks.weldment.structural_member"].available is True
     assert states["solidworks.assembly.components"].implemented is True
+    assert states["solidworks.assembly.component_state"].available is True
+    assert states["solidworks.assembly.component_configuration"].available is True
     assert states["solidworks.assembly.coincident_mate"].implemented is True
+    assert states["solidworks.assembly.common_mates"].available is True
+    assert states["solidworks.assembly.coincident_mate_suppression"].available is True
+    assert states["solidworks.assembly.distance_mate_value"].available is True
     assert states["solidworks.assembly.mates"].implemented is False
     assert states["solidworks.assembly.mates"].reason == "partial_native_support"
+    assert states["solidworks.configuration.lifecycle"].available is True
+    assert states["solidworks.configuration.dimension"].available is True
+    assert states["solidworks.configuration.properties"].available is True
+    assert states["solidworks.configuration.feature_suppression"].available is True
+    assert states["solidworks.configuration.equations"].available is True
+    assert states["solidworks.configurations"].implemented is False
+    assert states["solidworks.configurations"].reason == "partial_native_support"
     assert states["solidworks.simulation.study"].implemented is False
     assert states["solidworks.simulation.study"].reason == "native_adapter_not_integrated"
     assert states["solidworks.flow_simulation"].implemented is False
@@ -140,6 +162,8 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         surface_service=_FakeSurfaceService(),
         sheetmetal_service=_FakeSheetMetalService(),
         weldment_service=_FakeWeldmentService(),
+        assembly_service=_FakeAssemblyService(),
+        configuration_service=_FakeConfigurationService(),
     )
     server = build_integrated_server(ServerConfig.in_process(guide_path=guide), runtime=runtime)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
@@ -157,6 +181,16 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "part_add_rect_extrude", "part_combine_all_bodies", "part_split_by_plane",
         "sheet_metal_create_base_flange", "surface_create_extrude",
         "assembly_create", "assembly_add_coincident_plane_mate",
+        "assembly_components_list", "assembly_component_set_fixed",
+        "assembly_component_set_load_state", "assembly_component_set_configuration",
+        "assembly_mate_create", "assembly_mates_list",
+        "assembly_coincident_mate_set_suppressed", "assembly_distance_mate_set_value",
+        "configuration_list", "configuration_create", "configuration_rename",
+        "configuration_delete", "configuration_activate",
+        "configuration_set_dimension", "configuration_set_property",
+        "configuration_delete_property", "configuration_set_feature_suppressed",
+        "configuration_equations_list", "configuration_equation_add",
+        "configuration_equation_set", "configuration_equation_delete",
     } <= names
 
 
