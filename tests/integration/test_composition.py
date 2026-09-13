@@ -26,6 +26,10 @@ class _FakeCadService:
     pass
 
 
+class _FakeSketchService:
+    pass
+
+
 def _success_probe(*, registered: bool, running: bool) -> NativeCallResult[ApplicationProbe]:
     return NativeCallResult.success(
         ApplicationProbe(
@@ -46,6 +50,7 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         session=_FakeSession(_success_probe(registered=True, running=True)),
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
+        sketch_service=_FakeSketchService(),
     )
     context = runtime.runtime_context()
     states = {item.name: item for item in context.capabilities}
@@ -58,6 +63,8 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.part.parametric"].reason == "partial_native_support"
     assert states["solidworks.sketch.rectangle"].implemented is True
     assert states["solidworks.sketch.rectangle"].available is True
+    assert states["solidworks.sketch.geometry"].implemented is True
+    assert states["solidworks.sketch.geometry"].available is True
     assert states["solidworks.part.combine"].implemented is True
     assert states["solidworks.sheet_metal.base_flange"].implemented is True
     assert states["solidworks.surface.extrude"].implemented is True
@@ -99,6 +106,7 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         session=_FakeSession(_success_probe(registered=True, running=True)),
         document_service=_FakeDocumentService(),
         cad_service=_FakeCadService(),
+        sketch_service=_FakeSketchService(),
     )
     server = build_integrated_server(ServerConfig.in_process(guide_path=guide), runtime=runtime)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
@@ -108,7 +116,8 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "document_open", "document_info", "document_save", "document_save_as",
         "document_close", "document_reopen", "document_list_features",
         "document_list_bodies", "document_list_components", "document_rebuild",
-        "document_reconcile", "sketch_create_rectangle", "part_create_rect_extrude",
+        "document_reconcile", "sketch_create_geometry", "sketch_get",
+        "sketch_create_rectangle", "part_create_rect_extrude",
         "part_add_rect_extrude", "part_combine_all_bodies", "part_split_by_plane",
         "sheet_metal_create_base_flange", "surface_create_extrude",
         "assembly_create", "assembly_add_coincident_plane_mate",

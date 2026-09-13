@@ -216,6 +216,45 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         return _result_payload(runtime.document_service.reconcile_document_state(call_id, path=path, expected_type=_document_type(expected_type), should_be_open=should_be_open))
 
 
+    if runtime.sketch_service is not None:
+        @server.tool(
+            name="sketch_create_geometry",
+            description=(
+                "Create bounded native sketch geometry in an explicitly opened millimeter part. "
+                "Supports line, centerline, circle, arc, ellipse, point, and cubic spline entities "
+                "on front/top/right planes; call document_save separately to persist the mutation."
+            ),
+        )
+        def sketch_create_geometry(
+            path: str,
+            expected_revision: int,
+            name: str,
+            entities: list[dict[str, Any]],
+            plane: Literal["front", "top", "right"] = "front",
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.create_geometry(
+                    path=path,
+                    expected_revision=expected_revision,
+                    name=name,
+                    plane=plane,
+                    entities=entities,
+                )
+            )
+
+        @server.tool(
+            name="sketch_get",
+            description=(
+                "Read one native sketch from an explicitly opened millimeter part using path and revision identity."
+            ),
+        )
+        def sketch_get(path: str, expected_revision: int, sketch_id: str) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.get(
+                    path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
     if runtime.cad_service is None:
         return
 

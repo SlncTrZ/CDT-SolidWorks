@@ -173,6 +173,10 @@ class _UnusedCadService:
     pass
 
 
+class _UnusedSketchService:
+    pass
+
+
 @pytest.mark.asyncio
 async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path: Path) -> None:
     runtime = IntegratedProviderRuntime(
@@ -180,6 +184,7 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
         session=_IntegrationProbeSession(),
         document_service=_UnusedDocumentService(),
         cad_service=_UnusedCadService(),
+        sketch_service=_UnusedSketchService(),
     )
     app = build_integrated_network_app(_config(tmp_path), runtime=runtime)
     transport = httpx2.ASGITransport(app=app)
@@ -199,6 +204,16 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                 valid = await client.call_tool("application_probe")
                 with pytest.raises(MCPError) as exc_info:
                     await client.call_tool("application_probe", {"unexpected": True})
+                with pytest.raises(MCPError) as sketch_exc_info:
+                    await client.call_tool(
+                        "sketch_get",
+                        {
+                            "path": str(tmp_path / "part.SLDPRT"),
+                            "expected_revision": 1,
+                            "sketch_id": "Sketch1",
+                            "unexpected": True,
+                        },
+                    )
                 with pytest.raises(MCPError) as cad_exc_info:
                     await client.call_tool(
                         "sketch_create_rectangle",
@@ -213,5 +228,7 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
     assert valid.is_error is False
     assert exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in exc_info.value.message.lower()
+    assert sketch_exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in sketch_exc_info.value.message.lower()
     assert cad_exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in cad_exc_info.value.message.lower()

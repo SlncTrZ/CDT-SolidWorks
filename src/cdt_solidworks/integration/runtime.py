@@ -10,6 +10,7 @@ from cdt_solidworks.document.service import DocumentService
 from cdt_solidworks.native.cad_core import CadCoreService
 from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.native.session import SolidWorksSession
+from cdt_solidworks.integration.sketch import IntegratedSketchService
 from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
 
 
@@ -24,6 +25,7 @@ class IntegratedProviderRuntime:
         session: Any | None = None,
         document_service: Any | None = None,
         cad_service: Any | None = None,
+        sketch_service: Any | None = None,
     ) -> None:
         self.version = version
         self.session = session if session is not None else SolidWorksSession()
@@ -36,6 +38,11 @@ class IntegratedProviderRuntime:
         self.cad_service = cad_service
         if self.cad_service is None and hasattr(self.session, "api"):
             self.cad_service = CadCoreService(self.session, path_policy=self.path_policy)
+        self.sketch_service = sketch_service
+        if self.sketch_service is None and hasattr(self.session, "api"):
+            self.sketch_service = IntegratedSketchService(
+                self.session, path_policy=self.path_policy
+            )
 
     def runtime_context(self) -> RuntimeContext:
         result = self.session.probe(version=self.version, timeout=3.0)
@@ -68,6 +75,9 @@ class IntegratedProviderRuntime:
         cad_implemented = self.cad_service is not None
         cad_available = cad_implemented and available
         cad_reason = integrated_reason if cad_implemented else deferred_reason
+        sketch_implemented = self.sketch_service is not None
+        sketch_available = sketch_implemented and available
+        sketch_reason = integrated_reason if sketch_implemented else deferred_reason
         capabilities = (
             CapabilityState(
                 name="solidworks.application",
@@ -106,6 +116,14 @@ class IntegratedProviderRuntime:
                 implemented=False,
                 available=False,
                 reason=partial_reason if cad_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.sketch.geometry",
+                implemented=sketch_implemented,
+                available=sketch_available,
+                reason=sketch_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
