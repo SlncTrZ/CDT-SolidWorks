@@ -22,6 +22,7 @@ _SW_RELIEF_NONE = 4
 _SW_RELIEF_OBROUND = 3
 _SW_FLANGE_POSITION_MATERIAL_INSIDE = 1
 _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP = 2
+_SW_EDGE_FLANGE_USE_DEFAULT_RADIUS = 1
 _SW_EDGE_FLANGE_USE_DEFAULT_RELIEF = 128
 _BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 _EDGE_TOLERANCE_M = 1e-7
@@ -154,6 +155,44 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_edge_flange",
                         "SOLIDWORKS did not create the Edge Flange profile sketch.",
                     )
+                if not bool(self.api._member(sketch_feature, "Select2", False, 0)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange profile sketch could not be selected for editing.",
+                    )
+                self.api._member(model, "EditSketch")
+                sketch = self.api._member(model, "GetActiveSketch2")
+                if sketch is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not enter the Edge Flange profile sketch.",
+                    )
+                self.api._member(model, "ClearSelection2", True)
+                if not bool(self.api._member(edge, "Select4", False, self.api.null_dispatch())):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Resolved Edge Flange boundary edge could not be selected in the profile sketch.",
+                    )
+                sketch_manager = self.api._member(model, "SketchManager")
+                if not bool(self.api._member(sketch_manager, "SketchUseEdge", False)):
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS could not project the selected edge into the Edge Flange profile sketch.",
+                    )
+                segments = self._as_tuple(self.api._member(sketch, "GetSketchSegments"))
+                if len(segments) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Bounded Edge Flange profile must contain exactly one projected edge segment.",
+                        details={"segments": len(segments)},
+                    )
+                self.api._member(model, "InsertSketch2", True)
+
                 phase = "insert_flange"
                 manager = self.api._member(model, "FeatureManager")
                 parent_radius_mm = float(state_before.get("bend_radius_mm") or 0.0)
@@ -164,14 +203,19 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_edge_flange",
                         "Edge Flange requires a positive parent or explicit bend radius.",
                     )
+                options = _SW_EDGE_FLANGE_USE_DEFAULT_RELIEF
+                radius_m = effective_radius_mm / 1000.0
+                if radius is None:
+                    options |= _SW_EDGE_FLANGE_USE_DEFAULT_RADIUS
+                    radius_m = 0.0
                 feature = self.api._member(
                     manager,
-                    "InsertSheetMetalEdgeFlange",
-                    edge,
-                    sketch_feature,
-                    _SW_EDGE_FLANGE_USE_DEFAULT_RELIEF,
+                    "InsertSheetMetalEdgeFlange2",
+                    (edge,),
+                    (sketch,),
+                    options,
                     angle_rad,
-                    effective_radius_mm / 1000.0,
+                    radius_m,
                     _SW_FLANGE_POSITION_MATERIAL_INSIDE,
                     length / 1000.0,
                     _SW_RELIEF_NONE,
