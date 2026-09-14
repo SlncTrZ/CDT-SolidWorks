@@ -106,16 +106,6 @@ _WIDTH_RAYS = (
         0.000431713609895031,
         16,
     ),
-    (
-        0.0267766714922573,
-        0.0259424893815421,
-        0.0380784753310763,
-        -0.849725692314326,
-        -0.107993323108602,
-        0.516046209156602,
-        0.000431713609895031,
-        16,
-    ),
 )
 
 _SLOT_RAYS = (
@@ -496,6 +486,103 @@ def _select_rays_and_name_faces(
                 mutation=True,
             ),
             "select_rays_and_name_faces",
+        )
+    )
+
+
+def _name_width_tab_counterpart_face(
+    session: SolidWorksSession,
+    assembly_path: Path,
+    tab_ref: str,
+    target_name: str,
+) -> str:
+    component_id, face_name = tab_ref.split(":face:", 1)
+    source = str(assembly_path.resolve())
+
+    def operation(app: Any) -> str:
+        model = session.api.get_open_document(app, source)
+        if model is None:
+            raise EvidenceError(f"assembly not open: {source}")
+        component = next(
+            (
+                item
+                for item in session.api.components(model, False)
+                if session.api.component_name(item) == component_id
+            ),
+            None,
+        )
+        if component is None:
+            raise EvidenceError(f"width tab component missing: {component_id}")
+        part_model = session.api._member(component, "GetModelDoc2")
+        if part_model is None:
+            raise EvidenceError("width tab component model unresolved")
+        selected = session.api._member(part_model, "GetEntityByName", face_name, 2)
+        if selected is None:
+            raise EvidenceError(f"width tab face missing: {face_name}")
+
+        selected_surface = session.api._member(selected, "GetSurface")
+        selected_area = float(session.api._member(selected, "GetArea"))
+        selected_plane = tuple(
+            float(value)
+            for value in session.api._member(selected_surface, "PlaneParams")
+        )
+        extension = session.api._member(part_model, "Extension")
+        selected_ref = _normalize_persistent_reference(
+            session.api._member(extension, "GetPersistReference3", selected)
+        )
+        candidates: list[Any] = []
+        for body in session.api.bodies(part_model, 0, False):
+            raw_faces = session.api._member(body, "GetFaces")
+            faces = () if raw_faces is None else tuple(raw_faces)
+            for face in faces:
+                surface = session.api._member(face, "GetSurface")
+                if surface is None or not bool(session.api._member(surface, "IsPlane")):
+                    continue
+                candidate_ref = _normalize_persistent_reference(
+                    session.api._member(extension, "GetPersistReference3", face)
+                )
+                if candidate_ref == selected_ref:
+                    continue
+                area = float(session.api._member(face, "GetArea"))
+                if abs(area - selected_area) > 1e-12:
+                    continue
+                plane = tuple(
+                    float(value)
+                    for value in session.api._member(surface, "PlaneParams")
+                )
+                if len(plane) < 3 or len(selected_plane) < 3:
+                    continue
+                dot = sum(plane[index] * selected_plane[index] for index in range(3))
+                if abs(abs(dot) - 1.0) > 1e-9:
+                    continue
+                candidates.append(face)
+
+        if len(candidates) != 1:
+            raise EvidenceError(
+                f"width tab counterpart was not unique: {len(candidates)}"
+            )
+        counterpart = candidates[0]
+        stable_name = str(
+            session.api._member(part_model, "GetEntityName", counterpart) or ""
+        )
+        if not stable_name:
+            session.api._member(part_model, "SetEntityName", counterpart, target_name)
+            stable_name = str(
+                session.api._member(part_model, "GetEntityName", counterpart) or ""
+            )
+        if not stable_name:
+            raise EvidenceError("width tab counterpart naming failed")
+        return f"{component_id}:face:{stable_name}"
+
+    return str(
+        _require(
+            session.execute(
+                operation,
+                stage="assembly_evidence_width_counterpart",
+                timeout=90.0,
+                mutation=True,
+            ),
+            "name_width_tab_counterpart_face",
         )
     )
 
@@ -987,12 +1074,23 @@ def run_width_mate_evidence(
     if not source.is_file():
         raise EvidenceError("width-mate SOLIDWORKS sample is missing")
     _open_document(session, source, 2, read_only=False)
-    refs = _select_rays_and_name_faces(
+    first_three = _select_rays_and_name_faces(
         session,
         source,
         _WIDTH_RAYS,
-        ("m95-width-a", "m95-width-b", "m95-tab-a", "m95-tab-b"),
+        ("m95-width-a", "m95-width-b", "m95-tab-a"),
     )
+    tab_b = _name_width_tab_counterpart_face(
+        session, source, first_three[2], "m95-tab-b"
+    )
+    refs = (*first_three, tab_b)
+    component_ids = tuple(ref.split(":face:", 1)[0] for ref in refs)
+    if not (
+        component_ids[0] == component_ids[1]
+        and component_ids[2] == component_ids[3]
+        and component_ids[0] != component_ids[2]
+    ):
+        raise EvidenceError(f"width fixture component pairing invalid: {component_ids!r}")
     service = AssemblyService(AssemblyNativeAdapter(session, timeout=60.0))
     mate = service.add_mate(
         str(source.resolve()),
