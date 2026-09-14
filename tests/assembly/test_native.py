@@ -403,6 +403,15 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.assertEqual(MateState.SOLVED, snapshot.state)
         self.assertEqual((), snapshot.rebuild_errors)
 
+    def test_mate_error_status_zero_is_solved_without_feature_error(self):
+        feature = FakeDistanceMateFeature()
+        feature.definition.ErrorStatus = 0
+        self.session.api.feature_name = lambda value: value.Name
+        self.session.api.feature_error = lambda value: (0, False)
+        snapshot = self.adapter._mate_snapshot(feature)
+        self.assertEqual(MateState.SOLVED, snapshot.state)
+        self.assertEqual(0, snapshot.error_status)
+
     def test_linear_component_pattern_uses_native_feature_data_and_readback(self):
         manager = FakeFeatureManager()
         self.session.model.FeatureManager = manager
