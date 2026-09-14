@@ -12,14 +12,25 @@ from cdt_solidworks.native.errors import NativeRuntimeError
 from cdt_solidworks.part.models import (
     BodySnapshot,
     Bounds3D,
+    ChamferSpec,
+    CircularPatternSpec,
     CutSpec,
+    DraftSpec,
     FeatureKind,
     FeatureSnapshot,
+    FilletSpec,
     HoleSpec,
     HoleWizardSize,
     HoleWizardSpec,
+    LinearPatternSpec,
+    MirrorSpec,
+    ReferenceAxisSpec,
+    ReferencePlaneSpec,
+    ReferencePointSpec,
     RevolveCutSpec,
     RevolveSpec,
+    RibSpec,
+    ShellSpec,
 )
 from cdt_solidworks.part.runtime import DocumentTarget, MutationReceipt, RebuildResult, ResolvedDocument
 
@@ -31,8 +42,22 @@ _SW_SEL_REVOLVE_AXIS = 16
 _SW_SKETCH_LINE = 0
 _PROFILE_CENTERLINE_AXIS = "profile_centerline"
 _BBOX_PLUS_Z_FACE = "bbox:+z"
+_SW_SEL_EDGES = 1
 _SW_SEL_FACES = 2
+_SW_SEL_VERTICES = 3
 _SW_SELECT_DEFAULT = 0
+_SW_FM_FILLET = 1
+_SW_FM_CIRCULAR_PATTERN = 5
+_SW_FM_LINEAR_PATTERN = 6
+_SW_CONST_RADIUS_FILLET = 0
+_SW_FEATURE_FILLET_CIRCULAR = 0
+_SW_FILLET_OVERFLOW_DEFAULT = 0
+_SW_CHAMFER_ANGLE_DISTANCE = 1
+_SW_NEUTRAL_PLANE_DRAFT = 0
+_SW_PATTERN_SPACING_AND_INSTANCES = 0
+_SW_REF_PLANE_DISTANCE = 8
+_SW_REF_PLANE_FLIP = 256
+_SW_REF_POINT_FACE_CENTER = 4
 _SW_SUPPRESS_FEATURE = 0
 _SW_UNSUPPRESS_FEATURE = 1
 _SW_THIS_CONFIGURATION = 1
@@ -479,6 +504,343 @@ class PartNativeRuntime:
 
         return self._execute(operation, stage="part_hole_wizard_native", mutation=True)
 
+    def create_fillet(self, document: ResolvedDocument, spec: FilletSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            edges = tuple(self._resolve_bounded_edge(model, ref) for ref in spec.edge_refs)
+            manager = self._member(model, "FeatureManager")
+            definition = self._member(manager, "CreateDefinition", _SW_FM_FILLET)
+            if definition is None or not bool(self._member(definition, "Initialize", _SW_CONST_RADIUS_FILLET)):
+                raise NativeRuntimeError("cad_mutation_failed", "part_fillet_native", "SOLIDWORKS did not initialize constant-radius fillet data.")
+            definition.ConicTypeForCrossSectionProfile = _SW_FEATURE_FILLET_CIRCULAR
+            definition.DefaultRadius = float(spec.radius_mm) / 1000.0
+            definition.OverflowType = _SW_FILLET_OVERFLOW_DEFAULT
+            definition.PropagateToTangentFaces = bool(spec.tangent_propagation)
+            definition.Edges = self._dispatch_array(edges)
+            feature = self._member(manager, "CreateFeature", definition)
+            return self._finish_created_feature(feature, spec.name, "part_fillet_native", "fillet")
+
+        return self._execute(operation, stage="part_fillet_native", mutation=True)
+
+    def create_chamfer(self, document: ResolvedDocument, spec: ChamferSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            edges = tuple(self._resolve_bounded_edge(model, ref) for ref in spec.edge_refs)
+            self._member(model, "ClearSelection2", True)
+            for index, edge in enumerate(edges):
+                self._select_native_entity(
+                    model,
+                    edge,
+                    append=index > 0,
+                    mark=0,
+                    stage="part_chamfer_native",
+                )
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "InsertFeatureChamfer",
+                0,
+                _SW_CHAMFER_ANGLE_DISTANCE,
+                float(spec.distance_mm) / 1000.0,
+                math.radians(float(spec.angle_deg)),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            )
+            return self._finish_created_feature(feature, spec.name, "part_chamfer_native", "chamfer")
+
+        return self._execute(operation, stage="part_chamfer_native", mutation=True)
+
+    def create_shell(self, document: ResolvedDocument, spec: ShellSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            faces = tuple(self._resolve_bounded_face(model, ref) for ref in spec.face_refs)
+            self._member(model, "ClearSelection2", True)
+            for index, face in enumerate(faces):
+                self._select_native_entity(
+                    model,
+                    face,
+                    append=index > 0,
+                    mark=1,
+                    stage="part_shell_native",
+                )
+            self._member(
+                model,
+                "InsertFeatureShell",
+                float(spec.thickness_mm) / 1000.0,
+                bool(spec.outward),
+            )
+            selection_manager = self._member(model, "SelectionManager")
+            feature = self._member(selection_manager, "GetSelectedObject6", 1, -1)
+            if feature is None or self._native_feature_type(feature) != "Shell":
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_shell_native",
+                    "SOLIDWORKS did not leave the created shell feature selected for reconciliation.",
+                )
+            return self._finish_created_feature(feature, spec.name, "part_shell_native", "shell")
+
+        return self._execute(operation, stage="part_shell_native", mutation=True)
+
+    def create_draft(self, document: ResolvedDocument, spec: DraftSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            faces = tuple(self._resolve_bounded_face(model, ref) for ref in spec.face_refs)
+            neutral = self._resolve_bounded_reference(
+                model,
+                spec.neutral_plane_ref,
+                allow_face=True,
+                allow_edge=False,
+            )
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(
+                model,
+                neutral,
+                append=False,
+                mark=1,
+                stage="part_draft_native",
+            )
+            for face in faces:
+                self._select_native_entity(
+                    model,
+                    face,
+                    append=True,
+                    mark=2,
+                    stage="part_draft_native",
+                )
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "InsertMultiFaceDraft",
+                math.radians(float(spec.angle_deg)),
+                bool(spec.reverse_direction),
+                False,
+                0,
+                False,
+                False,
+            )
+            return self._finish_created_feature(feature, spec.name, "part_draft_native", "draft")
+
+        return self._execute(operation, stage="part_draft_native", mutation=True)
+
+    def create_rib(self, document: ResolvedDocument, spec: RibSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            profile = self._member(model, "FeatureByName", spec.profile.sketch_id)
+            if profile is None or self._native_feature_type(profile) != "ProfileFeature":
+                raise NativeRuntimeError("cad_precondition_failed", "part_rib_native", "Rib profile must resolve to an explicit native sketch feature.")
+            existing = self._feature_names_by_native_type(model, "Rib")
+            self._member(model, "ClearSelection2", True)
+            if not bool(self._member(profile, "Select2", False, 0)):
+                raise NativeRuntimeError("cad_selection_failed", "part_rib_native", "Rib profile sketch could not be selected.")
+            manager = self._member(model, "FeatureManager")
+            self._member(
+                manager,
+                "InsertRib",
+                bool(spec.both_sides),
+                False,
+                float(spec.thickness_mm) / 1000.0,
+                0,
+                False,
+                False,
+                False,
+                0.0,
+                True,
+                False,
+            )
+            feature = self._single_new_feature_by_native_type(model, "Rib", existing)
+            return self._finish_created_feature(feature, spec.name, "part_rib_native", "rib")
+
+        return self._execute(operation, stage="part_rib_native", mutation=True)
+
+    def create_linear_pattern(self, document: ResolvedDocument, spec: LinearPatternSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            seeds = self._resolve_seed_features(model, spec.seed_feature_ids)
+            direction = self._resolve_bounded_reference(model, spec.direction_ref, allow_face=False, allow_edge=True)
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(
+                model,
+                direction,
+                append=False,
+                mark=1,
+                stage="part_linear_pattern_native",
+            )
+            for seed in seeds:
+                self._select_native_entity(
+                    model,
+                    seed,
+                    append=True,
+                    mark=4,
+                    stage="part_linear_pattern_native",
+                )
+            manager = self._member(model, "FeatureManager")
+            definition = self._member(manager, "CreateDefinition", _SW_FM_LINEAR_PATTERN)
+            if definition is None:
+                raise NativeRuntimeError("cad_mutation_failed", "part_linear_pattern_native", "SOLIDWORKS did not create linear-pattern feature data.")
+            definition.BodyPattern = False
+            definition.D1Axis = direction
+            definition.D1EndCondition = _SW_PATTERN_SPACING_AND_INSTANCES
+            definition.D1ReverseDirection = False
+            definition.D1Spacing = float(spec.spacing_mm) / 1000.0
+            definition.D1TotalInstances = int(spec.count)
+            definition.GeometryPattern = bool(spec.geometry_pattern)
+            definition.VarySketch = False
+            definition.PatternFeatureArray = self._dispatch_array(seeds)
+            feature = self._member(manager, "CreateFeature", definition)
+            return self._finish_created_feature(feature, spec.name, "part_linear_pattern_native", "linear pattern")
+
+        return self._execute(operation, stage="part_linear_pattern_native", mutation=True)
+
+    def create_circular_pattern(self, document: ResolvedDocument, spec: CircularPatternSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            seeds = self._resolve_seed_features(model, spec.seed_feature_ids)
+            axis = self._resolve_bounded_reference(model, spec.axis_ref, allow_face=False, allow_edge=True, allow_axis=True)
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(
+                model,
+                axis,
+                append=False,
+                mark=1,
+                stage="part_circular_pattern_native",
+            )
+            for seed in seeds:
+                self._select_native_entity(
+                    model,
+                    seed,
+                    append=True,
+                    mark=4,
+                    stage="part_circular_pattern_native",
+                )
+            manager = self._member(model, "FeatureManager")
+            definition = self._member(manager, "CreateDefinition", _SW_FM_CIRCULAR_PATTERN)
+            if definition is None:
+                raise NativeRuntimeError("cad_mutation_failed", "part_circular_pattern_native", "SOLIDWORKS did not create circular-pattern feature data.")
+            definition.BodyPattern = False
+            definition.Spacing = math.radians(float(spec.angle_deg))
+            definition.TotalInstances = int(spec.count)
+            definition.EqualSpacing = True
+            definition.GeometryPattern = bool(spec.geometry_pattern)
+            definition.VarySketch = False
+            definition.PatternFeatureArray = self._dispatch_array(seeds)
+            feature = self._member(manager, "CreateFeature", definition)
+            return self._finish_created_feature(feature, spec.name, "part_circular_pattern_native", "circular pattern")
+
+        return self._execute(operation, stage="part_circular_pattern_native", mutation=True)
+
+    def create_mirror(self, document: ResolvedDocument, spec: MirrorSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            seeds = self._resolve_seed_features(model, spec.seed_feature_ids)
+            plane = self._resolve_bounded_reference(model, spec.mirror_ref, allow_face=True, allow_edge=False)
+            self._member(model, "ClearSelection2", True)
+            for index, seed in enumerate(seeds):
+                self._select_native_entity(
+                    model,
+                    seed,
+                    append=index > 0,
+                    mark=1,
+                    stage="part_mirror_native",
+                )
+            self._select_native_entity(
+                model,
+                plane,
+                append=True,
+                mark=2,
+                stage="part_mirror_native",
+            )
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "InsertMirrorFeature2",
+                False,
+                bool(spec.geometry_pattern),
+                False,
+                False,
+                0,
+            )
+            return self._finish_created_feature(feature, spec.name, "part_mirror_native", "mirror pattern")
+
+        return self._execute(operation, stage="part_mirror_native", mutation=True)
+
+    def create_reference_plane(self, document: ResolvedDocument, spec: ReferencePlaneSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            reference = self._resolve_bounded_reference(model, spec.reference, allow_face=True, allow_edge=False)
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(model, reference, append=False, mark=0, stage="part_reference_plane_native")
+            flip = bool(spec.reverse_direction) ^ (float(spec.offset_mm) < 0.0)
+            constraint = _SW_REF_PLANE_DISTANCE | (_SW_REF_PLANE_FLIP if flip else 0)
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "InsertRefPlane",
+                constraint,
+                abs(float(spec.offset_mm)) / 1000.0,
+                0,
+                0.0,
+                0,
+                0.0,
+            )
+            return self._finish_created_feature(feature, spec.name, "part_reference_plane_native", "reference plane")
+
+        return self._execute(operation, stage="part_reference_plane_native", mutation=True)
+
+    def create_reference_axis(self, document: ResolvedDocument, spec: ReferenceAxisSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            first = self._resolve_bounded_reference(model, spec.first_ref, allow_face=True, allow_edge=False)
+            second = self._resolve_bounded_reference(model, spec.second_ref, allow_face=True, allow_edge=False)
+            existing = self._feature_names_by_native_type(model, "RefAxis")
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(model, first, append=False, mark=0, stage="part_reference_axis_native")
+            self._select_native_entity(model, second, append=True, mark=0, stage="part_reference_axis_native")
+            created = bool(self._member(model, "InsertAxis2", True))
+            if not created:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_reference_axis_native",
+                    "SOLIDWORKS refused to create the reference axis.",
+                )
+            feature = self._single_new_feature_by_native_type(model, "RefAxis", existing)
+            return self._finish_created_feature(feature, spec.name, "part_reference_axis_native", "reference axis")
+
+        return self._execute(operation, stage="part_reference_axis_native", mutation=True)
+
+    def create_reference_point(self, document: ResolvedDocument, spec: ReferencePointSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            face = self._resolve_bounded_face(model, spec.reference)
+            self._member(model, "ClearSelection2", True)
+            self._select_native_entity(model, face, append=False, mark=0, stage="part_reference_point_native")
+            manager = self._member(model, "FeatureManager")
+            raw_features = self._member(
+                manager,
+                "InsertReferencePoint",
+                _SW_REF_POINT_FACE_CENTER,
+                0,
+                0.0,
+                1,
+            )
+            features = self._as_tuple(raw_features)
+            if len(features) != 1 or self._native_feature_type(features[0]) not in {"RefPoint", "PointRef"}:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_reference_point_native",
+                    "SOLIDWORKS did not create exactly one reference-point feature.",
+                    details={"returned_feature_count": len(features)},
+                )
+            return self._finish_created_feature(
+                features[0],
+                spec.name,
+                "part_reference_point_native",
+                "reference point",
+            )
+
+        return self._execute(operation, stage="part_reference_point_native", mutation=True)
+
     def create_revolve(
         self, document: ResolvedDocument, spec: RevolveSpec
     ) -> MutationReceipt:
@@ -663,9 +1025,145 @@ class PartNativeRuntime:
                 return self._read_simple_hole_feature(model, feature)
             if native_type in {"Revolution", "Revolve", "RevCut", "RevolveCut"}:
                 return self._read_revolve_feature(model, feature, native_type)
+            if native_type in {"Fillet", "Fillet2", "Fillet3"}:
+                return self._read_fillet_feature(model, feature)
+            if native_type in {"Chamfer"}:
+                return self._read_chamfer_feature(model, feature)
+            if native_type in {"Shell"}:
+                return self._read_shell_feature(model, feature)
+            if native_type in {"Draft"}:
+                return self._read_draft_feature(model, feature)
+            if native_type in {"Rib"}:
+                return self._read_rib_feature(model, feature)
+            if native_type in {"LPattern", "LinearPattern"}:
+                return self._read_linear_pattern_feature(model, feature)
+            if native_type in {"CirPattern", "CircularPattern"}:
+                return self._read_circular_pattern_feature(model, feature)
+            if native_type in {"MirrorPattern", "MirrorSolid"}:
+                return self._read_mirror_feature(model, feature)
+            if native_type == "RefPlane":
+                return self._read_reference_plane_feature(model, feature)
+            if native_type == "RefAxis":
+                return self._read_reference_feature(feature, FeatureKind.REFERENCE_AXIS)
+            if native_type in {"RefPoint", "PointRef"}:
+                return self._read_reference_feature(feature, FeatureKind.REFERENCE_POINT)
             return None
 
         return self._execute(operation, stage="part_feature_readback", mutation=False)
+
+    def _read_definition(self, model: Any, feature: Any, stage: str) -> tuple[Any, bool]:
+        definition = self._member(feature, "GetDefinition")
+        if definition is None:
+            raise NativeRuntimeError("cad_postcondition_failed", stage, "Native feature definition was unavailable during read-back.")
+        accessed = False
+        try:
+            accessed = bool(self._member(definition, "AccessSelections", model, self._null_dispatch()))
+        except Exception:
+            accessed = False
+        return definition, accessed
+
+    def _release_definition(self, definition: Any, accessed: bool) -> None:
+        if accessed:
+            self._member(definition, "ReleaseSelectionAccess")
+
+    def _read_fillet_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_fillet_readback")
+        try:
+            radius_mm = float(self._member(definition, "DefaultRadius")) * 1000.0
+            tangent = bool(self._member(definition, "PropagateToTangentFaces"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.FILLET, {"radius_mm": radius_mm, "tangent_propagation": tangent})
+
+    def _read_chamfer_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_chamfer_readback")
+        try:
+            distance_mm = float(self._member(definition, "GetEdgeChamferDistance", 0)) * 1000.0
+            angle_deg = math.degrees(float(self._member(definition, "EdgeChamferAngle")))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.CHAMFER, {"distance_mm": distance_mm, "angle_deg": angle_deg})
+
+    def _read_shell_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_shell_readback")
+        try:
+            thickness_mm = float(self._member(definition, "Thickness")) * 1000.0
+            outward = bool(self._member(definition, "Direction"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.SHELL, {"thickness_mm": thickness_mm, "outward": outward})
+
+    def _read_draft_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_draft_readback")
+        try:
+            angle_deg = math.degrees(float(self._member(definition, "Angle")))
+            reverse = bool(self._member(definition, "ReverseDirection"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.DRAFT, {"angle_deg": angle_deg, "reverse_direction": reverse})
+
+    def _read_rib_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_rib_readback")
+        try:
+            thickness_mm = float(self._member(definition, "Thickness")) * 1000.0
+            both_sides = bool(self._member(definition, "IsTwoSided"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.RIB, {"thickness_mm": thickness_mm, "both_sides": both_sides})
+
+    def _read_linear_pattern_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_linear_pattern_readback")
+        try:
+            count = int(self._member(definition, "D1TotalInstances"))
+            spacing_mm = float(self._member(definition, "D1Spacing")) * 1000.0
+            geometry = bool(self._member(definition, "GeometryPattern"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.LINEAR_PATTERN, {"count": count, "spacing_mm": spacing_mm, "geometry_pattern": geometry})
+
+    def _read_circular_pattern_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_circular_pattern_readback")
+        try:
+            count = int(self._member(definition, "TotalInstances"))
+            angle_deg = math.degrees(float(self._member(definition, "Spacing")))
+            geometry = bool(self._member(definition, "GeometryPattern"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.CIRCULAR_PATTERN, {"count": count, "angle_deg": angle_deg, "geometry_pattern": geometry})
+
+    def _read_mirror_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_mirror_readback")
+        try:
+            geometry = bool(self._member(definition, "GeometryPattern"))
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.MIRROR, {"geometry_pattern": geometry})
+
+    def _read_reference_plane_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition, accessed = self._read_definition(model, feature, "part_reference_plane_readback")
+        try:
+            distance_mm = abs(float(self._member(definition, "Distance"))) * 1000.0
+        finally:
+            self._release_definition(definition, accessed)
+        return self._snapshot(feature, FeatureKind.REFERENCE_PLANE, {"offset_mm": distance_mm})
+
+    def _read_reference_feature(self, feature: Any, kind: FeatureKind) -> FeatureSnapshot:
+        return self._snapshot(feature, kind, {})
+
+    def _snapshot(
+        self,
+        feature: Any,
+        kind: FeatureKind,
+        parameters: dict[str, float | str | bool | int],
+    ) -> FeatureSnapshot:
+        name = self._feature_name(feature)
+        return FeatureSnapshot(
+            feature_id=name,
+            name=name,
+            kind=kind,
+            parameters=parameters,
+            suppressed=self._is_feature_suppressed(feature),
+        )
 
     def _read_simple_hole_feature(
         self, model: Any, feature: Any
@@ -1025,6 +1523,55 @@ class PartNativeRuntime:
 
         return self._execute(operation, stage="part_feature_suppression", mutation=True)
 
+    def set_feature_parameter(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            feature = self._member(model, "FeatureByName", feature_id)
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_feature_parameter",
+                    f"Feature {feature_id!r} was not found.",
+                )
+            if self._feature_kind(feature) is not FeatureKind.FILLET or parameter != "radius_mm":
+                raise NativeRuntimeError(
+                    "unsupported_native_operation",
+                    "part_feature_parameter",
+                    "Only radius_mm editing for promoted constant-radius fillets is supported.",
+                )
+            dimension = self._member(feature, "Parameter", "D1")
+            if dimension is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_feature_parameter",
+                    "Promoted fillet did not expose its local D1 radius parameter.",
+                )
+            status = int(
+                self._member(
+                    dimension,
+                    "SetSystemValue3",
+                    float(value) / 1000.0,
+                    _SW_THIS_CONFIGURATION,
+                    "",
+                )
+            )
+            if status != 0:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_feature_parameter",
+                    "SOLIDWORKS rejected the fillet radius dimension update.",
+                    details={"status": status},
+                )
+            return MutationReceipt(feature_id)
+
+        return self._execute(operation, stage="part_feature_parameter", mutation=True)
+
     def rename_feature(
         self,
         document: ResolvedDocument,
@@ -1113,6 +1660,28 @@ class PartNativeRuntime:
             return FeatureKind.REVOLVE
         if native_type in {"RevCut", "RevolveCut"}:
             return FeatureKind.REVOLVE_CUT
+        if native_type in {"Fillet", "Fillet2", "Fillet3"}:
+            return FeatureKind.FILLET
+        if native_type == "Chamfer":
+            return FeatureKind.CHAMFER
+        if native_type == "Shell":
+            return FeatureKind.SHELL
+        if native_type == "Draft":
+            return FeatureKind.DRAFT
+        if native_type == "Rib":
+            return FeatureKind.RIB
+        if native_type in {"LPattern", "LinearPattern"}:
+            return FeatureKind.LINEAR_PATTERN
+        if native_type in {"CirPattern", "CircularPattern"}:
+            return FeatureKind.CIRCULAR_PATTERN
+        if native_type in {"MirrorPattern", "MirrorSolid"}:
+            return FeatureKind.MIRROR
+        if native_type == "RefPlane":
+            return FeatureKind.REFERENCE_PLANE
+        if native_type == "RefAxis":
+            return FeatureKind.REFERENCE_AXIS
+        if native_type in {"RefPoint", "PointRef"}:
+            return FeatureKind.REFERENCE_POINT
         return None
 
     def _is_feature_suppressed(self, feature: Any) -> bool:
@@ -1164,6 +1733,296 @@ class PartNativeRuntime:
             max(box[4] for box in boxes),
             max(box[5] for box in boxes),
         )
+
+    def _feature_names_by_native_type(self, model: Any, native_type: str) -> frozenset[str]:
+        names: set[str] = set()
+        feature = self._member(model, "FirstFeature")
+        visited = 0
+        while feature is not None:
+            visited += 1
+            if visited > _MAX_FEATURE_TRAVERSAL:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_reconcile",
+                    "Feature-tree traversal exceeded its bounded limit.",
+                )
+            if self._native_feature_type(feature) == native_type:
+                name = self._feature_name(feature).strip()
+                if name:
+                    names.add(name)
+            feature = self._member(feature, "GetNextFeature")
+        return frozenset(names)
+
+    def _single_new_feature_by_native_type(
+        self,
+        model: Any,
+        native_type: str,
+        existing_names: frozenset[str],
+    ) -> Any:
+        matches: list[Any] = []
+        feature = self._member(model, "FirstFeature")
+        visited = 0
+        while feature is not None:
+            visited += 1
+            if visited > _MAX_FEATURE_TRAVERSAL:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_reconcile",
+                    "Feature-tree traversal exceeded its bounded limit.",
+                )
+            if self._native_feature_type(feature) == native_type:
+                name = self._feature_name(feature).strip()
+                if name and name not in existing_names:
+                    matches.append(feature)
+            feature = self._member(feature, "GetNextFeature")
+        if len(matches) != 1:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_reconcile",
+                "Native mutation did not add exactly one expected feature.",
+                details={"native_type": native_type, "new_feature_count": len(matches)},
+            )
+        return matches[0]
+
+    def _finish_created_feature(
+        self,
+        feature: Any,
+        requested_name: str,
+        stage: str,
+        label: str,
+    ) -> MutationReceipt:
+        if feature is None:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                stage,
+                f"SOLIDWORKS did not create the requested {label} feature.",
+            )
+        try:
+            feature.Name = requested_name
+        except Exception:
+            pass
+        identity = self._feature_name(feature).strip()
+        if not identity:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                stage,
+                f"Created {label} returned an empty feature identity.",
+            )
+        return MutationReceipt(identity)
+
+    def _single_solid_body(self, model: Any, stage: str) -> Any:
+        bodies = self._as_tuple(self._bodies(model, 0, False))
+        if len(bodies) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "Bounded topology resolution requires exactly one solid body.",
+                details={"solid_body_count": len(bodies)},
+            )
+        return bodies[0]
+
+    def _resolve_bounded_face(self, model: Any, reference: str) -> Any:
+        if not reference.startswith("bbox:") or reference.startswith("bbox:edge:"):
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_face",
+                "Face reference must use bbox:+x|-x|+y|-y|+z|-z.",
+                details={"reference": reference},
+            )
+        token = reference.split(":", 1)[1]
+        normals = {
+            "+x": (1.0, 0.0, 0.0),
+            "-x": (-1.0, 0.0, 0.0),
+            "+y": (0.0, 1.0, 0.0),
+            "-y": (0.0, -1.0, 0.0),
+            "+z": (0.0, 0.0, 1.0),
+            "-z": (0.0, 0.0, -1.0),
+        }
+        expected = normals.get(token)
+        if expected is None:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_face",
+                "Unsupported bounded face reference.",
+                details={"reference": reference},
+            )
+        body = self._single_solid_body(model, "part_bounded_face")
+        matches: list[Any] = []
+        for face in self._as_tuple(self._member(body, "GetFaces")):
+            surface = self._member(face, "GetSurface")
+            if surface is None or not bool(self._member(surface, "IsPlane")):
+                continue
+            normal = self._as_tuple(self._member(face, "Normal"))
+            if len(normal) != 3:
+                continue
+            values = tuple(float(value) for value in normal)
+            if all(abs(actual - wanted) <= 1e-8 for actual, wanted in zip(values, expected, strict=True)):
+                matches.append(face)
+        if len(matches) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_face",
+                "Bounded face reference did not resolve to exactly one planar outer face.",
+                details={"reference": reference, "match_count": len(matches)},
+            )
+        return matches[0]
+
+    def _resolve_bounded_edge(self, model: Any, reference: str) -> Any:
+        parts = reference.split(":")
+        if len(parts) != 4 or parts[0] != "bbox" or parts[1] != "edge":
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_edge",
+                "Edge reference must use bbox:edge:<signed-axis>:<signed-axis>.",
+                details={"reference": reference},
+            )
+        signed_axes = parts[2:]
+        parsed: dict[int, int] = {}
+        axis_index = {"x": 0, "y": 1, "z": 2}
+        for token in signed_axes:
+            if len(token) != 2 or token[0] not in "+-" or token[1] not in axis_index:
+                raise NativeRuntimeError("cad_precondition_failed", "part_bounded_edge", "Invalid bounded edge token.")
+            index = axis_index[token[1]]
+            if index in parsed:
+                raise NativeRuntimeError("cad_precondition_failed", "part_bounded_edge", "Bounded edge axes must be distinct.")
+            parsed[index] = 1 if token[0] == "+" else -1
+        body = self._single_solid_body(model, "part_bounded_edge")
+        bounds = self._as_tuple(self._member(body, "GetBodyBox"))
+        if len(bounds) != 6:
+            raise NativeRuntimeError("cad_precondition_failed", "part_bounded_edge", "Solid body has no six-value bounding box.")
+        low = tuple(float(value) for value in bounds[:3])
+        high = tuple(float(value) for value in bounds[3:])
+        tolerance = max(max(high[i] - low[i] for i in range(3)) * 1e-7, 1e-9)
+        matches: list[Any] = []
+        for edge in self._as_tuple(self._member(body, "GetEdges")):
+            start = self._member(edge, "GetStartVertex")
+            end = self._member(edge, "GetEndVertex")
+            if start is None or end is None:
+                continue
+            p1 = self._as_tuple(self._member(start, "GetPoint"))
+            p2 = self._as_tuple(self._member(end, "GetPoint"))
+            if len(p1) != 3 or len(p2) != 3:
+                continue
+            ok = True
+            for index, sign in parsed.items():
+                expected = high[index] if sign > 0 else low[index]
+                if abs(float(p1[index]) - expected) > tolerance or abs(float(p2[index]) - expected) > tolerance:
+                    ok = False
+                    break
+            if ok:
+                matches.append(edge)
+        if len(matches) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_edge",
+                "Bounded edge reference did not resolve to exactly one straight box edge.",
+                details={"reference": reference, "match_count": len(matches)},
+            )
+        return matches[0]
+
+    def _standard_plane_feature(self, model: Any, reference: str) -> Any:
+        ordinal_map = {"plane:front": 0, "plane:top": 1, "plane:right": 2}
+        ordinal = ordinal_map.get(reference.lower())
+        if ordinal is None:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "part_bounded_reference",
+                "Datum reference must be plane:front, plane:top, or plane:right.",
+                details={"reference": reference},
+            )
+        feature = self._member(model, "FirstFeature")
+        found: list[Any] = []
+        visited = 0
+        while feature is not None and len(found) <= ordinal:
+            visited += 1
+            if visited > _MAX_FEATURE_TRAVERSAL:
+                raise NativeRuntimeError("cad_postcondition_failed", "part_bounded_reference", "Datum traversal exceeded bounded limit.")
+            if self._native_feature_type(feature) == "RefPlane":
+                found.append(feature)
+            feature = self._member(feature, "GetNextFeature")
+        if len(found) <= ordinal:
+            raise NativeRuntimeError("cad_precondition_failed", "part_bounded_reference", "Requested standard datum plane was not found.")
+        return found[ordinal]
+
+    def _resolve_bounded_reference(
+        self,
+        model: Any,
+        reference: str,
+        *,
+        allow_face: bool,
+        allow_edge: bool,
+        allow_axis: bool = False,
+    ) -> Any:
+        lower = reference.lower()
+        if lower.startswith("plane:"):
+            return self._standard_plane_feature(model, lower)
+        if reference.startswith("bbox:edge:"):
+            if not allow_edge:
+                raise NativeRuntimeError("cad_precondition_failed", "part_bounded_reference", "Edge reference is not valid for this operation.")
+            return self._resolve_bounded_edge(model, reference)
+        if reference.startswith("bbox:"):
+            if not allow_face:
+                raise NativeRuntimeError("cad_precondition_failed", "part_bounded_reference", "Face reference is not valid for this operation.")
+            return self._resolve_bounded_face(model, reference)
+        if reference.startswith("feature:"):
+            feature = self._member(model, "FeatureByName", reference.split(":", 1)[1])
+            if feature is None:
+                raise NativeRuntimeError("cad_precondition_failed", "part_bounded_reference", "Explicit reference feature was not found.")
+            kind = self._feature_kind(feature)
+            if kind is FeatureKind.REFERENCE_AXIS and allow_axis:
+                return feature
+            if kind is FeatureKind.REFERENCE_PLANE and allow_face:
+                return feature
+            raise NativeRuntimeError("cad_precondition_failed", "part_bounded_reference", "Explicit feature type is not valid for this reference role.")
+        raise NativeRuntimeError(
+            "cad_precondition_failed",
+            "part_bounded_reference",
+            "Reference is outside the bounded native selector contract.",
+            details={"reference": reference},
+        )
+
+    def _resolve_seed_features(self, model: Any, feature_ids: tuple[str, ...]) -> tuple[Any, ...]:
+        seeds: list[Any] = []
+        for feature_id in feature_ids:
+            feature = self._member(model, "FeatureByName", feature_id)
+            if feature is None or self._feature_kind(feature) is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_pattern_seed",
+                    "Pattern seed must resolve to an evidence-promoted feature identity.",
+                    details={"feature_id": feature_id},
+                )
+            seeds.append(feature)
+        return tuple(seeds)
+
+    def _select_native_entity(
+        self,
+        model: Any,
+        entity: Any,
+        *,
+        append: bool,
+        mark: int,
+        stage: str,
+    ) -> None:
+        selection_manager = self._member(model, "SelectionManager")
+        select_data = self._member(selection_manager, "CreateSelectData")
+        select_data.Mark = mark
+        selected = False
+        try:
+            selected = bool(self._member(entity, "Select4", append, select_data))
+        except Exception:
+            selected = bool(self._member(entity, "Select2", append, mark))
+        if not selected:
+            raise NativeRuntimeError("cad_selection_failed", stage, "Native bounded reference could not be selected.")
+
+    @staticmethod
+    def _dispatch_array(values: tuple[Any, ...]) -> Any:
+        try:
+            import pythoncom  # type: ignore[import-not-found]
+            from win32com.client import VARIANT  # type: ignore[import-not-found]
+        except ImportError:
+            return tuple(values)
+        return VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, tuple(values))
 
     def _binding_from_document(self, app: Any, document: ResolvedDocument) -> NativePartBinding:
         binding = self._resolve_binding(

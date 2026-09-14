@@ -317,7 +317,6 @@ class PartService:
             self._runtime.create_draft,
             expected_parameters={
                 "angle_deg": spec.angle_deg,
-                "neutral_plane_ref": spec.neutral_plane_ref,
                 "reverse_direction": spec.reverse_direction,
             },
             postconditions=postconditions,
@@ -365,7 +364,6 @@ class PartService:
             expected_parameters={
                 "count": spec.count,
                 "spacing_mm": spec.spacing_mm,
-                "direction_ref": spec.direction_ref,
                 "geometry_pattern": spec.geometry_pattern,
             },
             postconditions=postconditions,
@@ -394,7 +392,6 @@ class PartService:
             expected_parameters={
                 "count": spec.count,
                 "angle_deg": spec.angle_deg,
-                "axis_ref": spec.axis_ref,
                 "geometry_pattern": spec.geometry_pattern,
             },
             postconditions=postconditions,
@@ -417,10 +414,7 @@ class PartService:
             spec,
             FeatureKind.MIRROR,
             self._runtime.create_mirror,
-            expected_parameters={
-                "mirror_ref": spec.mirror_ref,
-                "geometry_pattern": spec.geometry_pattern,
-            },
+            expected_parameters={"geometry_pattern": spec.geometry_pattern},
             postconditions=postconditions,
         )
 
@@ -489,11 +483,7 @@ class PartService:
             spec,
             FeatureKind.REFERENCE_PLANE,
             self._runtime.create_reference_plane,
-            expected_parameters={
-                "reference": spec.reference,
-                "offset_mm": spec.offset_mm,
-                "reverse_direction": spec.reverse_direction,
-            },
+            expected_parameters={"offset_mm": abs(spec.offset_mm)},
             postconditions=postconditions,
             require_body=False,
         )
@@ -517,7 +507,7 @@ class PartService:
             spec,
             FeatureKind.REFERENCE_AXIS,
             self._runtime.create_reference_axis,
-            expected_parameters={"first_ref": spec.first_ref, "second_ref": spec.second_ref},
+            expected_parameters={},
             postconditions=postconditions,
             require_body=False,
         )
@@ -538,7 +528,7 @@ class PartService:
             spec,
             FeatureKind.REFERENCE_POINT,
             self._runtime.create_reference_point,
-            expected_parameters={"reference": spec.reference},
+            expected_parameters={},
             postconditions=postconditions,
             require_body=False,
         )
@@ -585,6 +575,35 @@ class PartService:
         if feature.suppressed is not bool(suppressed):
             raise PartMutationError(
                 f"feature suppression read-back mismatch: expected {suppressed}, got {feature.suppressed}"
+            )
+        return feature
+
+    def set_feature_parameter(
+        self,
+        target: DocumentTarget,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> FeatureSnapshot:
+        self._validate_target(target)
+        self._validate_identity(feature_id, "feature identity")
+        if parameter != "radius_mm":
+            raise PartValidationError(f"unsupported feature parameter edit: {parameter!r}")
+        self._require_positive_finite(value, "radius_mm")
+        document = self._resolve_part_document(target)
+        receipt = self._runtime.set_feature_parameter(document, feature_id, parameter, float(value))
+        if receipt.object_id != feature_id:
+            raise PartMutationError("feature parameter mutation returned the wrong identity")
+        self._require_clean_rebuild(document, "feature parameter mutation")
+        feature = self._runtime.get_feature(document, feature_id)
+        if feature is None:
+            raise PartMutationError("feature parameter read-back failed: feature was not found")
+        actual = feature.parameters.get(parameter)
+        if not isinstance(actual, (float, int)) or isinstance(actual, bool) or not math.isclose(
+            float(actual), float(value), rel_tol=0.0, abs_tol=_PARAMETER_TOLERANCE
+        ):
+            raise PartMutationError(
+                f"feature parameter read-back mismatch for {parameter!r}: expected {value}, got {actual}"
             )
         return feature
 

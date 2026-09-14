@@ -273,6 +273,27 @@ class BreadthPartRuntime:
         )
         return MutationReceipt(feature_id)
 
+    def set_feature_parameter(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> MutationReceipt:
+        self.calls.append("set_feature_parameter")
+        if self.current_feature is None:
+            self.current_feature = FeatureSnapshot(feature_id, feature_id, FeatureKind.FILLET, {"radius_mm": 2.0})
+        params = dict(self.current_feature.parameters)
+        params[parameter] = value
+        self.current_feature = FeatureSnapshot(
+            self.current_feature.feature_id,
+            self.current_feature.name,
+            self.current_feature.kind,
+            params,
+            suppressed=self.current_feature.suppressed,
+        )
+        return MutationReceipt(feature_id)
+
 
 class PartBreadthTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -528,6 +549,25 @@ class PartBreadthTests(unittest.TestCase):
             ["resolve_document", "rename_feature", "rebuild", "get_feature"],
             self.runtime.calls,
         )
+
+    def test_selected_feature_parameter_edit_requires_rebuild_and_readback(self) -> None:
+        self.runtime.current_feature = FeatureSnapshot("Fillet1", "Fillet1", FeatureKind.FILLET, {"radius_mm": 2.0})
+
+        snapshot = self.service.set_feature_parameter(self.target, "Fillet1", "radius_mm", 3.5)
+
+        self.assertEqual(3.5, snapshot.parameters["radius_mm"])
+        self.assertEqual(
+            ["resolve_document", "set_feature_parameter", "rebuild", "get_feature"],
+            self.runtime.calls,
+        )
+
+        self.runtime.calls.clear()
+        with self.assertRaisesRegex(PartValidationError, "radius_mm"):
+            self.service.set_feature_parameter(self.target, "Fillet1", "radius_mm", 0.0)
+        self.assertEqual([], self.runtime.calls)
+
+        with self.assertRaisesRegex(PartValidationError, "unsupported"):
+            self.service.set_feature_parameter(self.target, "Fillet1", "arbitrary", 1.0)
 
     def test_suppress_unsuppress_requires_rebuild_and_readback(self) -> None:
         self.runtime.current_feature = FeatureSnapshot("Fillet1", "Fillet1", FeatureKind.FILLET, {"radius_mm": 2.0})

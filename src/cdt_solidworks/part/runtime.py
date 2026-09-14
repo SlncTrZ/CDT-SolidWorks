@@ -251,6 +251,14 @@ class PartSketchRuntime(Protocol):
         suppressed: bool,
     ) -> MutationReceipt: ...
 
+    def set_feature_parameter(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> MutationReceipt: ...
+
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...
 
     def get_feature(
