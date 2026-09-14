@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from cdt_solidworks.body.models import BodyKind, BodySnapshot, CombineOperation, CombineSpec, MutationReceipt
+from cdt_solidworks.body.models import (
+    BodyKind,
+    BodySnapshot,
+    CombineOperation,
+    CombineSpec,
+    DeleteKeepBodiesSpec,
+    MoveCopyBodySpec,
+    MutationReceipt,
+)
 from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, RebuildResult, ResolvedDocument
 from cdt_solidworks.body.service import BodyContextError, BodyMutationError, BodyService, BodyValidationError
 
@@ -31,6 +39,24 @@ class FakeRuntime:
         self.calls.append("combine")
         self.mutated = True
         return MutationReceipt("Combine1", {"operation": spec.operation.value})
+
+    def move_copy_bodies(self, document, spec):
+        self.calls.append("move_copy")
+        if spec.copy:
+            self.after = self.before + (BodySnapshot("b4", "Body4", BodyKind.SOLID),)
+        else:
+            self.after = self.before
+        self.mutated = True
+        return MutationReceipt("MoveCopy1", {"copy": spec.copy})
+
+    def delete_keep_bodies(self, document, spec):
+        self.calls.append("delete_keep")
+        selected = set(spec.body_ids)
+        self.after = tuple(
+            body for body in self.before if (body.body_id in selected) is bool(spec.keep)
+        )
+        self.mutated = True
+        return MutationReceipt("DeleteBody1", {"keep": spec.keep})
 
     def rebuild(self, document):
         self.calls.append("rebuild")
@@ -89,6 +115,41 @@ def test_rebuild_failure_is_not_success() -> None:
     else:
         raise AssertionError("expected BodyMutationError")
     assert "persist" not in runtime.calls
+
+
+def test_move_copy_requires_body_identity_and_persists() -> None:
+    runtime = FakeRuntime()
+    service = BodyService(runtime)
+    result = service.move_copy(
+        target(),
+        MoveCopyBodySpec("Move1", ("b1",), (10.0, 0.0, 0.0), copy=False),
+    )
+    assert result.feature_id == "MoveCopy1"
+    assert len(result.bodies) == 3
+    assert runtime.calls == ["resolve", "list", "move_copy", "rebuild", "list", "persist"]
+
+
+def test_delete_keep_verifies_resulting_body_set() -> None:
+    runtime = FakeRuntime()
+    service = BodyService(runtime)
+    result = service.delete_keep(
+        target(), DeleteKeepBodiesSpec("Keep1", ("b1", "b3"), keep=True)
+    )
+    assert result.feature_id == "DeleteBody1"
+    assert {body.body_id for body in result.bodies} == {"b1", "b3"}
+    assert runtime.calls == ["resolve", "list", "delete_keep", "rebuild", "list", "persist"]
+
+
+def test_zero_move_rejected_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    service = BodyService(runtime)
+    try:
+        service.move_copy(target(), MoveCopyBodySpec("Move1", ("b1",), (0.0, 0.0, 0.0)))
+    except BodyValidationError as exc:
+        assert "translation" in str(exc)
+    else:
+        raise AssertionError("expected BodyValidationError")
+    assert runtime.calls == []
 
 
 def test_stale_revision_rejected_before_mutation() -> None:

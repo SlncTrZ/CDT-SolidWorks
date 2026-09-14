@@ -6,10 +6,30 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from cdt_solidworks.body.models import BodyKind, BodySnapshot, CombineSpec, MutationReceipt
-    from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, SheetMetalState
-    from cdt_solidworks.surface.models import SurfaceKnitSpec, ThickenSpec
-    from cdt_solidworks.weldment.models import StructuralMemberSpec, WeldmentState
+    from cdt_solidworks.body.models import (
+        BodyKind,
+        BodySnapshot,
+        CombineSpec,
+        DeleteKeepBodiesSpec,
+        MoveCopyBodySpec,
+        MutationReceipt,
+    )
+    from cdt_solidworks.sheetmetal.models import (
+        BaseFlangeSpec,
+        EdgeFlangeSpec,
+        FoldSpec,
+        HemSpec,
+        SheetMetalState,
+        SketchedBendSpec,
+        UnfoldSpec,
+    )
+    from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
+    from cdt_solidworks.weldment.models import (
+        CutListPropertySpec,
+        StructuralMemberSpec,
+        WeldmentState,
+        WeldmentTrimSpec,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,13 +73,35 @@ class FabricationRuntime(Protocol):
 
     def combine_bodies(self, document: ResolvedDocument, spec: CombineSpec) -> MutationReceipt: ...
 
+    def move_copy_bodies(self, document: ResolvedDocument, spec: MoveCopyBodySpec) -> MutationReceipt: ...
+
+    def delete_keep_bodies(
+        self, document: ResolvedDocument, spec: DeleteKeepBodiesSpec
+    ) -> MutationReceipt: ...
+
     def knit_surfaces(self, document: ResolvedDocument, spec: SurfaceKnitSpec) -> MutationReceipt: ...
 
     def thicken_surface(self, document: ResolvedDocument, spec: ThickenSpec) -> MutationReceipt: ...
 
+    def offset_surface(self, document: ResolvedDocument, spec: OffsetSurfaceSpec) -> MutationReceipt: ...
+
     def create_base_flange(self, document: ResolvedDocument, spec: BaseFlangeSpec) -> MutationReceipt: ...
 
     def create_edge_flange(self, document: ResolvedDocument, spec: EdgeFlangeSpec) -> MutationReceipt: ...
+
+    def create_hem(self, document: ResolvedDocument, spec: HemSpec) -> MutationReceipt: ...
+
+    def create_sketched_bend(
+        self, document: ResolvedDocument, spec: SketchedBendSpec
+    ) -> MutationReceipt: ...
+
+    def unfold_sheet_metal(
+        self, document: ResolvedDocument, spec: UnfoldSpec
+    ) -> MutationReceipt: ...
+
+    def fold_sheet_metal(
+        self, document: ResolvedDocument, spec: FoldSpec
+    ) -> MutationReceipt: ...
 
     def set_flattened(self, document: ResolvedDocument, flattened: bool) -> MutationReceipt: ...
 
@@ -70,6 +112,14 @@ class FabricationRuntime(Protocol):
     ) -> MutationReceipt: ...
 
     def get_weldment_state(self, document: ResolvedDocument) -> WeldmentState: ...
+
+    def set_cut_list_property(
+        self, document: ResolvedDocument, spec: CutListPropertySpec
+    ) -> MutationReceipt: ...
+
+    def trim_weldment_member(
+        self, document: ResolvedDocument, spec: WeldmentTrimSpec
+    ) -> MutationReceipt: ...
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...
 

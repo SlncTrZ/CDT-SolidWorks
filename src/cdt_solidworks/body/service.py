@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import math
+
 from cdt_solidworks.body.models import (
     BodyKind,
     BodyMutationResult,
     BodySnapshot,
     CombineOperation,
     CombineSpec,
+    DeleteKeepBodiesSpec,
+    MoveCopyBodySpec,
 )
 from cdt_solidworks.body.runtime import DocumentTarget, FabricationRuntime, ResolvedDocument
 
@@ -60,6 +64,54 @@ class BodyService:
         self._require_persistence(document)
         return BodyMutationResult(feature_id=receipt.feature_id, bodies=after)
 
+    def move_copy(self, target: DocumentTarget, spec: MoveCopyBodySpec) -> BodyMutationResult:
+        self._validate_target(target)
+        self._validate_move_copy(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.list_bodies(document, BodyKind.SOLID)
+        available = {body.body_id for body in before}
+        missing = [body_id for body_id in spec.body_ids if body_id not in available]
+        if missing:
+            raise BodyContextError(f"move/copy body identity not found: {missing[0]}")
+        receipt = self._runtime.move_copy_bodies(document, spec)
+        if not receipt.feature_id.strip():
+            raise BodyMutationError("move/copy mutation returned an empty feature identity")
+        self._require_rebuild(document)
+        after = self._runtime.list_bodies(document, BodyKind.SOLID)
+        expected = len(before) + (len(spec.body_ids) * spec.copies if spec.copy else 0)
+        if len(after) != expected:
+            raise BodyMutationError(
+                f"move/copy body-count read-back mismatch: expected {expected}, got {len(after)}"
+            )
+        self._require_persistence(document)
+        return BodyMutationResult(receipt.feature_id, after)
+
+    def delete_keep(
+        self, target: DocumentTarget, spec: DeleteKeepBodiesSpec
+    ) -> BodyMutationResult:
+        self._validate_target(target)
+        self._validate_delete_keep(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.list_bodies(document, BodyKind.SOLID)
+        available = {body.body_id for body in before}
+        missing = [body_id for body_id in spec.body_ids if body_id not in available]
+        if missing:
+            raise BodyContextError(f"delete/keep body identity not found: {missing[0]}")
+        receipt = self._runtime.delete_keep_bodies(document, spec)
+        if not receipt.feature_id.strip():
+            raise BodyMutationError("delete/keep mutation returned an empty feature identity")
+        self._require_rebuild(document)
+        after = self._runtime.list_bodies(document, BodyKind.SOLID)
+        expected = len(spec.body_ids) if spec.keep else len(before) - len(spec.body_ids)
+        if len(after) != expected:
+            raise BodyMutationError(
+                f"delete/keep body-count read-back mismatch: expected {expected}, got {len(after)}"
+            )
+        if spec.keep and {body.body_id for body in after} != set(spec.body_ids):
+            raise BodyMutationError("keep-bodies read-back does not match requested body identities")
+        self._require_persistence(document)
+        return BodyMutationResult(receipt.feature_id, after)
+
     @staticmethod
     def _validate_target(target: DocumentTarget) -> None:
         if not target.document_id.strip():
@@ -82,6 +134,35 @@ class BodyService:
                 raise BodyValidationError("subtract combine requires main_body_id in body_ids")
         elif spec.main_body_id is not None:
             raise BodyValidationError("main_body_id is only valid for subtract combine")
+
+    @staticmethod
+    def _validate_move_copy(spec: MoveCopyBodySpec) -> None:
+        if not spec.name.strip():
+            raise BodyValidationError("move/copy feature name must not be empty")
+        if not spec.body_ids or len(set(spec.body_ids)) != len(spec.body_ids):
+            raise BodyValidationError("move/copy requires unique body identities")
+        if any(not body_id.strip() for body_id in spec.body_ids):
+            raise BodyValidationError("move/copy body identities must not be empty")
+        if len(spec.translation_mm) != 3 or any(
+            not math.isfinite(value) for value in spec.translation_mm
+        ):
+            raise BodyValidationError("move/copy translation must contain three finite values")
+        if all(abs(value) <= 1e-12 for value in spec.translation_mm):
+            raise BodyValidationError("move/copy translation must be non-zero")
+        if spec.copy:
+            if spec.copies < 1 or spec.copies > 100:
+                raise BodyValidationError("copy count must be in the range 1..100")
+        elif spec.copies != 1:
+            raise BodyValidationError("move operations require copies=1")
+
+    @staticmethod
+    def _validate_delete_keep(spec: DeleteKeepBodiesSpec) -> None:
+        if not spec.name.strip():
+            raise BodyValidationError("delete/keep feature name must not be empty")
+        if not spec.body_ids or len(set(spec.body_ids)) != len(spec.body_ids):
+            raise BodyValidationError("delete/keep requires unique body identities")
+        if any(not body_id.strip() for body_id in spec.body_ids):
+            raise BodyValidationError("delete/keep body identities must not be empty")
 
     def _resolve_part(self, target: DocumentTarget) -> ResolvedDocument:
         self._validate_target(target)
