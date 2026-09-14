@@ -85,13 +85,37 @@ def test_edge_flange_requires_existing_sheet_metal_state() -> None:
     runtime = FakeRuntime()
     try:
         SheetMetalService(runtime).add_edge_flange(
-            target(), EdgeFlangeSpec("Edge1", "edge-1", 25.0, 90.0, 1.0)
+            target(), EdgeFlangeSpec("Edge1", "bbox:+x", 25.0, 90.0, 1.0)
         )
     except SheetMetalContextError as exc:
         assert "existing sheet-metal" in str(exc)
     else:
         raise AssertionError("expected SheetMetalContextError")
     assert "edge" not in runtime.calls
+
+
+def test_edge_flange_rejects_unbounded_edge_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, None)
+    try:
+        SheetMetalService(runtime).add_edge_flange(
+            target(), EdgeFlangeSpec("Edge1", "Edge<123>", 25.0, 90.0, 1.0)
+        )
+    except SheetMetalValidationError as exc:
+        assert "edge selector" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
+
+
+def test_edge_flange_persists_formed_sheet_metal_state() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_edge_flange(
+        target(), EdgeFlangeSpec("Edge1", "bbox:+x", 25.0, 90.0, 1.0)
+    )
+    assert result.feature_id == "EdgeFlange1"
+    assert runtime.calls == ["resolve", "state", "edge", "rebuild", "state", "persist"]
 
 
 def test_hem_requires_sheet_metal_and_persists() -> None:

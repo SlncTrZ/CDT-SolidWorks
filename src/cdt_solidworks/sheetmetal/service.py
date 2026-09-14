@@ -150,8 +150,12 @@ class SheetMetalService:
 
     @staticmethod
     def _validate_edge_flange(spec: EdgeFlangeSpec) -> None:
-        if not spec.name.strip() or not spec.edge_id.strip():
-            raise SheetMetalValidationError("edge flange name/edge identity must not be empty")
+        if not spec.name.strip():
+            raise SheetMetalValidationError("edge flange name must not be empty")
+        if spec.edge_id not in _BOUNDARY_EDGE_SELECTORS:
+            raise SheetMetalValidationError(
+                "edge flange edge selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y"
+            )
         SheetMetalService._positive(spec.length_mm, "edge flange length")
         if not math.isfinite(spec.angle_deg) or not 0.0 < spec.angle_deg < 180.0:
             raise SheetMetalValidationError("edge flange angle must be finite and in the range (0, 180)")

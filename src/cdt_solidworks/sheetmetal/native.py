@@ -20,6 +20,9 @@ _SW_HEM_OPEN = 0
 _SW_HEM_POSITION = {"inside": 1, "outside": 2}
 _SW_RELIEF_NONE = 4
 _SW_RELIEF_OBROUND = 3
+_SW_FLANGE_POSITION_MATERIAL_INSIDE = 1
+_SW_FLANGE_DIM_INNER_VIRTUAL_SHARP = 2
+_SW_EDGE_FLANGE_USE_DEFAULT_RELIEF = 128
 _BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 _EDGE_TOLERANCE_M = 1e-7
 
@@ -76,6 +79,180 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             operation,
             stage="sheet_metal_inspect",
             timeout=self._timeout(timeout),
+        )
+
+    def add_edge_flange(
+        self,
+        path: str | Path,
+        *,
+        edge_selector: str,
+        length_mm: float,
+        angle_deg: float = 90.0,
+        bend_radius_mm: float | None = None,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create one bounded blind Edge Flange on a rectangular Base Flange perimeter edge."""
+        try:
+            source = self._validate_part_path(path)
+            selector = str(edge_selector).strip()
+            length = float(length_mm)
+            angle = float(angle_deg)
+            radius = None if bend_radius_mm is None else float(bend_radius_mm)
+            if selector not in _BOUNDARY_EDGE_SELECTORS:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y.",
+                )
+            if not math.isfinite(length) or length <= 0.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange length must be positive and finite.",
+                )
+            if not math.isfinite(angle) or not 0.0 < angle < 180.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange angle must be finite and in the range (0, 180).",
+                )
+            if radius is not None and (not math.isfinite(radius) or radius <= 0.0):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange bend radius must be positive and finite when supplied.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_edge_flange")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            phase = "state_readback"
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange requires one formed Base Flange sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Bounded Edge Flange currently requires exactly one solid body.",
+                    )
+                phase = "edge_resolve"
+                edge = self._resolve_boundary_edge(solids[0], selector)
+                phase = "profile_sketch"
+                angle_rad = math.radians(angle)
+                sketch_feature = self.api._member(model, "InsertSketchForEdgeFlange", edge, angle_rad, False)
+                if sketch_feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the Edge Flange profile sketch.",
+                    )
+                phase = "insert_flange"
+                manager = self.api._member(model, "FeatureManager")
+                parent_radius_mm = float(state_before.get("bend_radius_mm") or 0.0)
+                effective_radius_mm = radius if radius is not None else parent_radius_mm
+                if effective_radius_mm <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange requires a positive parent or explicit bend radius.",
+                    )
+                feature = self.api._member(
+                    manager,
+                    "InsertSheetMetalEdgeFlange",
+                    edge,
+                    sketch_feature,
+                    _SW_EDGE_FLANGE_USE_DEFAULT_RELIEF,
+                    angle_rad,
+                    effective_radius_mm / 1000.0,
+                    _SW_FLANGE_POSITION_MATERIAL_INSIDE,
+                    length / 1000.0,
+                    _SW_RELIEF_NONE,
+                    0.0,
+                    0.0,
+                    0.0,
+                    _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP,
+                    self.api.null_dispatch(),
+                )
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the Edge Flange feature.",
+                    )
+                phase = "rebuild"
+                self._require_clean_rebuild(model, "sheet_metal_add_edge_flange")
+                phase = "feature_readback"
+                definition = self.api._member(feature, "GetDefinition")
+                actual_angle = math.degrees(float(self.api._member(definition, "BendAngle")))
+                actual_radius_mm = float(self.api._member(definition, "BendRadius")) * 1000.0
+                actual_length_mm = float(self.api._member(definition, "OffsetDistance")) * 1000.0
+                if not math.isclose(actual_angle, angle, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange angle read-back does not match the request.",
+                    )
+                if not math.isclose(actual_length_mm, length, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange length read-back does not match the request.",
+                    )
+                if not math.isclose(actual_radius_mm, effective_radius_mm, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange bend-radius read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange did not preserve formed sheet-metal state.",
+                    )
+                phase = "save"
+                self._save(model, "sheet_metal_add_edge_flange")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "edge_selector": selector,
+                    "length_mm": actual_length_mm,
+                    "angle_deg": actual_angle,
+                    "bend_radius_mm": actual_radius_mm,
+                    **state_after,
+                }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_edge_flange",
+                    f"SOLIDWORKS Edge Flange operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_edge_flange",
+            timeout=self._timeout(timeout),
+            mutation=True,
         )
 
     def add_hem(
@@ -485,10 +662,3 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                 )
             return bool(raw[0])
         return bool(raw)
-
-    @staticmethod
-    def unsupported_edge_flange_reason() -> str:
-        return (
-            "Native Edge Flange requires a persistent edge-identity resolver; selection-name-only "
-            "automation is intentionally not exposed because it is not deterministic across rebuilds."
-        )

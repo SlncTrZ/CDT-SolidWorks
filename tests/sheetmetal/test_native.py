@@ -44,10 +44,24 @@ def test_flat_pattern_suppression_readback_handles_scalar_shape() -> None:
     assert adapter._is_suppressed(Feature(False)) is False
 
 
-def test_edge_flange_is_not_claimed_without_persistent_edge_identity() -> None:
-    reason = SheetMetalNativeAdapter.unsupported_edge_flange_reason()
-    assert "persistent edge-identity" in reason
-    assert "not deterministic" in reason
+def test_edge_flange_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "part.sldprt"
+    source.write_bytes(b"fixture")
+    session = FakeSession()
+    adapter = SheetMetalNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.add_edge_flange(
+        source,
+        edge_selector="Edge<123>",
+        length_mm=20.0,
+        angle_deg=90.0,
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
 
 
 def test_hem_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None:
