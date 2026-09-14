@@ -233,7 +233,9 @@ class AssemblyNativeAdapter:
             assembly = self._assembly(app, assembly_id)
             component = self._component(assembly, component_id)
             math_utility = self.api._member(app, "GetMathUtility")
-            math_transform = self.api._member(math_utility, "CreateTransform", values)
+            math_transform = self.api._member(
+                math_utility, "CreateTransform", self._double_array(values)
+            )
             if math_transform is None:
                 raise _AssemblyNativeError("component_transform_create_failed")
             component.Transform2 = math_transform
@@ -795,6 +797,16 @@ class AssemblyNativeAdapter:
             return ComponentLoadState.RESOLVED
         raise _AssemblyNativeError(
             "unknown_component_suppression_state", str(state)
+        )
+
+    def _double_array(self, values: tuple[float, ...]) -> Any:
+        client = getattr(self.api, "_client", None)
+        pythoncom = getattr(self.api, "_pythoncom", None)
+        if client is None or pythoncom is None:
+            raise _AssemblyNativeError("double_array_marshalling_unavailable")
+        return client.VARIANT(
+            pythoncom.VT_ARRAY | pythoncom.VT_R8,
+            tuple(float(value) for value in values),
         )
 
     @staticmethod

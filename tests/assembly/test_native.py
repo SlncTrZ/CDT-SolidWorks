@@ -54,6 +54,34 @@ class FakeSelectData:
     pass
 
 
+class FakePythonCom:
+    VT_ARRAY = 0x2000
+    VT_R8 = 5
+
+
+class FakeClient:
+    @staticmethod
+    def VARIANT(kind, values):
+        return (kind, tuple(values))
+
+
+class FakeMathUtility:
+    def __init__(self):
+        self.last_values = None
+
+    def CreateTransform(self, values):
+        self.last_values = values
+        return FakeTransform(tuple(values[1]))
+
+
+class FakeApp:
+    def __init__(self):
+        self.math_utility = FakeMathUtility()
+
+    def GetMathUtility(self):
+        return self.math_utility
+
+
 class FakeSelectionManager:
     def CreateSelectData(self):
         return FakeSelectData()
@@ -93,6 +121,8 @@ class FakeApi:
     def __init__(self, model):
         self.model = model
         self.requested_documents = []
+        self._pythoncom = FakePythonCom()
+        self._client = FakeClient()
 
     @staticmethod
     def _member(obj, name, *args):
@@ -202,12 +232,13 @@ class FakeSession:
     def __init__(self):
         self.model = FakeModel()
         self.api = FakeApi(self.model)
+        self.app = FakeApp()
         self.calls = []
 
     def execute(self, operation, *, stage, timeout, mutation=False):
         self.calls.append((stage, mutation))
         return NativeCallResult.success(
-            operation(object()), call_id=f"call-{len(self.calls)}", dispatched=True
+            operation(self.app), call_id=f"call-{len(self.calls)}", dispatched=True
         )
 
 
@@ -232,6 +263,19 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
     def test_component_delete_uses_explicit_zero_delete_options(self):
         self.adapter.delete_component(self.assembly_id, "Bracket-1")
         self.assertEqual(0, self.session.model.delete_options)
+
+    def test_component_transform_marshals_explicit_double_safearray(self):
+        values = (
+            1.0, 0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0,
+            1.0, 0.1, 0.2, 0.3,
+            1.0, 0.0, 0.0, 0.0,
+        )
+        self.adapter.set_component_transform(self.assembly_id, "Bracket-1", values)
+        self.assertEqual(
+            (FakePythonCom.VT_ARRAY | FakePythonCom.VT_R8, values),
+            self.session.app.math_utility.last_values,
+        )
 
     def test_component_suppression_maps_to_native_enum_and_checks_status(self):
         self.adapter.set_component_load_state(
