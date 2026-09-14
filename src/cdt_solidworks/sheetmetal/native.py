@@ -626,6 +626,255 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             mutation=True,
         )
 
+    def unfold_bend(
+        self,
+        path: str | Path,
+        *,
+        bend_feature_name: str,
+        fixed_x_mm: float,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Unfold one explicit underlying OneBend using a bounded planar fixed-face ray."""
+        try:
+            source = self._validate_part_path(path)
+            bend_name = str(bend_feature_name).strip()
+            fixed_x = float(fixed_x_mm)
+            if not bend_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_unfold_bend",
+                    "Unfold bend feature identity must not be empty.",
+                )
+            if not math.isfinite(fixed_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_unfold_bend",
+                    "Unfold fixed_x_mm must be finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_unfold_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold requires a formed sheet-metal body outside Flat Pattern mode.",
+                    )
+                bend = self.api._member(model, "FeatureByName", bend_name)
+                if bend is None or self.api.feature_type(bend) != "OneBend":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Requested bend identity is not present as a OneBend feature.",
+                        details={"bend_feature": bend_name},
+                    )
+                before_box = self._single_sheet_body_box(model, "sheet_metal_unfold_bend")
+                self.api._member(model, "ClearSelection2", True)
+                self._select_fixed_face_at_x(
+                    model,
+                    fixed_x_mm=fixed_x,
+                    append=False,
+                    mark=1,
+                    stage="sheet_metal_unfold_bend",
+                )
+                if not bool(self.api._member(bend, "Select2", True, 4)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_unfold_bend",
+                        "Underlying OneBend could not be selected with the required bend mark.",
+                    )
+                before_features = self._feature_rows(model)
+                self.api._member(model, "InsertSheetMetalUnfold")
+                self._require_clean_rebuild(model, "sheet_metal_unfold_bend")
+                after_features = self._feature_rows(model)
+                before_keys = {(row["name"], row["type"]) for row in before_features}
+                created = [
+                    row
+                    for row in after_features
+                    if (row["name"], row["type"]) not in before_keys and row["type"] == "UnFold"
+                ]
+                if len(created) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not create exactly one persisted UnFold feature identity.",
+                        details={"created": created},
+                    )
+                after_box = self._single_sheet_body_box(model, "sheet_metal_unfold_bend")
+                before_span = float(before_box[5]) - float(before_box[2])
+                after_span = float(after_box[5]) - float(after_box[2])
+                if before_span <= 0.0 or after_span >= before_span * 0.5:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not materially reduce the sheet-metal Z span.",
+                        details={"before_box": before_box, "after_box": after_box},
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not preserve the non-Flat-Pattern sheet-metal state.",
+                    )
+                self._save(model, "sheet_metal_unfold_bend")
+                return {
+                    "path": source,
+                    "feature_name": created[0]["name"],
+                    "feature_type": created[0]["type"],
+                    "bend_feature_name": bend_name,
+                    "fixed_x_mm": fixed_x,
+                    "before_box": before_box,
+                    "after_box": after_box,
+                    **state_after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_unfold_bend",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def fold_bend(
+        self,
+        path: str | Path,
+        *,
+        unfold_feature_name: str,
+        bend_feature_name: str,
+        fixed_x_mm: float,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Refold one explicit UnFold/OneBend pair using a bounded planar fixed-face ray."""
+        try:
+            source = self._validate_part_path(path)
+            unfold_name = str(unfold_feature_name).strip()
+            bend_name = str(bend_feature_name).strip()
+            fixed_x = float(fixed_x_mm)
+            if not unfold_name or not bend_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_fold_bend",
+                    "Fold UnFold and bend feature identities must not be empty.",
+                )
+            if not math.isfinite(fixed_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_fold_bend",
+                    "Fold fixed_x_mm must be finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_fold_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold requires a sheet-metal body outside Flat Pattern mode.",
+                    )
+                unfold = self.api._member(model, "FeatureByName", unfold_name)
+                bend = self.api._member(model, "FeatureByName", bend_name)
+                if unfold is None or self.api.feature_type(unfold) != "UnFold":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Requested unfold identity is not present as an UnFold feature.",
+                    )
+                if bend is None or self.api.feature_type(bend) != "OneBend":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Requested bend identity is not present as a OneBend feature.",
+                    )
+                before_box = self._single_sheet_body_box(model, "sheet_metal_fold_bend")
+                self.api._member(model, "ClearSelection2", True)
+                if not bool(self.api._member(unfold, "Select2", False, 0)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_fold_bend",
+                        "UnFold feature could not be selected for Fold.",
+                    )
+                self._select_fixed_face_at_x(
+                    model,
+                    fixed_x_mm=fixed_x,
+                    append=True,
+                    mark=1,
+                    stage="sheet_metal_fold_bend",
+                )
+                if not bool(self.api._member(bend, "Select2", True, 4)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_fold_bend",
+                        "Underlying OneBend could not be selected for Fold with the required mark.",
+                    )
+                before_features = self._feature_rows(model)
+                self.api._member(model, "InsertSheetMetalFold")
+                self._require_clean_rebuild(model, "sheet_metal_fold_bend")
+                after_features = self._feature_rows(model)
+                before_keys = {(row["name"], row["type"]) for row in before_features}
+                created = [
+                    row
+                    for row in after_features
+                    if (row["name"], row["type"]) not in before_keys and row["type"] == "Fold"
+                ]
+                if len(created) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not create exactly one persisted Fold feature identity.",
+                        details={"created": created},
+                    )
+                after_box = self._single_sheet_body_box(model, "sheet_metal_fold_bend")
+                before_span = float(before_box[5]) - float(before_box[2])
+                after_span = float(after_box[5]) - float(after_box[2])
+                if after_span <= max(before_span * 2.0, before_span + 0.005):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not materially restore the formed sheet-metal Z span.",
+                        details={"before_box": before_box, "after_box": after_box},
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not preserve formed sheet-metal state.",
+                    )
+                self._save(model, "sheet_metal_fold_bend")
+                return {
+                    "path": source,
+                    "feature_name": created[0]["name"],
+                    "feature_type": created[0]["type"],
+                    "unfold_feature_name": unfold_name,
+                    "bend_feature_name": bend_name,
+                    "fixed_x_mm": fixed_x,
+                    "before_box": before_box,
+                    "after_box": after_box,
+                    **state_after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_fold_bend",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
     def add_hem(
         self,
         path: str | Path,
@@ -904,6 +1153,108 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             timeout=self._timeout(timeout),
             mutation=True,
         )
+
+    def _single_sheet_body_box(self, model: Any, stage: str) -> tuple[float, ...]:
+        solids = tuple(self.api.bodies(model, 0, False))
+        if len(solids) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "Bounded sheet-metal bend state currently requires exactly one solid body.",
+            )
+        return tuple(float(value) for value in self._body_box(solids[0]))
+
+    def _feature_rows(self, model: Any) -> list[dict[str, str]]:
+        manager = self.api._member(model, "FeatureManager")
+        features = self._as_tuple(self.api._member(manager, "GetFeatures", False))
+        return [
+            {"name": self.api.feature_name(feature), "type": self.api.feature_type(feature)}
+            for feature in features
+        ]
+
+    def _select_fixed_face_at_x(
+        self,
+        model: Any,
+        *,
+        fixed_x_mm: float,
+        append: bool,
+        mark: int,
+        stage: str,
+    ) -> Any:
+        box = self._single_sheet_body_box(model, stage)
+        min_x, min_y, min_z, max_x, max_y, max_z = box
+        x_m = float(fixed_x_mm) / 1000.0
+        margin = max((max_x - min_x) * 0.01, 1e-5)
+        if not min_x + margin < x_m < max_x - margin:
+            raise NativeRuntimeError(
+                "cad_validation_error",
+                stage,
+                "fixed_x_mm must lie inside the current sheet-metal body bounds.",
+                details={"min_x_mm": min_x * 1000.0, "max_x_mm": max_x * 1000.0},
+            )
+        ray_z = max_z + max(max_z - min_z, 0.02)
+        extension = self.api._member(model, "Extension")
+        selected = bool(
+            self.api._member(
+                extension,
+                "SelectByRay",
+                x_m,
+                (min_y + max_y) * 0.5,
+                ray_z,
+                0.0,
+                0.0,
+                -1.0,
+                1e-6,
+                _SW_SELECT_FACES,
+                bool(append),
+                int(mark),
+                0,
+            )
+        )
+        if not selected:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The bounded fixed-face selection ray did not intersect the sheet-metal body.",
+            )
+        selection_manager = self.api._member(model, "SelectionManager")
+        selected_count = int(self.api._member(selection_manager, "GetSelectedObjectCount2", -1))
+        if selected_count <= 0:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The fixed-face selection list is unexpectedly empty.",
+            )
+        face = self.api._member(selection_manager, "GetSelectedObject6", selected_count, -1)
+        if face is None:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The bounded fixed-face selection did not resolve a native face.",
+            )
+        surface = self.api._member(face, "GetSurface")
+        if surface is None or not bool(self.api._member(surface, "IsPlane")):
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed-face selector requires a planar face.",
+            )
+        normal = self._as_tuple(self.api._member(face, "Normal"))
+        if len(normal) != 3:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed face did not expose a three-value normal.",
+            )
+        nx, ny, nz = (float(value) for value in normal)
+        if abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed-face selector requires an outward +Z planar face.",
+                details={"face_normal": [nx, ny, nz]},
+            )
+        return face
 
     def _state(self, model: Any) -> dict[str, Any]:
         base = self._feature_of_type(model, "SMBaseFlange")

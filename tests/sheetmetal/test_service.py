@@ -5,9 +5,11 @@ from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, Rebui
 from cdt_solidworks.sheetmetal.models import (
     BaseFlangeSpec,
     EdgeFlangeSpec,
+    FoldSpec,
     HemSpec,
     SheetMetalState,
     SketchedBendSpec,
+    UnfoldSpec,
 )
 from cdt_solidworks.sheetmetal.service import (
     SheetMetalContextError,
@@ -48,6 +50,14 @@ class FakeRuntime:
             "Sketched Bend1",
             {"angle_deg": spec.angle_deg, "bend_radius_mm": spec.bend_radius_mm},
         )
+
+    def unfold_sheet_metal(self, document, spec):
+        self.calls.append("unfold")
+        return MutationReceipt("Unfold1", {"feature_type": "UnFold"})
+
+    def fold_sheet_metal(self, document, spec):
+        self.calls.append("fold")
+        return MutationReceipt("Fold1", {"feature_type": "Fold"})
 
     def set_flattened(self, document, flattened):
         self.calls.append("flatten")
@@ -159,6 +169,37 @@ def test_sketched_bend_rejects_nonfinite_line_before_dispatch() -> None:
         )
     except SheetMetalValidationError as exc:
         assert "line_x_mm" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
+
+
+def test_unfold_bend_requires_formed_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).unfold_bend(
+        target(), UnfoldSpec("SketchBend1", 25.0)
+    )
+    assert result.feature_id == "Unfold1"
+    assert runtime.calls == ["resolve", "state", "unfold", "rebuild", "state", "persist"]
+
+
+def test_fold_bend_requires_unfold_and_bend_identities_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).fold_bend(
+        target(), FoldSpec("Unfold1", "SketchBend1", 25.0)
+    )
+    assert result.feature_id == "Fold1"
+    assert runtime.calls == ["resolve", "state", "fold", "rebuild", "state", "persist"]
+
+
+def test_unfold_rejects_empty_bend_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        SheetMetalService(runtime).unfold_bend(target(), UnfoldSpec("", 25.0))
+    except SheetMetalValidationError as exc:
+        assert "bend feature" in str(exc)
     else:
         raise AssertionError("expected SheetMetalValidationError")
     assert runtime.calls == []

@@ -8,10 +8,12 @@ from cdt_solidworks.body.runtime import DocumentTarget, FabricationRuntime, Reso
 from cdt_solidworks.sheetmetal.models import (
     BaseFlangeSpec,
     EdgeFlangeSpec,
+    FoldSpec,
     HemSpec,
     SheetMetalMutationResult,
     SheetMetalState,
     SketchedBendSpec,
+    UnfoldSpec,
 )
 
 _TOLERANCE_MM = 1e-6
@@ -138,6 +140,48 @@ class SheetMetalService:
         self._require_persistence(document)
         return SheetMetalMutationResult(receipt.feature_id, after)
 
+    def unfold_bend(
+        self, target: DocumentTarget, spec: UnfoldSpec
+    ) -> SheetMetalMutationResult:
+        self._validate_target(target)
+        self._validate_unfold(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_sheet_metal_state(document)
+        if not before.is_sheet_metal or before.flattened:
+            raise SheetMetalContextError("unfold requires the formed sheet-metal state")
+        receipt = self._runtime.unfold_sheet_metal(document, spec)
+        if not receipt.feature_id.strip():
+            raise SheetMetalMutationError("unfold returned an empty feature identity")
+        if receipt.parameters.get("feature_type") not in {None, "UnFold"}:
+            raise SheetMetalMutationError("unfold feature type read-back mismatch")
+        self._require_rebuild(document)
+        after = self._runtime.get_sheet_metal_state(document)
+        if not after.is_sheet_metal or after.flattened:
+            raise SheetMetalMutationError("unfold read-back lost sheet-metal state")
+        self._require_persistence(document)
+        return SheetMetalMutationResult(receipt.feature_id, after)
+
+    def fold_bend(
+        self, target: DocumentTarget, spec: FoldSpec
+    ) -> SheetMetalMutationResult:
+        self._validate_target(target)
+        self._validate_fold(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_sheet_metal_state(document)
+        if not before.is_sheet_metal or before.flattened:
+            raise SheetMetalContextError("fold requires a sheet-metal body outside Flat Pattern mode")
+        receipt = self._runtime.fold_sheet_metal(document, spec)
+        if not receipt.feature_id.strip():
+            raise SheetMetalMutationError("fold returned an empty feature identity")
+        if receipt.parameters.get("feature_type") not in {None, "Fold"}:
+            raise SheetMetalMutationError("fold feature type read-back mismatch")
+        self._require_rebuild(document)
+        after = self._runtime.get_sheet_metal_state(document)
+        if not after.is_sheet_metal or after.flattened:
+            raise SheetMetalMutationError("fold read-back lost formed sheet-metal state")
+        self._require_persistence(document)
+        return SheetMetalMutationResult(receipt.feature_id, after)
+
     def set_flattened(
         self, target: DocumentTarget, flattened: bool
     ) -> SheetMetalMutationResult:
@@ -189,6 +233,22 @@ class SheetMetalService:
             raise SheetMetalValidationError("edge flange angle must be finite and in the range (0, 180)")
         if spec.bend_radius_mm is not None:
             SheetMetalService._positive(spec.bend_radius_mm, "edge flange bend radius")
+
+    @staticmethod
+    def _validate_unfold(spec: UnfoldSpec) -> None:
+        if not spec.bend_feature_id.strip():
+            raise SheetMetalValidationError("unfold bend feature identity must not be empty")
+        if not math.isfinite(spec.fixed_x_mm):
+            raise SheetMetalValidationError("unfold fixed_x_mm must be finite")
+
+    @staticmethod
+    def _validate_fold(spec: FoldSpec) -> None:
+        if not spec.unfold_feature_id.strip():
+            raise SheetMetalValidationError("fold unfold feature identity must not be empty")
+        if not spec.bend_feature_id.strip():
+            raise SheetMetalValidationError("fold bend feature identity must not be empty")
+        if not math.isfinite(spec.fixed_x_mm):
+            raise SheetMetalValidationError("fold fixed_x_mm must be finite")
 
     @staticmethod
     def _validate_sketched_bend(spec: SketchedBendSpec) -> None:

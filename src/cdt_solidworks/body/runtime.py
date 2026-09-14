@@ -17,9 +17,11 @@ if TYPE_CHECKING:
     from cdt_solidworks.sheetmetal.models import (
         BaseFlangeSpec,
         EdgeFlangeSpec,
+        FoldSpec,
         HemSpec,
         SheetMetalState,
         SketchedBendSpec,
+        UnfoldSpec,
     )
     from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
     from cdt_solidworks.weldment.models import (
@@ -91,6 +93,14 @@ class FabricationRuntime(Protocol):
 
     def create_sketched_bend(
         self, document: ResolvedDocument, spec: SketchedBendSpec
+    ) -> MutationReceipt: ...
+
+    def unfold_sheet_metal(
+        self, document: ResolvedDocument, spec: UnfoldSpec
+    ) -> MutationReceipt: ...
+
+    def fold_sheet_metal(
+        self, document: ResolvedDocument, spec: FoldSpec
     ) -> MutationReceipt: ...
 
     def set_flattened(self, document: ResolvedDocument, flattened: bool) -> MutationReceipt: ...

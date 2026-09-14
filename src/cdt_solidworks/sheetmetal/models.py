@@ -43,6 +43,19 @@ class SketchedBendSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class UnfoldSpec:
+    bend_feature_id: str
+    fixed_x_mm: float
+
+
+@dataclass(frozen=True, slots=True)
+class FoldSpec:
+    unfold_feature_id: str
+    bend_feature_id: str
+    fixed_x_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class SheetMetalState:
     is_sheet_metal: bool
     thickness_mm: float | None

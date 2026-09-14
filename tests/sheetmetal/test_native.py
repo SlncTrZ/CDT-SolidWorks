@@ -101,6 +101,41 @@ def test_sketched_bend_rejects_nonfinite_line_before_dispatch(tmp_path) -> None:
     assert session.calls == 0
 
 
+def test_unfold_rejects_empty_bend_identity_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "part.sldprt"
+    source.write_bytes(b"fixture")
+    session = FakeSession()
+    adapter = SheetMetalNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.unfold_bend(source, bend_feature_name="", fixed_x_mm=25.0)
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
+def test_fold_rejects_nonfinite_fixed_x_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "part.sldprt"
+    source.write_bytes(b"fixture")
+    session = FakeSession()
+    adapter = SheetMetalNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.fold_bend(
+        source,
+        unfold_feature_name="Unfold1",
+        bend_feature_name="SketchBend1",
+        fixed_x_mm=float("nan"),
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
 def test_hem_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None:
     source = tmp_path / "part.sldprt"
     source.write_bytes(b"fixture")
