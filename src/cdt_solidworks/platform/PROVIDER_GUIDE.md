@@ -36,6 +36,9 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 
 - `sketch_create_geometry` — create bounded explicit sketch geometry in an opened native part.
 - `sketch_get` — read one explicit native sketch with stable identity/read-back.
+- `sketch_relations_list` — list native sketch relations and bounded definition-state evidence.
+- `sketch_relation_delete` — delete one explicit accepted sketch relation and verify read-back.
+- `sketch_dimension_set` — edit one accepted sketch dimension and verify persisted value.
 - `sketch_create_rectangle` — create a rectangular 2D sketch in a new native part.
 - `part_create_rect_extrude` — create a rectangular sketch plus one solid boss extrude.
 - `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
@@ -46,6 +49,11 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `part_revolve` — create a solid Revolve from a standard-plane sketch containing exactly one construction centerline; `axis_ref` is intentionally bounded to `profile_centerline`.
 - `part_revolve_cut` — create a Revolve Cut using the same bounded profile-centerline and angle contract.
 - `part_revolve_reconcile` — reconcile an uncertain boss/cut Revolve by call ID; verifies native type, axis, angle, rebuild and solid body before clearing quarantine.
+- `part_hole_wizard` — create the bounded native-accepted ANSI Metric countersink Hole Wizard subset with explicit size/center identity and save-reopen read-back.
+- `part_fillet`, `part_chamfer`, `part_shell`, `part_draft`, `part_rib` — create the bounded native-accepted common feature subsets with rebuild/read-back validation.
+- `part_linear_pattern`, `part_circular_pattern`, `part_mirror` — create native-accepted feature pattern/mirror subsets with persisted feature identity.
+- `part_reference_plane`, `part_reference_axis`, `part_reference_point` — create bounded native reference geometry.
+- `part_feature_get`, `part_feature_rename`, `part_feature_set_suppressed`, `part_feature_set_parameter` — bounded feature query/rename/suppression and whitelisted parameter editing.
 - `part_combine_all_bodies` — Boolean-add all solid bodies and verify the result is one solid body.
 - `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
 - `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.
@@ -63,14 +71,22 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `assembly_component_set_fixed` — fix/float one explicit component.
 - `assembly_component_set_load_state` — set one component to the native-accepted `resolved` or `suppressed` state.
 - `assembly_component_set_configuration` — set/read back one component referenced configuration.
-- `assembly_mate_create` — create Coincident, Parallel, Perpendicular, Distance, or Angle mates using bounded selection references.
-- `assembly_mates_list` — list stable mate identity/type/state.
-- `assembly_coincident_mate_set_suppressed` — suppress/unsuppress an accepted Coincident mate.
-- `assembly_distance_mate_set_value` — edit an accepted Distance mate and verify persisted value.
+- `assembly_component_delete` — delete one explicit top-level component and verify absence after rebuild.
+- `assembly_component_replace` — replace one explicit top-level component with an allowed native part/assembly and verify source/configuration read-back.
+- `assembly_component_set_transform` — apply one explicit 16-value native component transform and verify persistence.
+- `assembly_component_pattern_create` — create a bounded one-direction linear component pattern from stable seed/direction identities.
+- `assembly_mate_create` — create Coincident, Concentric, Distance, Angle, Parallel, Perpendicular, Tangent, Lock, Width, or Slot mates using bounded stable selection references; Width/Slot constraints are bounded to centered/free.
+- `assembly_mates_list` — list stable mate identity/type/state, including solved/suppressed/dangling state.
+- `assembly_mate_set_suppressed` — suppress/unsuppress a native-accepted mate and verify solved-state read-back.
+- `assembly_mate_set_value` — edit native-accepted Distance or Angle mate values and verify solved read-back.
+- `assembly_coincident_mate_set_suppressed` — compatibility surface for Coincident-only suppression.
+- `assembly_distance_mate_set_value` — compatibility surface for Distance-only value edit.
 - `configuration_list`, `configuration_create`, `configuration_rename`, `configuration_delete`, `configuration_activate` — bounded configuration lifecycle.
 - `configuration_set_dimension` — set a configuration-specific model dimension.
 - `configuration_set_property`, `configuration_delete_property` — mutate document/configuration custom properties.
 - `configuration_set_feature_suppressed` — set feature suppression for one explicit configuration.
+- `configuration_set_material` — assign and read back one explicit SOLIDWORKS material for one configuration.
+- `configuration_display_states_list`, `configuration_display_state_create`, `configuration_display_state_rename`, `configuration_display_state_delete` — bounded display-state lifecycle for one explicit configuration.
 - `configuration_equations_list`, `configuration_equation_add`, `configuration_equation_set`, `configuration_equation_delete` — bounded equation/global-variable CRUD.
 - `drawing_create` — create one new native drawing under the configured path policy.
 - `drawing_sheet_create` — add and rebuild one explicit drawing sheet.
@@ -85,6 +101,8 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `evaluation_mass_properties` — read validated part mass/volume/area, center of mass, and inertia.
 - `evaluation_bounding_box` — read a validated approximate part bounding box.
 - `evaluation_geometry_sanity` — read body/error sanity and fail when native feature errors exist.
+- `evaluation_measure` — measure one or two bounded stable part references and return validated distance/angle/radius/diameter values where applicable.
+- `evaluation_interferences` — detect assembly interference pairs and validated overlap volume, including a clean zero-interference case.
 
 All CAD paths are constrained by the same configured path policy as document operations. The provider does not expose arbitrary macros, scripts, COM method names, or raw native API argument lists.
 
@@ -111,14 +129,21 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.assembly.components`
 - `solidworks.assembly.component_state`
 - `solidworks.assembly.component_configuration`
+- `solidworks.assembly.component_lifecycle`
+- `solidworks.assembly.component_pattern`
 - `solidworks.assembly.coincident_mate`
 - `solidworks.assembly.common_mates`
+- `solidworks.assembly.advanced_common_mates`
+- `solidworks.assembly.mate_suppression`
+- `solidworks.assembly.mate_value`
 - `solidworks.assembly.coincident_mate_suppression`
 - `solidworks.assembly.distance_mate_value`
 - `solidworks.configuration.lifecycle`
 - `solidworks.configuration.dimension`
 - `solidworks.configuration.properties`
 - `solidworks.configuration.feature_suppression`
+- `solidworks.configuration.material`
+- `solidworks.configuration.display_states`
 - `solidworks.configuration.equations`
 - `solidworks.drawing.lifecycle`
 - `solidworks.drawing.front_view`
@@ -142,12 +167,14 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.evaluation.mass_properties`
 - `solidworks.evaluation.bounding_box`
 - `solidworks.evaluation.geometry_sanity`
+- `solidworks.evaluation.measurement`
+- `solidworks.evaluation.interference`
 
-Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support`: native Cut Extrude is now promoted, but Revolve and the remaining parametric feature family still require their own production native gates. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
+Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support`: multiple bounded parametric subsets are promoted, but Sweep/Loft/Boundary and unrestricted feature-definition editing remain outside the accepted public surface. Broad `solidworks.assembly.mates` remains partial because the ten promoted common mate families do not imply Gear/Rack-Pinion/Screw or unrestricted mate semantics. Broad `solidworks.configurations` remains partial because deterministic design-table integration is intentionally unpromoted.
 
 Lane D's bounded drawing lifecycle now includes standard-view parity, Projected, Section, Note, and Center Mark; STEP/IGES/Parasolid provider imports and exact-sheet PDF are also callable alongside the existing export matrix. Broad `solidworks.drawing`, `solidworks.export`, `solidworks.import`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
 
-The Lane D acceptance boundary still excludes Detail View, direct drawing dimensions/model items, balloons, GTol/datum/surface-finish/weld-symbol breadth, BOM/cut-list tables, flat-pattern DXF integration, STEP 242 PMI publication, measurement/interference, and native semantic MBD/DimXpert/PMI.
+The bounded Drawing/MBD acceptance boundary still excludes Detail View, direct drawing dimensions/model items, balloons, GTol/datum/surface-finish/weld-symbol breadth, BOM/cut-list tables, flat-pattern DXF integration, STEP 242 PMI publication, and native semantic MBD/DimXpert/PMI. Stable-reference measurement and assembly interference are separately promoted by the Evaluation surface and do not imply broader Drawing/MBD support.
 
 `solidworks.simulation.study` is declared but `implemented=false`: native Simulation integration has not been built. Motion and Routing likewise remain outside the callable provider surface until their typed adapters and native gates exist. Add-ins are intended to load on demand rather than require Start Up. `solidworks.flow_simulation` and `solidworks.electrical` remain `implemented=false` until dedicated installation/license/API probes and native evidence exist.
 
