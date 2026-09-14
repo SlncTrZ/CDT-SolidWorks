@@ -25,6 +25,8 @@ _SW_FM_EDGE_FLANGE = 37
 _SW_FLANGE_OFFSET_BLIND = 1
 _SW_FLANGE_POSITION_MATERIAL_INSIDE = 1
 _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP = 2
+_SW_FM_SKETCH_BEND = 35
+_SW_SELECT_FACES = 2
 _BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 _EDGE_TOLERANCE_M = 1e-7
 
@@ -326,6 +328,289 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
         return self.session.execute(
             operation,
             stage="sheet_metal_add_edge_flange",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def add_sketched_bend(
+        self,
+        path: str | Path,
+        *,
+        line_x_mm: float,
+        angle_deg: float,
+        bend_radius_mm: float,
+        reverse: bool = False,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create one vertical sketched bend on a bounded rectangular +Z Base Flange face."""
+        try:
+            source = self._validate_part_path(path)
+            line_x = float(line_x_mm)
+            angle = float(angle_deg)
+            radius = float(bend_radius_mm)
+            if not math.isfinite(line_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend line_x_mm must be finite.",
+                )
+            if not math.isfinite(angle) or not 0.0 < angle < 180.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend angle must be finite and in the range (0, 180).",
+                )
+            if not math.isfinite(radius) or radius <= 0.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend radius must be positive and finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_sketched_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            phase = "state_readback"
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend requires one formed sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Bounded Sketched Bend currently requires exactly one solid body.",
+                    )
+                box = self._body_box(solids[0])
+                min_x, min_y, min_z, max_x, max_y, max_z = box
+                span_x = max_x - min_x
+                span_y = max_y - min_y
+                if span_x <= 0.0 or span_y <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend requires a non-degenerate rectangular sheet-metal footprint.",
+                    )
+                line_x_m = line_x / 1000.0
+                x_margin = max(span_x * 0.01, 1e-5)
+                if not min_x + x_margin < line_x_m < max_x - x_margin:
+                    raise NativeRuntimeError(
+                        "cad_validation_error",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend line_x_mm must lie inside the bounded sheet footprint.",
+                        details={"min_x_mm": min_x * 1000.0, "max_x_mm": max_x * 1000.0},
+                    )
+                y_margin = max(span_y * 0.08, 1e-5)
+                y1 = min_y + y_margin
+                y2 = max_y - y_margin
+                if y2 <= y1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend sheet footprint is too small for the bounded bend line.",
+                    )
+
+                extension = self.api._member(model, "Extension")
+                ray_z = max_z + max(max_z - min_z, 0.01)
+                center_y = (min_y + max_y) * 0.5
+
+                def select_top_face(*, append: bool, clear: bool) -> Any:
+                    if clear:
+                        self.api._member(model, "ClearSelection2", True)
+                    selected = bool(
+                        self.api._member(
+                            extension,
+                            "SelectByRay",
+                            line_x_m,
+                            center_y,
+                            ray_z,
+                            0.0,
+                            0.0,
+                            -1.0,
+                            1e-6,
+                            _SW_SELECT_FACES,
+                            append,
+                            0,
+                            0,
+                        )
+                    )
+                    if not selected:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "No planar +Z sheet-metal face was intersected by the bounded selection ray.",
+                        )
+                    selection_manager = self.api._member(model, "SelectionManager")
+                    face = self.api._member(selection_manager, "GetSelectedObject6", 1, -1)
+                    if face is None:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "The bounded Sketched Bend face selection did not resolve a native face.",
+                        )
+                    surface = self.api._member(face, "GetSurface")
+                    if surface is None or not bool(self.api._member(surface, "IsPlane")):
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Bounded Sketched Bend requires a planar +Z fixed face.",
+                        )
+                    normal = self._as_tuple(self.api._member(face, "Normal"))
+                    if len(normal) != 3:
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Sketched Bend fixed face did not expose a three-value normal.",
+                        )
+                    nx, ny, nz = (float(value) for value in normal)
+                    if abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9:
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Bounded Sketched Bend requires an outward +Z planar fixed face.",
+                            details={"face_normal": [nx, ny, nz]},
+                        )
+                    return face
+
+                phase = "bend_sketch"
+                select_top_face(append=False, clear=True)
+                sketch_manager = self.api._member(model, "SketchManager")
+                self.api._member(sketch_manager, "InsertSketch", True)
+                if self.api._member(model, "GetActiveSketch2") is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not enter the bounded Sketched Bend face sketch.",
+                    )
+                line = self.api._member(
+                    sketch_manager,
+                    "CreateLine",
+                    line_x_m,
+                    y1,
+                    0.0,
+                    line_x_m,
+                    y2,
+                    0.0,
+                )
+                if line is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create the Sketched Bend line.",
+                    )
+                self.api._member(model, "ClearSelection2", True)
+                self.api._member(sketch_manager, "InsertSketch", True)
+                self.api._member(sketch_manager, "InsertSketch", True)
+                if self.api._member(model, "GetActiveSketch2") is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not restore the Sketched Bend sketch for feature creation.",
+                    )
+                select_top_face(append=True, clear=False)
+
+                phase = "create_feature"
+                manager = self.api._member(model, "FeatureManager")
+                definition = self.api._member(manager, "CreateDefinition", _SW_FM_SKETCH_BEND)
+                if definition is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create Sketched Bend feature data.",
+                    )
+                definition.BendAngle = math.radians(angle)
+                definition.UseDefaultBendRadius = False
+                definition.UseGaugeTable = False
+                definition.BendRadius = radius / 1000.0
+                definition.ReverseDirection = bool(reverse)
+                definition.UseDefaultBendAllowance = True
+                feature = self.api._member(manager, "CreateFeature", definition)
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create the Sketched Bend feature.",
+                    )
+                feature_name = self.api.feature_name(feature)
+                feature_type = self.api.feature_type(feature)
+                if not feature_name or feature_type != "SM3dBend":
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend feature read-back did not match the accepted SM3dBend contract.",
+                        details={"feature_name": feature_name, "feature_type": feature_type},
+                    )
+                phase = "rebuild"
+                self._require_clean_rebuild(model, "sheet_metal_add_sketched_bend")
+                phase = "feature_readback"
+                actual = self.api._member(feature, "GetDefinition")
+                actual_angle = math.degrees(float(self.api._member(actual, "BendAngle")))
+                actual_radius = float(self.api._member(actual, "BendRadius")) * 1000.0
+                actual_reverse = bool(self.api._member(actual, "ReverseDirection"))
+                if not math.isclose(actual_angle, angle, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend angle read-back does not match the request.",
+                    )
+                if not math.isclose(actual_radius, radius, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend radius read-back does not match the request.",
+                    )
+                if actual_reverse is not bool(reverse):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend direction read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend did not preserve formed sheet-metal state.",
+                    )
+                phase = "save"
+                self._save(model, "sheet_metal_add_sketched_bend")
+                return {
+                    "path": source,
+                    "feature_name": feature_name,
+                    "feature_type": feature_type,
+                    "line_x_mm": line_x,
+                    "angle_deg": actual_angle,
+                    "bend_radius_mm": actual_radius,
+                    "reverse": actual_reverse,
+                    **state_after,
+                }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_sketched_bend",
+                    f"SOLIDWORKS Sketched Bend operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_sketched_bend",
             timeout=self._timeout(timeout),
             mutation=True,
         )

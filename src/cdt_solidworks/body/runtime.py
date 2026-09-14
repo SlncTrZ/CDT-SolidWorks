@@ -14,7 +14,13 @@ if TYPE_CHECKING:
         MoveCopyBodySpec,
         MutationReceipt,
     )
-    from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
+    from cdt_solidworks.sheetmetal.models import (
+        BaseFlangeSpec,
+        EdgeFlangeSpec,
+        HemSpec,
+        SheetMetalState,
+        SketchedBendSpec,
+    )
     from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
     from cdt_solidworks.weldment.models import (
         CutListPropertySpec,
@@ -82,6 +88,10 @@ class FabricationRuntime(Protocol):
     def create_edge_flange(self, document: ResolvedDocument, spec: EdgeFlangeSpec) -> MutationReceipt: ...
 
     def create_hem(self, document: ResolvedDocument, spec: HemSpec) -> MutationReceipt: ...
+
+    def create_sketched_bend(
+        self, document: ResolvedDocument, spec: SketchedBendSpec
+    ) -> MutationReceipt: ...
 
     def set_flattened(self, document: ResolvedDocument, flattened: bool) -> MutationReceipt: ...
 

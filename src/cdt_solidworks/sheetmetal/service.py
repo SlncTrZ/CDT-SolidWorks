@@ -11,6 +11,7 @@ from cdt_solidworks.sheetmetal.models import (
     HemSpec,
     SheetMetalMutationResult,
     SheetMetalState,
+    SketchedBendSpec,
 )
 
 _TOLERANCE_MM = 1e-6
@@ -110,6 +111,33 @@ class SheetMetalService:
         self._require_persistence(document)
         return SheetMetalMutationResult(receipt.feature_id, after)
 
+    def add_sketched_bend(
+        self, target: DocumentTarget, spec: SketchedBendSpec
+    ) -> SheetMetalMutationResult:
+        self._validate_target(target)
+        self._validate_sketched_bend(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_sheet_metal_state(document)
+        if not before.is_sheet_metal or before.flattened:
+            raise SheetMetalContextError("sketched bend requires the formed sheet-metal state")
+        receipt = self._runtime.create_sketched_bend(document, spec)
+        if not receipt.feature_id.strip():
+            raise SheetMetalMutationError("sketched bend returned an empty feature identity")
+        readback_angle = receipt.parameters.get("angle_deg")
+        readback_radius = receipt.parameters.get("bend_radius_mm")
+        if readback_angle is not None:
+            self._require_close(float(readback_angle), spec.angle_deg, "sketched bend angle")
+        if readback_radius is not None:
+            self._require_close(float(readback_radius), spec.bend_radius_mm, "sketched bend radius")
+        self._require_rebuild(document)
+        after = self._runtime.get_sheet_metal_state(document)
+        if not after.is_sheet_metal or after.flattened:
+            raise SheetMetalMutationError("sketched bend read-back lost formed sheet-metal state")
+        if before.thickness_mm is not None:
+            self._require_close(after.thickness_mm, before.thickness_mm, "thickness")
+        self._require_persistence(document)
+        return SheetMetalMutationResult(receipt.feature_id, after)
+
     def set_flattened(
         self, target: DocumentTarget, flattened: bool
     ) -> SheetMetalMutationResult:
@@ -161,6 +189,16 @@ class SheetMetalService:
             raise SheetMetalValidationError("edge flange angle must be finite and in the range (0, 180)")
         if spec.bend_radius_mm is not None:
             SheetMetalService._positive(spec.bend_radius_mm, "edge flange bend radius")
+
+    @staticmethod
+    def _validate_sketched_bend(spec: SketchedBendSpec) -> None:
+        if not spec.name.strip():
+            raise SheetMetalValidationError("sketched bend name must not be empty")
+        if not math.isfinite(spec.line_x_mm):
+            raise SheetMetalValidationError("sketched bend line_x_mm must be finite")
+        if not math.isfinite(spec.angle_deg) or not 0.0 < spec.angle_deg < 180.0:
+            raise SheetMetalValidationError("sketched bend angle must be finite and in the range (0, 180)")
+        SheetMetalService._positive(spec.bend_radius_mm, "sketched bend radius")
 
     @staticmethod
     def _validate_hem(spec: HemSpec) -> None:

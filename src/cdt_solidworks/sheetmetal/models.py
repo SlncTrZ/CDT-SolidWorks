@@ -34,6 +34,15 @@ class HemSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class SketchedBendSpec:
+    name: str
+    line_x_mm: float
+    angle_deg: float
+    bend_radius_mm: float
+    reverse: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SheetMetalState:
     is_sheet_metal: bool
     thickness_mm: float | None

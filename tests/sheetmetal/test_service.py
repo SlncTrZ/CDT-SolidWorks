@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from cdt_solidworks.body.models import MutationReceipt
 from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, RebuildResult, ResolvedDocument
-from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
+from cdt_solidworks.sheetmetal.models import (
+    BaseFlangeSpec,
+    EdgeFlangeSpec,
+    HemSpec,
+    SheetMetalState,
+    SketchedBendSpec,
+)
 from cdt_solidworks.sheetmetal.service import (
     SheetMetalContextError,
     SheetMetalMutationError,
@@ -35,6 +41,13 @@ class FakeRuntime:
     def create_hem(self, document, spec):
         self.calls.append("hem")
         return MutationReceipt("Hem1", {"length_mm": spec.length_mm})
+
+    def create_sketched_bend(self, document, spec):
+        self.calls.append("sketched_bend")
+        return MutationReceipt(
+            "Sketched Bend1",
+            {"angle_deg": spec.angle_deg, "bend_radius_mm": spec.bend_radius_mm},
+        )
 
     def set_flattened(self, document, flattened):
         self.calls.append("flatten")
@@ -126,6 +139,29 @@ def test_hem_requires_sheet_metal_and_persists() -> None:
     )
     assert result.feature_id == "Hem1"
     assert runtime.calls == ["resolve", "state", "hem", "rebuild", "state", "persist"]
+
+
+def test_sketched_bend_requires_formed_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_sketched_bend(
+        target(), SketchedBendSpec("Sketched Bend1", 0.0, 90.0, 1.5)
+    )
+    assert result.feature_id == "Sketched Bend1"
+    assert runtime.calls == ["resolve", "state", "sketched_bend", "rebuild", "state", "persist"]
+
+
+def test_sketched_bend_rejects_nonfinite_line_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        SheetMetalService(runtime).add_sketched_bend(
+            target(), SketchedBendSpec("Sketched Bend1", float("nan"), 90.0, 1.5)
+        )
+    except SheetMetalValidationError as exc:
+        assert "line_x_mm" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
 
 
 def test_hem_rejects_unbounded_edge_identity_before_dispatch() -> None:

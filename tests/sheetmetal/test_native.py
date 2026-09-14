@@ -81,6 +81,26 @@ def test_edge_flange_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None
     assert session.calls == 0
 
 
+def test_sketched_bend_rejects_nonfinite_line_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "part.sldprt"
+    source.write_bytes(b"fixture")
+    session = FakeSession()
+    adapter = SheetMetalNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.add_sketched_bend(
+        source,
+        line_x_mm=float("nan"),
+        angle_deg=90.0,
+        bend_radius_mm=1.5,
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
 def test_hem_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None:
     source = tmp_path / "part.sldprt"
     source.write_bytes(b"fixture")
