@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
+from cdt_solidworks.native.errors import NativeRuntimeError
 from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.sheetmetal.native import SheetMetalNativeAdapter
 
 
+class FakePythonCom:
+    DISPATCH_METHOD = 1
+    VT_I4 = 3
+    VT_VARIANT = 12
+
+
 class FakeApi:
+    _pythoncom = FakePythonCom()
+
     @staticmethod
     def _member(obj, name, *args):
         member = getattr(obj, name)
         return member(*args) if callable(member) else member
+
+    @staticmethod
+    def dispatch_array(values):
+        return ("dispatch-array", tuple(values))
 
 
 class FakeSession:
@@ -110,6 +123,54 @@ class Body:
 
     def GetEdges(self):
         return self._edges
+
+
+class FakeEdgeFlangeOle:
+    def __init__(self, error_code: int = 0) -> None:
+        self.error_code = error_code
+        self.calls = []
+
+    def GetIDsOfNames(self, name):
+        assert name == "AddEdges"
+        return 37
+
+    def InvokeTypes(self, *args):
+        self.calls.append(args)
+        return self.error_code
+
+
+class FakeEdgeFlangeDefinition:
+    def __init__(self, error_code: int = 0) -> None:
+        self._oleobj_ = FakeEdgeFlangeOle(error_code)
+
+
+def test_edge_flange_add_edges_uses_raw_idispatch_contract() -> None:
+    adapter = SheetMetalNativeAdapter(FakeSession(), path_policy=None)
+    definition = FakeEdgeFlangeDefinition()
+    edge = object()
+    sketch = object()
+
+    adapter._add_edge_flange_edges(definition, edge, sketch)
+
+    assert len(definition._oleobj_.calls) == 1
+    call = definition._oleobj_.calls[0]
+    assert call[0] == 37
+    assert call[2] == FakePythonCom.DISPATCH_METHOD
+    assert call[-2] == ("dispatch-array", (edge,))
+    assert call[-1] == ("dispatch-array", (sketch,))
+
+
+def test_edge_flange_add_edges_surfaces_solidworks_error_code() -> None:
+    adapter = SheetMetalNativeAdapter(FakeSession(), path_policy=None)
+    definition = FakeEdgeFlangeDefinition(error_code=5)
+
+    try:
+        adapter._add_edge_flange_edges(definition, object(), object())
+    except NativeRuntimeError as exc:
+        assert exc.code == "cad_mutation_failed"
+        assert exc.details == {"edge_flange_error": 5}
+    else:
+        raise AssertionError("expected NativeRuntimeError")
 
 
 def test_boundary_edge_selector_resolves_top_bbox_edge_deterministically() -> None:

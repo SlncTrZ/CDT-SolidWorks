@@ -242,18 +242,7 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_edge_flange",
                         "SOLIDWORKS did not create Edge Flange feature data.",
                     )
-                add_edges = self.api._member(
-                    definition,
-                    "AddEdges",
-                    self.api.dispatch_array((edge,)),
-                    self.api.dispatch_array((sketch,)),
-                )
-                if add_edges is False:
-                    raise NativeRuntimeError(
-                        "cad_mutation_failed",
-                        "sheet_metal_add_edge_flange",
-                        "SOLIDWORKS rejected the Edge Flange edge/profile binding.",
-                    )
+                self._add_edge_flange_edges(definition, edge, sketch)
                 definition.UseDefaultBendRadius = radius is None
                 if radius is not None:
                     definition.BendRadius = effective_radius_mm / 1000.0
@@ -735,6 +724,38 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                 return feature
             feature = self.api.next_feature(feature)
         return None
+
+    def _add_edge_flange_edges(self, definition: Any, edge: Any, sketch: Any) -> None:
+        """Invoke AddEdges through raw IDispatch to avoid pywin32 late-bound method/property ambiguity."""
+        ole = getattr(definition, "_oleobj_", None)
+        pythoncom = getattr(self.api, "_pythoncom", None)
+        if ole is None or pythoncom is None:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                "sheet_metal_add_edge_flange",
+                "Edge Flange feature data does not expose the required COM dispatch contract.",
+            )
+        dispid = ole.GetIDsOfNames("AddEdges")
+        if isinstance(dispid, (tuple, list)):
+            dispid = dispid[0]
+        error_code = int(
+            ole.InvokeTypes(
+                int(dispid),
+                0,
+                pythoncom.DISPATCH_METHOD,
+                (pythoncom.VT_I4, 0),
+                ((pythoncom.VT_VARIANT, 0), (pythoncom.VT_VARIANT, 0)),
+                self.api.dispatch_array((edge,)),
+                self.api.dispatch_array((sketch,)),
+            )
+        )
+        if error_code != 0:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                "sheet_metal_add_edge_flange",
+                "SOLIDWORKS rejected the Edge Flange edge/profile binding.",
+                details={"edge_flange_error": error_code},
+            )
 
     def _is_suppressed(self, feature: Any) -> bool:
         raw = self.api._member(feature, "IsSuppressed2", _SW_THIS_CONFIGURATION, None)
