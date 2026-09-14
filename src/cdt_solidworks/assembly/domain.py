@@ -538,7 +538,7 @@ class AssemblyService:
     def _require_solved_mate(mate: MateSnapshot) -> None:
         if mate.state is not MateState.SOLVED:
             raise AssemblyPostconditionError("mate_not_solved", mate.state.value)
-        if mate.error_status not in (None, 1):
+        if mate.error_status not in (None, 0, 1):
             raise AssemblyPostconditionError(
                 "mate_error_status", str(mate.error_status)
             )

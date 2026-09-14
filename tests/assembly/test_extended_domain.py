@@ -345,6 +345,34 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
             )
         self.assertEqual(before, tuple(self.adapter.mates))
 
+    def test_solved_mate_accepts_zero_native_error_status(self):
+        original_add_mate = self.adapter.add_mate
+
+        def add_mate_with_zero_status(assembly_id, request):
+            mate_id = original_add_mate(assembly_id, request)
+            current = self.adapter.mates[mate_id]
+            self.adapter.mates[mate_id] = MateSnapshot(
+                identity=current.identity,
+                state=current.state,
+                component_ids=current.component_ids,
+                degrees_of_freedom=current.degrees_of_freedom,
+                kind=current.kind,
+                value=current.value,
+                error_status=0,
+            )
+            return mate_id
+
+        self.adapter.add_mate = add_mate_with_zero_status
+        mate = self.service.add_mate(
+            "asm-1",
+            MateRequest(
+                MateKind.CONCENTRIC,
+                ("Base-1:face:bore", "Bracket-1:face:shaft"),
+            ),
+        )
+        self.assertEqual(MateState.SOLVED, mate.state)
+        self.assertEqual(0, mate.error_status)
+
     def test_non_value_mate_rejects_value_instead_of_ignoring_it(self):
         with self.assertRaisesRegex(AssemblyRefusal, "mate_value_not_supported"):
             self.service.add_mate(
