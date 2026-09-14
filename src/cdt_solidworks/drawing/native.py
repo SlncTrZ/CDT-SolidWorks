@@ -443,6 +443,13 @@ class SolidWorksDrawingAdapter:
             )
             if view is None:
                 raise DrawingPostconditionError("detail_view_create_failed", parent_view_id)
+            try:
+                view.Position = (float(x), float(y))
+                view.ScaleDecimal = float(scale)
+            except Exception as exc:
+                raise DrawingPostconditionError(
+                    "detail_view_transform_apply_failed", parent_view_id
+                ) from exc
             detail = self._api._member(view, "GetDetail")
             if detail is None:
                 raise DrawingPostconditionError("detail_view_readback_missing", parent_view_id)

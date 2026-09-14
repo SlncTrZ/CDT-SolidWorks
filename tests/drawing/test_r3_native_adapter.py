@@ -214,7 +214,7 @@ class FakeDrawing:
         view = FakeView(
             f"View{len(self.views) + 1}",
             self.selected_view.ReferencedDocument.path,
-            position=(x, y),
+            position=(x + 0.01, y + 0.01),
             config=self.selected_view.ReferencedConfiguration,
             specific=FakeDetail(label),
         )
