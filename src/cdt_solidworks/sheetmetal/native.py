@@ -242,7 +242,12 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_edge_flange",
                         "SOLIDWORKS did not create Edge Flange feature data.",
                     )
-                add_edges = self.api._member(definition, "AddEdges", (edge,), (sketch,))
+                add_edges = self.api._member(
+                    definition,
+                    "AddEdges",
+                    self.api.dispatch_array((edge,)),
+                    self.api.dispatch_array((sketch,)),
+                )
                 if add_edges is False:
                     raise NativeRuntimeError(
                         "cad_mutation_failed",
