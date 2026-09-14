@@ -16,6 +16,8 @@ from cdt_solidworks.part.models import (
     FeatureKind,
     FeatureSnapshot,
     HoleSpec,
+    HoleWizardSize,
+    HoleWizardSpec,
     RevolveCutSpec,
     RevolveSpec,
 )
@@ -31,6 +33,18 @@ _PROFILE_CENTERLINE_AXIS = "profile_centerline"
 _BBOX_PLUS_Z_FACE = "bbox:+z"
 _SW_SEL_FACES = 2
 _SW_SELECT_DEFAULT = 0
+_SW_SUPPRESS_FEATURE = 0
+_SW_UNSUPPRESS_FEATURE = 1
+_SW_THIS_CONFIGURATION = 1
+_MAX_FEATURE_TRAVERSAL = 4096
+_SW_HOLE_WIZARD_DEFINITION_TYPE = 25
+_SW_HOLE_WIZARD_STANDARD_ANSI_METRIC = 1
+_SW_HOLE_WIZARD_TYPE_COUNTERSINK = 1
+_SW_HOLE_WIZARD_FASTENER_FLAT_HEAD_ANSI = 36
+_SW_HOLE_WIZARD_FIT_NORMAL = 1
+_HOLE_WIZARD_STANDARD = "ANSI Metric"
+_HOLE_WIZARD_FASTENER = "Flat Head Screw - ANSI B18.6.7M"
+_HOLE_WIZARD_SIZES = frozenset(item.value for item in HoleWizardSize)
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +340,145 @@ class PartNativeRuntime:
 
         return self._execute(operation, stage="part_hole_native", mutation=True)
 
+    def create_hole_wizard(
+        self,
+        document: ResolvedDocument,
+        spec: HoleWizardSpec,
+    ) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            binding = self._binding_from_document(app, document)
+            model = binding.model
+            if spec.face_ref != _BBOX_PLUS_Z_FACE:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Native Hole Wizard accepts only face_ref='bbox:+z'.",
+                )
+            if spec.size.value not in _HOLE_WIZARD_SIZES:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Hole Wizard size is outside the evidence-backed M2-M6 subset.",
+                )
+            center_x_mm, center_y_mm = (float(value) for value in spec.center_mm)
+            bodies = self._as_tuple(self._bodies(model, 0, False))
+            if len(bodies) != 1:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Native Hole Wizard requires exactly one solid body.",
+                    details={"solid_body_count": len(bodies)},
+                )
+            min_x, min_y, min_z, max_x, max_y, max_z = self._solid_bounds_m(bodies)
+            x = center_x_mm / 1000.0
+            y = center_y_mm / 1000.0
+            tolerance = 1e-9
+            if not (min_x - tolerance <= x <= max_x + tolerance) or not (
+                min_y - tolerance <= y <= max_y + tolerance
+            ):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Hole Wizard center lies outside the selected body bounding box.",
+                    details={"center_mm": [center_x_mm, center_y_mm]},
+                )
+            ray_z = max_z + max(max_z - min_z, 0.01)
+            self._member(model, "ClearSelection2", True)
+            extension = self._member(model, "Extension")
+            if not bool(
+                self._member(
+                    extension,
+                    "SelectByRay",
+                    x,
+                    y,
+                    ray_z,
+                    0.0,
+                    0.0,
+                    -1.0,
+                    1e-6,
+                    _SW_SEL_FACES,
+                    False,
+                    0,
+                    _SW_SELECT_DEFAULT,
+                )
+            ):
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    "part_hole_wizard_native",
+                    "No face was intersected by the bounded +Z Hole Wizard selection ray.",
+                )
+            selection_manager = self._member(model, "SelectionManager")
+            face = self._member(selection_manager, "GetSelectedObject6", 1, -1)
+            if face is None:
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    "part_hole_wizard_native",
+                    "The bounded Hole Wizard ray did not resolve a native face.",
+                )
+            surface = self._member(face, "GetSurface")
+            if surface is None or not bool(self._member(surface, "IsPlane")):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Hole Wizard requires the bounded +Z face to be planar.",
+                )
+            normal = self._as_tuple(self._member(face, "Normal"))
+            if len(normal) != 3:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "Selected Hole Wizard face did not expose a three-value normal.",
+                )
+            nx, ny, nz = (float(value) for value in normal)
+            if not all(math.isfinite(value) for value in (nx, ny, nz)) or (
+                abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9
+            ):
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_hole_wizard_native",
+                    "face_ref='bbox:+z' requires a planar face with outward normal +Z.",
+                    details={"face_normal": [nx, ny, nz]},
+                )
+
+            manager = self._member(model, "FeatureManager")
+            definition = self._member(manager, "CreateDefinition", _SW_HOLE_WIZARD_DEFINITION_TYPE)
+            if definition is None:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_hole_wizard_native",
+                    "SOLIDWORKS did not create a Hole Wizard feature definition.",
+                )
+            self._member(
+                definition,
+                "InitializeHole",
+                _SW_HOLE_WIZARD_STANDARD_ANSI_METRIC,
+                _SW_HOLE_WIZARD_TYPE_COUNTERSINK,
+                _SW_HOLE_WIZARD_FASTENER_FLAT_HEAD_ANSI,
+                spec.size.value,
+                _SW_HOLE_WIZARD_FIT_NORMAL,
+            )
+            feature = self._member(manager, "CreateFeature", definition)
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_hole_wizard_native",
+                    "SOLIDWORKS did not create the requested Hole Wizard feature.",
+                )
+            try:
+                feature.Name = spec.name
+            except Exception:
+                pass
+            identity = self._feature_name(feature).strip()
+            if not identity:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_hole_wizard_native",
+                    "Created Hole Wizard returned an empty feature identity.",
+                )
+            return MutationReceipt(identity)
+
+        return self._execute(operation, stage="part_hole_wizard_native", mutation=True)
+
     def create_revolve(
         self, document: ResolvedDocument, spec: RevolveSpec
     ) -> MutationReceipt:
@@ -502,8 +655,10 @@ class PartNativeRuntime:
                     name=self._feature_name(feature),
                     kind=FeatureKind.CUT,
                     parameters=parameters,
-                    suppressed=False,
+                    suppressed=self._is_feature_suppressed(feature),
                 )
+            if native_type == "HoleWzd":
+                return self._read_hole_wizard_feature(model, feature)
             if native_type in {"Hole", "SketchHole", "SimpleHole"}:
                 return self._read_simple_hole_feature(model, feature)
             if native_type in {"Revolution", "Revolve", "RevCut", "RevolveCut"}:
@@ -576,7 +731,101 @@ class PartNativeRuntime:
             name=self._feature_name(feature),
             kind=FeatureKind.HOLE,
             parameters=parameters,
-            suppressed=False,
+            suppressed=self._is_feature_suppressed(feature),
+        )
+
+    def _read_hole_wizard_feature(self, model: Any, feature: Any) -> FeatureSnapshot:
+        definition = self._member(feature, "GetDefinition")
+        if definition is None:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard definition was unavailable during native read-back.",
+            )
+        if not bool(
+            self._member(definition, "AccessSelections", model, self._null_dispatch())
+        ):
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "SOLIDWORKS did not grant access to Hole Wizard selections.",
+            )
+        try:
+            standard = str(self._member(definition, "Standard") or "").strip()
+            fastener = str(self._member(definition, "FastenerType") or "").strip()
+            size = str(self._member(definition, "FastenerSize") or "").strip()
+            end_condition = int(self._member(definition, "EndCondition"))
+            countersink_diameter_mm = float(self._member(definition, "CounterSinkDiameter")) * 1000.0
+            countersink_angle_deg = float(self._member(definition, "CounterSinkAngle"))
+            thru_hole_diameter_mm = float(self._member(definition, "ThruHoleDiameter")) * 1000.0
+            hole_fit = int(self._member(definition, "HoleFit"))
+            point_count = int(self._member(definition, "GetSketchPointCount"))
+            points = self._as_tuple(self._member(definition, "GetSketchPoints"))
+        finally:
+            self._member(definition, "ReleaseSelectionAccess")
+
+        if standard != _HOLE_WIZARD_STANDARD or fastener != _HOLE_WIZARD_FASTENER:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard standard/fastener read-back left the evidence-backed contract.",
+                details={"standard": standard, "fastener": fastener},
+            )
+        if size not in _HOLE_WIZARD_SIZES:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard size read-back is outside the evidence-backed M2-M6 subset.",
+                details={"size": size},
+            )
+        if end_condition != _SW_END_THROUGH_ALL:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard read-back is not through-all.",
+                details={"end_condition": end_condition},
+            )
+        if point_count != 1 or len(points) != 1:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard must persist exactly one sketch point.",
+                details={"point_count": point_count, "returned_points": len(points)},
+            )
+        center_x_mm = float(self._member(points[0], "X")) * 1000.0
+        center_y_mm = float(self._member(points[0], "Y")) * 1000.0
+        numeric = (
+            countersink_diameter_mm,
+            countersink_angle_deg,
+            thru_hole_diameter_mm,
+            center_x_mm,
+            center_y_mm,
+        )
+        if not all(math.isfinite(value) for value in numeric):
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Hole Wizard returned non-finite geometry read-back.",
+            )
+        return FeatureSnapshot(
+            feature_id=self._feature_name(feature),
+            name=self._feature_name(feature),
+            kind=FeatureKind.HOLE,
+            parameters={
+                "wizard_standard": standard,
+                "wizard_fastener": fastener,
+                "wizard_size": size,
+                "face_ref": _BBOX_PLUS_Z_FACE,
+                "center_count": 1,
+                "through_all": True,
+                "counter_sink_diameter_mm": countersink_diameter_mm,
+                "counter_sink_angle_deg": countersink_angle_deg,
+                "thru_hole_diameter_mm": thru_hole_diameter_mm,
+                "hole_fit": hole_fit,
+                "center_x_mm": center_x_mm,
+                "center_y_mm": center_y_mm,
+            },
+            suppressed=self._is_feature_suppressed(feature),
         )
 
     def _simple_hole_center_mm(self, feature: Any) -> tuple[float, float]:
@@ -702,7 +951,7 @@ class PartNativeRuntime:
                 "axis_ref": _PROFILE_CENTERLINE_AXIS,
                 "angle_deg": angle_deg,
             },
-            suppressed=False,
+            suppressed=self._is_feature_suppressed(feature),
         )
 
     def list_bodies(self, document: ResolvedDocument) -> tuple[BodySnapshot, ...]:
@@ -735,12 +984,148 @@ class PartNativeRuntime:
 
         return self._execute(operation, stage="part_body_readback", mutation=False)
 
+    def set_feature_suppressed(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        suppressed: bool,
+    ) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            feature = self._member(model, "FeatureByName", feature_id)
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_feature_suppression",
+                    f"Feature {feature_id!r} was not found.",
+                )
+            if self._feature_kind(feature) is None:
+                raise NativeRuntimeError(
+                    "unsupported_native_operation",
+                    "part_feature_suppression",
+                    "Only evidence-promoted parametric features may be suppressed by this lane.",
+                )
+            action = _SW_SUPPRESS_FEATURE if suppressed else _SW_UNSUPPRESS_FEATURE
+            changed = bool(
+                self._member(
+                    feature,
+                    "SetSuppression2",
+                    action,
+                    _SW_THIS_CONFIGURATION,
+                    None,
+                )
+            )
+            if not changed:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_feature_suppression",
+                    f"SOLIDWORKS refused to change suppression for {feature_id!r}.",
+                )
+            return MutationReceipt(feature_id)
+
+        return self._execute(operation, stage="part_feature_suppression", mutation=True)
+
+    def rename_feature(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        new_name: str,
+    ) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            model = self._binding_from_document(app, document).model
+            feature = self._member(model, "FeatureByName", feature_id)
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_feature_rename",
+                    f"Feature {feature_id!r} was not found.",
+                )
+            if self._feature_kind(feature) is None:
+                raise NativeRuntimeError(
+                    "unsupported_native_operation",
+                    "part_feature_rename",
+                    "Only evidence-promoted parametric features may be renamed by this lane.",
+                )
+            existing = self._member(model, "FeatureByName", new_name)
+            if existing is not None and existing is not feature:
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_feature_rename",
+                    f"Feature name {new_name!r} is already in use.",
+                )
+            feature.Name = new_name
+            identity = self._feature_name(feature).strip()
+            if identity != new_name:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_feature_rename",
+                    "Feature rename did not persist the requested identity.",
+                    details={"requested": new_name, "actual": identity},
+                )
+            return MutationReceipt(identity)
+
+        return self._execute(operation, stage="part_feature_rename", mutation=True)
+
     def list_features(self, document: ResolvedDocument) -> tuple[FeatureSnapshot, ...]:
-        raise NativeRuntimeError(
-            "unsupported_native_operation",
-            "part_features_list",
-            "General parametric feature inspection is not promoted by this runtime yet.",
+        def operation(app: Any) -> tuple[FeatureSnapshot, ...]:
+            model = self._binding_from_document(app, document).model
+            feature = self._member(model, "FirstFeature")
+            snapshots: list[FeatureSnapshot] = []
+            visited = 0
+            while feature is not None:
+                visited += 1
+                if visited > _MAX_FEATURE_TRAVERSAL:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "part_features_list",
+                        "Feature-tree traversal exceeded its bounded limit.",
+                    )
+                kind = self._feature_kind(feature)
+                if kind is not None:
+                    name = self._feature_name(feature).strip()
+                    if not name:
+                        raise NativeRuntimeError(
+                            "cad_postcondition_failed",
+                            "part_features_list",
+                            "Native feature returned an empty identity.",
+                        )
+                    snapshots.append(
+                        FeatureSnapshot(
+                            feature_id=name,
+                            name=name,
+                            kind=kind,
+                            parameters={},
+                            suppressed=self._is_feature_suppressed(feature),
+                        )
+                    )
+                feature = self._member(feature, "GetNextFeature")
+            return tuple(snapshots)
+
+        return self._execute(operation, stage="part_features_list", mutation=False)
+
+    def _feature_kind(self, feature: Any) -> FeatureKind | None:
+        native_type = self._native_feature_type(feature)
+        if native_type == "Cut":
+            return FeatureKind.CUT
+        if native_type in {"Hole", "SketchHole", "SimpleHole", "HoleWzd"}:
+            return FeatureKind.HOLE
+        if native_type in {"Revolution", "Revolve"}:
+            return FeatureKind.REVOLVE
+        if native_type in {"RevCut", "RevolveCut"}:
+            return FeatureKind.REVOLVE_CUT
+        return None
+
+    def _is_feature_suppressed(self, feature: Any) -> bool:
+        raw = self._as_tuple(
+            self._member(feature, "IsSuppressed2", _SW_THIS_CONFIGURATION, None)
         )
+        if len(raw) != 1:
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "part_feature_readback",
+                "Feature suppression read-back did not return exactly one current-configuration state.",
+            )
+        return bool(raw[0])
 
     def _native_feature_type(self, feature: Any) -> str:
         type_name = self._feature_type(feature)

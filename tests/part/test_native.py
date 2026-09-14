@@ -31,6 +31,7 @@ class FakeFeature:
         self.underlying_type = underlying_type or type_name
         self.definition = definition
         self.selected = False
+        self.suppressed = False
         self.next_feature = None
 
     def Select2(self, append: bool, mark: int):
@@ -50,6 +51,16 @@ class FakeFeature:
 
     def GetNextFeature(self):
         return self.next_feature
+
+    def IsSuppressed2(self, config_opt: int, config_names):
+        assert config_opt == 1
+        return (self.suppressed,)
+
+    def SetSuppression2(self, action: int, config_opt: int, config_names):
+        assert config_opt == 1
+        assert action in {0, 1}
+        self.suppressed = action == 0
+        return True
 
 
 class FakeBody:
@@ -77,6 +88,7 @@ class FakeFeatureManager:
             underlying_type="Cut",
         )
         self.model.features[feature.Name] = feature
+        self.model.relink_features()
         return feature
 
 
@@ -86,6 +98,15 @@ class FakeModel:
         self.FeatureManager = FakeFeatureManager(self)
         self.bodies = (FakeBody("Body1", (0.0, 0.0, 0.0, 0.1, 0.06, 0.02)),)
         self.cleared = False
+        self.relink_features()
+
+    def relink_features(self) -> None:
+        features = list(self.features.values())
+        for index, feature in enumerate(features):
+            feature.next_feature = features[index + 1] if index + 1 < len(features) else None
+
+    def FirstFeature(self):
+        return next(iter(self.features.values()), None)
 
     def FeatureByName(self, name: str):
         direct = self.features.get(name)
@@ -199,6 +220,31 @@ def test_blind_cut_converts_depth_mm_to_meters_and_reads_it_back(native_runtime)
     assert feature.parameters["depth_mm"] == pytest.approx(6.5)
     assert model.FeatureManager.args[3] == 0  # swEndCondBlind
     assert model.FeatureManager.args[5] == pytest.approx(0.0065)
+
+
+def test_feature_management_rename_suppress_and_list_are_native_readback_gated(native_runtime):
+    runtime, _model, _executor = native_runtime
+    document = runtime.resolve_document(DocumentTarget("part.SLDPRT", 8, "mm"))
+    receipt = runtime.create_cut(
+        document,
+        CutSpec("Pocket", ProfileRef("HoleSketch"), through_all=True),
+    )
+
+    suppressed = runtime.set_feature_suppressed(document, receipt.object_id, True)
+    assert suppressed.object_id == "Pocket"
+    assert runtime.get_feature(document, "Pocket").suppressed is True
+
+    unsuppressed = runtime.set_feature_suppressed(document, "Pocket", False)
+    assert unsuppressed.object_id == "Pocket"
+    assert runtime.get_feature(document, "Pocket").suppressed is False
+
+    renamed = runtime.rename_feature(document, "Pocket", "PocketRenamed")
+    assert renamed.object_id == "PocketRenamed"
+    snapshot = runtime.get_feature(document, "PocketRenamed")
+    assert snapshot is not None
+    assert snapshot.name == "PocketRenamed"
+    assert snapshot.kind is FeatureKind.CUT
+    assert [item.name for item in runtime.list_features(document)] == ["PocketRenamed"]
 
 
 def test_missing_profile_fails_before_featurecut_dispatch(native_runtime):

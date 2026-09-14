@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from cdt_solidworks.part.models import FeatureKind, HoleSpec
+from cdt_solidworks.part.models import FeatureKind, HoleSpec, HoleWizardSize, HoleWizardSpec
 from cdt_solidworks.part.native import NativePartBinding, PartNativeRuntime
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult
 
@@ -97,13 +97,14 @@ class _SimpleHoleDefinition:
 
 
 class _Feature:
-    def __init__(self, definition, x, y):
+    def __init__(self, definition, x, y, *, type_name="Hole"):
         self.Name = "Hole1"
         self.definition = definition
         self.subfeature = _ProfileFeature(x, y)
+        self.type_name = type_name
 
     def GetTypeName2(self):
-        return "Hole"
+        return self.type_name
 
     def GetDefinition(self):
         return self.definition
@@ -111,11 +112,62 @@ class _Feature:
     def GetFirstSubFeature(self):
         return self.subfeature
 
+    def IsSuppressed2(self, config_opt, config_names):
+        assert config_opt == 1
+        return (False,)
+
+
+class _WizardDefinition:
+    _GEOMETRY = {
+        "M2": (0.0044, 90.0, 0.0024),
+        "M3": (0.0063, 90.0, 0.0034),
+        "M4": (0.0094, 90.0, 0.0045),
+        "M5": (0.0104, 90.0, 0.0055),
+        "M6": (0.0126, 90.0, 0.0066),
+    }
+
+    def __init__(self):
+        self.Standard = ""
+        self.Standard2 = -1
+        self.FastenerType = ""
+        self.FastenerSize = ""
+        self.EndCondition = -1
+        self.CounterSinkDiameter = 0.0
+        self.CounterSinkAngle = 0.0
+        self.ThruHoleDiameter = 0.0
+        self.HoleFit = -1
+        self.points = ()
+        self.initialized = None
+
+    def InitializeHole(self, standard, hole_type, fastener, size, fit):
+        self.initialized = (standard, hole_type, fastener, size, fit)
+        self.Standard = "ANSI Metric"
+        self.Standard2 = standard
+        self.FastenerType = "Flat Head Screw - ANSI B18.6.7M"
+        self.FastenerSize = size
+        self.EndCondition = 1
+        self.HoleFit = fit
+        geometry = self._GEOMETRY[size]
+        self.CounterSinkDiameter, self.CounterSinkAngle, self.ThruHoleDiameter = geometry
+
+    def AccessSelections(self, model, component):
+        return True
+
+    def ReleaseSelectionAccess(self):
+        return None
+
+    def GetSketchPointCount(self):
+        return len(self.points)
+
+    def GetSketchPoints(self):
+        return self.points
+
 
 class _FeatureManager:
     def __init__(self, model):
         self.model = model
         self.args = None
+        self.wizard_definition = None
 
     def SimpleHole2(self, *args):
         self.args = args
@@ -126,6 +178,19 @@ class _FeatureManager:
         )
         x, y = self.model.Extension.rays[-1][0:2]
         feature = _Feature(definition, x, y)
+        self.model.feature = feature
+        return feature
+
+    def CreateDefinition(self, definition_type):
+        assert definition_type == 25
+        self.wizard_definition = _WizardDefinition()
+        return self.wizard_definition
+
+    def CreateFeature(self, definition):
+        assert definition is self.wizard_definition
+        x, y = self.model.Extension.rays[-1][0:2]
+        definition.points = (_SketchPoint(x, y),)
+        feature = _Feature(definition, x, y, type_name="HoleWzd")
         self.model.feature = feature
         return feature
 
@@ -247,6 +312,48 @@ def test_simple_hole_blind_ray_selects_plus_z_face_and_reads_definition():
     assert args[4:8] == pytest.approx((0, 0, 0.012, 0.0))
     assert args[18:23] == (False, True, False, False, False)
     assert executor.calls[1] == ("part_hole_native", True)
+
+
+@pytest.mark.parametrize(
+    ("size", "countersink_mm", "through_mm"),
+    (
+        (HoleWizardSize.M2, 4.4, 2.4),
+        (HoleWizardSize.M3, 6.3, 3.4),
+        (HoleWizardSize.M4, 9.4, 4.5),
+        (HoleWizardSize.M5, 10.4, 5.5),
+        (HoleWizardSize.M6, 12.6, 6.6),
+    ),
+)
+def test_hole_wizard_ansi_metric_countersink_uses_database_strings_and_geometry_readback(
+    size,
+    countersink_mm,
+    through_mm,
+):
+    runtime, model, executor, document = _runtime()
+    receipt = runtime.create_hole_wizard(
+        document,
+        HoleWizardSpec(
+            f"CSK_{size.value}",
+            size,
+            face_ref="bbox:+z",
+            center_mm=(10.0, -5.0),
+        ),
+    )
+    feature = runtime.get_feature(document, receipt.object_id)
+
+    assert receipt.object_id == f"CSK_{size.value}"
+    assert feature is not None and feature.kind is FeatureKind.HOLE
+    assert feature.parameters["wizard_standard"] == "ANSI Metric"
+    assert feature.parameters["wizard_fastener"] == "Flat Head Screw - ANSI B18.6.7M"
+    assert feature.parameters["wizard_size"] == size.value
+    assert feature.parameters["through_all"] is True
+    assert feature.parameters["counter_sink_diameter_mm"] == pytest.approx(countersink_mm)
+    assert feature.parameters["counter_sink_angle_deg"] == pytest.approx(90.0)
+    assert feature.parameters["thru_hole_diameter_mm"] == pytest.approx(through_mm)
+    assert feature.parameters["center_x_mm"] == pytest.approx(10.0)
+    assert feature.parameters["center_y_mm"] == pytest.approx(-5.0)
+    assert model.FeatureManager.wizard_definition.initialized == (1, 1, 36, size.value, 1)
+    assert executor.calls[1] == ("part_hole_wizard_native", True)
 
 
 def test_simple_hole_through_all_uses_through_all_end_condition():

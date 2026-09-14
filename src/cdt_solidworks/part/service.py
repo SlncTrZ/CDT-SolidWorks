@@ -18,6 +18,7 @@ from cdt_solidworks.part.models import (
     FilletSpec,
     HoleFact,
     HoleSpec,
+    HoleWizardSpec,
     LinearPatternSpec,
     LoftSpec,
     MirrorSpec,
@@ -193,6 +194,35 @@ class PartService:
             FeatureKind.HOLE,
             self._runtime.create_hole,
             expected_parameters=expected,
+            postconditions=postconditions,
+        )
+
+    def hole_wizard(
+        self,
+        target: DocumentTarget,
+        spec: HoleWizardSpec,
+        *,
+        postconditions: PartPostconditions | None = None,
+    ) -> PartMutationResult:
+        self._validate_target(target)
+        self._validate_name(spec.name)
+        self._validate_identity(spec.face_ref, "Hole Wizard face reference")
+        if len(spec.center_mm) != 2 or not all(math.isfinite(value) for value in spec.center_mm):
+            raise PartValidationError("Hole Wizard center must be a finite x/y pair")
+        self._validate_optional_postconditions(postconditions)
+        return self._mutate_feature(
+            target,
+            spec,
+            FeatureKind.HOLE,
+            self._runtime.create_hole_wizard,
+            expected_parameters={
+                "wizard_standard": "ANSI Metric",
+                "wizard_fastener": "Flat Head Screw - ANSI B18.6.7M",
+                "wizard_size": spec.size.value,
+                "face_ref": spec.face_ref,
+                "center_count": 1,
+                "through_all": True,
+            },
             postconditions=postconditions,
         )
 
@@ -510,6 +540,27 @@ class PartService:
             postconditions=postconditions,
             require_body=False,
         )
+
+    def rename_feature(
+        self,
+        target: DocumentTarget,
+        feature_id: str,
+        new_name: str,
+    ) -> FeatureSnapshot:
+        self._validate_target(target)
+        self._validate_identity(feature_id, "feature identity")
+        self._validate_name(new_name)
+        document = self._resolve_part_document(target)
+        receipt = self._runtime.rename_feature(document, feature_id, new_name)
+        if receipt.object_id != new_name:
+            raise PartMutationError("feature rename mutation returned the wrong identity")
+        self._require_clean_rebuild(document, "feature rename mutation")
+        feature = self._runtime.get_feature(document, new_name)
+        if feature is None:
+            raise PartMutationError("feature rename read-back failed: renamed feature was not found")
+        if feature.feature_id != new_name or feature.name != new_name:
+            raise PartMutationError("feature rename read-back identity mismatch")
+        return feature
 
     def set_feature_suppressed(
         self,

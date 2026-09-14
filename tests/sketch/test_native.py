@@ -11,11 +11,16 @@ if str(SRC) not in sys.path:
 
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult  # noqa: E402
 from cdt_solidworks.sketch.models import (  # noqa: E402
+    AngularDimension,
     Circle,
+    DiameterDimension,
+    DistanceDimension,
     HorizontalConstraint,
     LineSegment,
+    ParallelConstraint,
     PlaneKind,
     Point2D,
+    RadiusDimension,
     SketchDefinition,
     SketchPlane,
 )
@@ -30,12 +35,18 @@ T = TypeVar("T")
 
 
 class FakeSegment:
-    def __init__(self, segment_id: int) -> None:
+    def __init__(self, segment_id: int, select: Callable[[Any, bool], None] | None = None) -> None:
         self.segment_id = segment_id
         self.ConstructionGeometry = False
+        self._select = select
 
     def GetID(self) -> tuple[int, int]:
         return (self.segment_id, 0)
+
+    def Select4(self, append: bool, select_data: Any) -> bool:
+        if self._select is not None:
+            self._select(self, append)
+        return True
 
 
 class FakePoint:
@@ -47,9 +58,67 @@ class FakePoint:
         return (self.point_id, 1)
 
 
-class FakeRelationManager:
-    def GetRelationsCount(self, filter_value: int) -> int:
+class FakeDimension:
+    def __init__(self, value: float = 1.0) -> None:
+        self.Name = "D1"
+        self.DrivenState = 2
+        self.value = value
+
+    def SetSystemValue3(self, value: float, configuration: int, names: Any) -> int:
+        self.value = value
         return 0
+
+    def GetSystemValue3(self, configuration: int, names: Any) -> float:
+        return self.value
+
+
+class FakeDisplayDimension:
+    def __init__(self, dimension: FakeDimension) -> None:
+        self.dimension = dimension
+
+    def GetDimension2(self, configuration: int) -> FakeDimension:
+        return self.dimension
+
+
+class FakeRelation:
+    def __init__(
+        self,
+        relation_type: int,
+        entities: tuple[Any, ...],
+        display_dimension: FakeDisplayDimension | None = None,
+    ) -> None:
+        self.relation_type = relation_type
+        self.entities = entities
+        self.display_dimension = display_dimension
+
+    def GetRelationType(self) -> int:
+        return self.relation_type
+
+    def GetDefinitionEntities2(self) -> tuple[Any, ...]:
+        return self.entities
+
+    def GetDisplayDimension(self) -> FakeDisplayDimension | None:
+        return self.display_dimension
+
+
+class FakeRelationManager:
+    def __init__(self) -> None:
+        self.relations: list[FakeRelation] = []
+
+    def GetRelationsCount(self, filter_value: int) -> int:
+        return len(self.relations)
+
+    def GetRelations(self, filter_value: int) -> tuple[FakeRelation, ...]:
+        return tuple(self.relations)
+
+    def AddRelation(self, entities: tuple[Any, ...], relation_type: int) -> FakeRelation:
+        relation = FakeRelation(relation_type, tuple(entities))
+        self.relations.append(relation)
+        return relation
+
+    def DeleteRelation(self, relation: FakeRelation) -> bool:
+        self.relations.remove(relation)
+        return True
 
 
 class FakeSketch:
@@ -81,11 +150,12 @@ class FakeFeature:
 
 
 class FakeSketchManager:
-    def __init__(self, sketch: FakeSketch) -> None:
+    def __init__(self, sketch: FakeSketch, select: Callable[[Any, bool], None]) -> None:
         self.ActiveSketch: FakeSketch | None = None
         self.AddToDB = False
         self.DisplayWhenAdded = True
         self._sketch = sketch
+        self._select = select
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
     def InsertSketch(self, update_edit_rebuild: bool) -> None:
@@ -93,13 +163,13 @@ class FakeSketchManager:
 
     def CreateLine(self, *args: float) -> FakeSegment:
         self.calls.append(("CreateLine", args))
-        segment = FakeSegment(len(self._sketch.segments) + 1)
+        segment = FakeSegment(len(self._sketch.segments) + 1, self._select)
         self._sketch.segments.append(segment)
         return segment
 
     def CreateCircleByRadius(self, *args: float) -> FakeSegment:
         self.calls.append(("CreateCircleByRadius", args))
-        segment = FakeSegment(len(self._sketch.segments) + 1)
+        segment = FakeSegment(len(self._sketch.segments) + 1, self._select)
         self._sketch.segments.append(segment)
         return segment
 
@@ -107,8 +177,34 @@ class FakeSketchManager:
 class FakeModel:
     def __init__(self) -> None:
         self.sketch = FakeSketch()
-        self.SketchManager = FakeSketchManager(self.sketch)
+        self.selected: list[Any] = []
+        self.SketchManager = FakeSketchManager(self.sketch, self._select)
         self.feature = FakeFeature(self.sketch)
+
+    def _select(self, entity: Any, append: bool) -> None:
+        if not append:
+            self.selected.clear()
+        self.selected.append(entity)
+
+    def ClearSelection2(self, clear_all: bool) -> None:
+        self.selected.clear()
+
+    def _add_dimension(self, relation_type: int) -> FakeDisplayDimension:
+        dimension = FakeDimension()
+        display = FakeDisplayDimension(dimension)
+        self.sketch.RelationManager.relations.append(
+            FakeRelation(relation_type, tuple(self.selected), display)
+        )
+        return display
+
+    def AddDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
+        return self._add_dimension(2 if len(self.selected) == 2 else 1)
+
+    def AddRadialDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
+        return self._add_dimension(3)
+
+    def AddDiameterDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
+        return self._add_dimension(15)
 
     def FeatureByName(self, name: str) -> FakeFeature | None:
         return self.feature if name == self.feature.Name else None
@@ -198,19 +294,101 @@ class SketchNativeRuntimeTests(unittest.TestCase):
         self.assertEqual(2, snapshot.entity_count)
         self.assertEqual(("7:0", "8:1"), snapshot.entity_ids)
 
-    def test_native_adapter_fails_closed_for_unpromoted_relations(self) -> None:
+    def test_native_relation_create_query_delete_uses_typed_entity_identity(self) -> None:
         definition = SketchDefinition(
             name="Relations",
             plane=SketchPlane(PlaneKind.FRONT),
+            entities=(
+                LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 0.0)),
+                LineSegment(Point2D(0.0, 5.0), Point2D(10.0, 5.0)),
+            ),
+            constraints=(HorizontalConstraint(0), ParallelConstraint(0, 1)),
+        )
+
+        snapshot = SketchService(self.runtime).create(self.target, definition)
+        relations = SketchService(self.runtime).list_relations(self.target, snapshot.sketch_id)
+
+        self.assertEqual(2, snapshot.constraint_count)
+        self.assertEqual(("horizontal", "parallel"), tuple(item.relation_type for item in relations))
+        self.assertEqual(("1:0",), relations[0].entity_ids)
+        self.assertEqual(("1:0", "2:0"), relations[1].entity_ids)
+        self.assertTrue(all(item.relation_id for item in relations))
+
+        remaining = SketchService(self.runtime).delete_relation(
+            self.target,
+            snapshot.sketch_id,
+            relations[0].relation_id,
+        )
+        self.assertEqual(("parallel",), tuple(item.relation_type for item in remaining))
+
+    def test_native_dimensions_create_query_and_edit_in_system_units(self) -> None:
+        definition = SketchDefinition(
+            name="Dimensions",
+            plane=SketchPlane(PlaneKind.FRONT),
+            entities=(
+                LineSegment(Point2D(0.0, 0.0), Point2D(20.0, 0.0)),
+                LineSegment(Point2D(0.0, 0.0), Point2D(0.0, 20.0)),
+                Circle(Point2D(10.0, 10.0), 4.0),
+            ),
+            dimensions=(
+                DistanceDimension("width", 0, 20.0),
+                RadiusDimension("radius", 2, 4.0),
+                DiameterDimension("diameter", 2, 8.0, driving=False),
+                AngularDimension("angle", 0, 1, 90.0),
+            ),
+        )
+
+        snapshot = SketchService(self.runtime).create(self.target, definition)
+
+        self.assertEqual(
+            {"width": 20.0, "radius": 4.0, "diameter": 8.0, "angle": 90.0},
+            dict(snapshot.dimension_values),
+        )
+        self.assertEqual(("mm", "mm", "mm", "deg"), tuple(item.unit for item in snapshot.dimensions))
+        self.assertEqual((True, True, False, True), tuple(item.driving for item in snapshot.dimensions))
+
+        updated = SketchService(self.runtime).set_dimension_value(
+            self.target,
+            snapshot.sketch_id,
+            "width",
+            25.0,
+            unit="mm",
+        )
+        self.assertEqual(25.0, updated.value)
+        self.assertAlmostEqual(0.025, self._dimension("width").value)
+
+        angle = SketchService(self.runtime).set_dimension_value(
+            self.target,
+            snapshot.sketch_id,
+            "angle",
+            45.0,
+            unit="deg",
+        )
+        self.assertEqual(45.0, angle.value)
+        self.assertAlmostEqual(0.7853981633974483, self._dimension("angle").value)
+
+    def _dimension(self, name: str) -> FakeDimension:
+        for relation in self.model.sketch.RelationManager.relations:
+            if relation.display_dimension is None:
+                continue
+            dimension = relation.display_dimension.dimension
+            if dimension.Name == name:
+                return dimension
+        raise AssertionError(f"dimension {name!r} not found")
+
+    def test_native_adapter_fails_closed_for_unpromoted_unfix_relation(self) -> None:
+        from cdt_solidworks.sketch.models import UnfixConstraint
+
+        definition = SketchDefinition(
+            name="Unfix",
+            plane=SketchPlane(PlaneKind.FRONT),
             entities=(LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 0.0)),),
-            constraints=(HorizontalConstraint(0),),
+            constraints=(UnfixConstraint(0),),
         )
         document = self.runtime.resolve_document(self.target)
 
-        with self.assertRaisesRegex(NativeSketchUnsupportedError, "relation creation"):
+        with self.assertRaisesRegex(NativeSketchUnsupportedError, "unfix"):
             self.runtime.create_sketch(document, definition)
-
-        self.assertEqual([], self.model.SketchManager.calls)
 
 
 if __name__ == "__main__":
