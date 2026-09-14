@@ -232,18 +232,16 @@ class AssemblyNativeAdapter:
         def operation(app: Any) -> None:
             assembly = self._assembly(app, assembly_id)
             component = self._component(assembly, component_id)
-            math_utility = self.api._member(app, "GetMathUtility")
+            math_transform = self.api._member(component, "Transform2")
+            if math_transform is None:
+                raise _AssemblyNativeError("component_transform_missing")
             try:
-                math_transform = self.api._member(
-                    math_utility, "CreateTransform", self._double_array(values)
-                )
+                math_transform.ArrayData = self._double_array(values)
             except Exception as exc:
                 raise _AssemblyNativeError(
-                    "component_transform_create_dispatch_failed",
+                    "component_transform_array_write_failed",
                     f"{type(exc).__name__}: {exc}",
                 ) from exc
-            if math_transform is None:
-                raise _AssemblyNativeError("component_transform_create_failed")
             try:
                 solved = bool(
                     self.api._member(

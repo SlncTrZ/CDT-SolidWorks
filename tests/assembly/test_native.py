@@ -278,11 +278,11 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
             1.0, 0.0, 0.0, 0.0,
         )
         self.adapter.set_component_transform(self.assembly_id, "Bracket-1", values)
+        self.assertIsNotNone(self.session.model.component.transform_solve)
         self.assertEqual(
             (FakePythonCom.VT_ARRAY | FakePythonCom.VT_R8, values),
-            self.session.app.math_utility.last_values,
+            self.session.model.component.transform_solve.ArrayData,
         )
-        self.assertIsNotNone(self.session.model.component.transform_solve)
 
     def test_component_suppression_maps_to_native_enum_and_checks_status(self):
         self.adapter.set_component_load_state(
