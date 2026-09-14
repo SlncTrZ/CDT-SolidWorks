@@ -42,6 +42,12 @@ class ExportFormat(str, Enum):
     NATIVE = "native"
 
 
+class ImportFormat(str, Enum):
+    STEP = "step"
+    IGES = "iges"
+    PARASOLID = "parasolid"
+
+
 @dataclass(frozen=True)
 class ExportRequest:
     source_document_id: str
@@ -49,6 +55,31 @@ class ExportRequest:
     format: ExportFormat
     source_configuration: str | None = None
     drawing_sheet: str | None = None
+
+
+@dataclass(frozen=True)
+class ImportRequest:
+    source_path: str
+    target_document_id: str
+    format: ImportFormat
+
+
+@dataclass(frozen=True)
+class ImportSnapshot:
+    source_path: str
+    target_document_id: str
+    format: ImportFormat
+    document_type: int
+    solid_body_count: int
+    surface_body_count: int
+    component_count: int
+
+
+class ImportPostconditionError(RuntimeError):
+    def __init__(self, reason: str, detail: str | None = None) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(reason if detail is None else f"{reason}: {detail}")
 
 
 @dataclass(frozen=True)
@@ -75,12 +106,64 @@ class Exporter(Protocol):
     def export(self, request: ExportRequest) -> NativeExportResult: ...
 
 
+class Importer(Protocol):
+    def import_model(self, request: ImportRequest) -> ImportSnapshot: ...
+
+
 class ArtifactInspector(Protocol):
     def inspect(self, request: ExportRequest) -> ArtifactInspection: ...
 
 
 class PathPolicy(Protocol):
     def allows(self, target_path: str) -> bool: ...
+
+
+class ImportService:
+    _EXTENSIONS: dict[ImportFormat, frozenset[str]] = {
+        ImportFormat.STEP: frozenset({".step", ".stp"}),
+        ImportFormat.IGES: frozenset({".iges", ".igs"}),
+        ImportFormat.PARASOLID: frozenset({".x_t", ".x_b"}),
+    }
+
+    def __init__(self, importer: Importer, path_policy: PathPolicy) -> None:
+        self._importer = importer
+        self._path_policy = path_policy
+
+    def import_model(self, request: ImportRequest) -> ImportSnapshot:
+        self._require_identity("source_path", request.source_path)
+        self._require_identity("target_document_id", request.target_document_id)
+        if not isinstance(request.format, ImportFormat):
+            raise ExportRefusal("invalid_import_format")
+        source_suffix = PureWindowsPath(request.source_path).suffix.casefold()
+        if source_suffix not in self._EXTENSIONS[request.format]:
+            raise ExportRefusal("import_format_extension_mismatch", source_suffix)
+        target_suffix = PureWindowsPath(request.target_document_id).suffix.casefold()
+        if target_suffix not in {".sldprt", ".sldasm"}:
+            raise ExportRefusal("import_target_extension_mismatch", target_suffix)
+        if not self._path_policy.allows(request.target_document_id):
+            raise ExportRefusal("path_not_allowed", request.target_document_id)
+        snapshot = self._importer.import_model(request)
+        if snapshot.source_path != request.source_path:
+            raise ImportPostconditionError("import_source_identity_mismatch")
+        if snapshot.target_document_id != request.target_document_id:
+            raise ImportPostconditionError("import_target_identity_mismatch")
+        if snapshot.format is not request.format:
+            raise ImportPostconditionError("import_format_readback_mismatch")
+        if snapshot.document_type not in {1, 2}:
+            raise ImportPostconditionError("import_document_type_invalid")
+        if (
+            snapshot.solid_body_count
+            + snapshot.surface_body_count
+            + snapshot.component_count
+            < 1
+        ):
+            raise ImportPostconditionError("import_geometry_missing")
+        return snapshot
+
+    @staticmethod
+    def _require_identity(label: str, value: str) -> None:
+        if not isinstance(value, str) or not value.strip():
+            raise ExportRefusal(f"invalid_{label}")
 
 
 class ExportService:

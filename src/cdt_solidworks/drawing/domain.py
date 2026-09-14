@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Protocol
 
 
@@ -47,6 +48,19 @@ class ViewSnapshot:
     source_model_path: str
     source_configuration: str | None
     dangling: bool
+    position: tuple[float, float] | None = None
+    scale_decimal: float | None = None
+    display_style: int | None = None
+    parent_view_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AnnotationSnapshot:
+    identity: str
+    view_id: str
+    annotation_kind: str
+    text: str
+    dangling: bool
 
 
 @dataclass(frozen=True)
@@ -64,6 +78,8 @@ class BomSnapshot:
     view_id: str
     source_configuration: str | None
     row_count: int
+    column_count: int = 0
+    rows: tuple[tuple[str, ...], ...] = ()
 
 
 class DrawingAdapter(Protocol):
@@ -84,7 +100,19 @@ class DrawingAdapter(Protocol):
         source_configuration: str | None,
     ) -> str: ...
 
+    def create_projected_view(
+        self, drawing_id: str, parent_view_id: str, x: float, y: float
+    ) -> str: ...
+
     def read_view(self, drawing_id: str, view_id: str) -> ViewSnapshot | None: ...
+
+    def add_note(self, drawing_id: str, view_id: str, text: str) -> str: ...
+
+    def import_model_annotations(self, drawing_id: str, view_id: str) -> tuple[str, ...]: ...
+
+    def read_annotation(
+        self, drawing_id: str, annotation_id: str
+    ) -> AnnotationSnapshot | None: ...
 
     def add_dimension(self, drawing_id: str, view_id: str, source_ref: str) -> str: ...
 
@@ -181,6 +209,82 @@ class DrawingService:
             )
         return view
 
+    def create_projected_view(
+        self, drawing_id: str, parent_view_id: str, x: float, y: float
+    ) -> ViewSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("parent_view_id", parent_view_id)
+        self._require_position(x, y)
+        parent = self._adapter.read_view(drawing_id, parent_view_id)
+        if parent is None or parent.dangling:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        view_id = self._adapter.create_projected_view(
+            drawing_id, parent_view_id, float(x), float(y)
+        )
+        self._require_identity("view_id", view_id)
+        self._require_rebuild(drawing_id)
+        view = self._adapter.read_view(drawing_id, view_id)
+        if view is None:
+            raise DrawingPostconditionError("view_readback_missing", view_id)
+        if view.dangling:
+            raise DrawingPostconditionError("dangling_view", view_id)
+        if view.view_kind != "projected" or view.parent_view_id != parent_view_id:
+            raise DrawingPostconditionError("projected_view_identity_mismatch", view_id)
+        if (
+            view.sheet_name != parent.sheet_name
+            or view.source_model_path != parent.source_model_path
+            or view.source_configuration != parent.source_configuration
+        ):
+            raise DrawingPostconditionError("projected_view_source_mismatch", view_id)
+        if view.position is None or any(
+            abs(actual - expected) > 1e-9
+            for actual, expected in zip(view.position, (float(x), float(y)))
+        ):
+            raise DrawingPostconditionError("view_position_readback_mismatch", view_id)
+        return view
+
+    def add_note(
+        self, drawing_id: str, view_id: str, text: str
+    ) -> AnnotationSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("view_id", view_id)
+        self._require_identity("annotation_text", text)
+        self._require_valid_view(drawing_id, view_id, "invalid_annotation_view")
+        annotation_id = self._adapter.add_note(drawing_id, view_id, text)
+        self._require_identity("annotation_id", annotation_id)
+        self._require_rebuild(drawing_id)
+        annotation = self._adapter.read_annotation(drawing_id, annotation_id)
+        if annotation is None:
+            raise DrawingPostconditionError("annotation_readback_missing", annotation_id)
+        self._validate_annotation(annotation, view_id)
+        if annotation.annotation_kind != "note" or annotation.text != text:
+            raise DrawingPostconditionError("annotation_text_readback_mismatch", annotation_id)
+        return annotation
+
+    def import_model_annotations(
+        self, drawing_id: str, view_id: str
+    ) -> tuple[AnnotationSnapshot, ...]:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("view_id", view_id)
+        self._require_valid_view(drawing_id, view_id, "invalid_annotation_view")
+        annotation_ids = self._adapter.import_model_annotations(drawing_id, view_id)
+        if not annotation_ids:
+            raise DrawingPostconditionError("model_annotations_readback_empty", view_id)
+        self._require_rebuild(drawing_id)
+        seen: set[str] = set()
+        snapshots: list[AnnotationSnapshot] = []
+        for annotation_id in annotation_ids:
+            self._require_identity("annotation_id", annotation_id)
+            if annotation_id in seen:
+                raise DrawingPostconditionError("duplicate_annotation_identity", annotation_id)
+            seen.add(annotation_id)
+            annotation = self._adapter.read_annotation(drawing_id, annotation_id)
+            if annotation is None:
+                raise DrawingPostconditionError("annotation_readback_missing", annotation_id)
+            self._validate_annotation(annotation, view_id)
+            snapshots.append(annotation)
+        return tuple(snapshots)
+
     def add_dimension(
         self, drawing_id: str, view_id: str, source_ref: str
     ) -> DimensionSnapshot:
@@ -239,9 +343,28 @@ class DrawingService:
             raise DrawingPostconditionError(
                 "bom_configuration_readback_mismatch", bom_id
             )
-        if bom.row_count < 1:
+        if bom.row_count < 1 or bom.column_count < 1:
             raise DrawingPostconditionError("bom_empty_readback", bom_id)
+        if len(bom.rows) != bom.row_count or any(
+            len(row) != bom.column_count for row in bom.rows
+        ):
+            raise DrawingPostconditionError("bom_table_shape_mismatch", bom_id)
         return bom
+
+    def _require_valid_view(self, drawing_id: str, view_id: str, reason: str) -> ViewSnapshot:
+        view = self._adapter.read_view(drawing_id, view_id)
+        if view is None or view.dangling:
+            raise DrawingRefusal(reason, view_id)
+        return view
+
+    @staticmethod
+    def _validate_annotation(annotation: AnnotationSnapshot, view_id: str) -> None:
+        if annotation.dangling:
+            raise DrawingPostconditionError("dangling_annotation", annotation.identity)
+        if annotation.view_id != view_id:
+            raise DrawingPostconditionError("annotation_view_readback_mismatch", annotation.identity)
+        if not annotation.annotation_kind.strip() or not annotation.text.strip():
+            raise DrawingPostconditionError("annotation_readback_incomplete", annotation.identity)
 
     def _require_rebuild(self, drawing_id: str) -> None:
         report = self._adapter.rebuild_drawing(drawing_id)
@@ -254,3 +377,14 @@ class DrawingService:
     def _require_identity(label: str, value: str) -> None:
         if not isinstance(value, str) or not value.strip():
             raise DrawingRefusal(f"invalid_{label}")
+
+    @staticmethod
+    def _require_position(x: float, y: float) -> None:
+        values = (x, y)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+            for value in values
+        ):
+            raise DrawingRefusal("invalid_view_position")
