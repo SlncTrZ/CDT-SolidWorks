@@ -184,6 +184,8 @@ def sheetmetal_acceptance(session: SolidWorksSession, policy: DocumentPathPolicy
 
 session = SolidWorksSession()
 report: dict = {"ok": False}
+body_result: dict | None = None
+sheetmetal_result: dict | None = None
 try:
     info = require(
         session.connect(
@@ -195,17 +197,21 @@ try:
         "connect",
     )
     policy = DocumentPathPolicy((ARTIFACTS,))
+    body_result = body_acceptance(session, policy)
+    sheetmetal_result = sheetmetal_acceptance(session, policy)
     report = {
         "ok": True,
         "verdict": "NATIVE_PASS",
         "solidworks_revision": info.revision,
         "solidworks_year": info.version_year,
-        "body": body_acceptance(session, policy),
-        "sheetmetal": sheetmetal_acceptance(session, policy),
+        "body": body_result,
+        "sheetmetal": sheetmetal_result,
     }
 except BaseException as exc:
     report = {
         "ok": False,
+        "body": body_result,
+        "sheetmetal": sheetmetal_result,
         "error": f"{type(exc).__name__}: {exc}",
         "traceback": traceback.format_exc(),
     }

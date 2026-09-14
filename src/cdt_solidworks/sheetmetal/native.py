@@ -148,6 +148,22 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "Resolved hem boundary edge could not be selected.",
                     )
                 manager = self.api._member(model, "FeatureManager")
+                bend_allowance = self.api._member(manager, "CreateCustomBendAllowance")
+                if bend_allowance is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS did not create custom bend-allowance data for the Hem feature.",
+                    )
+                bend_allowance.Type = 2
+                k_factor = state_before.get("k_factor")
+                bend_allowance.KFactor = (
+                    float(k_factor)
+                    if k_factor is not None
+                    and math.isfinite(float(k_factor))
+                    and 0.0 < float(k_factor) <= 1.0
+                    else 0.5
+                )
                 feature = self.api._member(
                     manager,
                     "InsertSheetMetalHem2",
@@ -159,7 +175,7 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                     0.0,
                     0.0,
                     0.0,
-                    self.api.null_dispatch(),
+                    bend_allowance,
                     True,
                     _SW_RELIEF_NONE,
                     0,
