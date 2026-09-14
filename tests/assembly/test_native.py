@@ -235,6 +235,14 @@ class FakePatternFeature:
         return self.data
 
 
+class FakePatternSeedFeature:
+    def __init__(self, component):
+        self.component = component
+
+    def GetSpecificFeature2(self):
+        return self.component
+
+
 class FakeFeatureManager:
     def __init__(self):
         self.data = None
@@ -414,7 +422,7 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.assertEqual(1, manager.data.D2TotalInstances)
         self.assertFalse(manager.data.SynchronizeFlexibleComponents)
 
-        manager.data.SeedComponentArray = (seed,)
+        manager.data.SeedComponentArray = (FakePatternSeedFeature(seed),)
         manager.data.D1Axis = direction
         snapshot = self.adapter.read_component_pattern(
             self.assembly_id, "LocalLPattern1"

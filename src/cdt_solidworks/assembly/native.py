@@ -370,7 +370,10 @@ class AssemblyNativeAdapter:
                     seeds = tuple(raw_seeds)
                 else:
                     seeds = (raw_seeds,)
-                seed_ids = tuple(self.api.component_name(seed) for seed in seeds)
+                seed_ids = tuple(
+                    self.api.component_name(self._pattern_seed_component(seed))
+                    for seed in seeds
+                )
                 axis = self.api._member(data, "D1Axis")
                 return ComponentPatternSnapshot(
                     identity=self.api.feature_name(feature),
@@ -704,6 +707,33 @@ class AssemblyNativeAdapter:
                 index += 1
             feature = self.api.next_feature(feature)
         raise _AssemblyNativeError("standard_plane_missing", plane)
+
+    def _pattern_seed_component(self, seed: Any) -> Any:
+        try:
+            identity = self.api.component_name(seed)
+            if identity:
+                return seed
+        except Exception:
+            pass
+        try:
+            component = self.api._member(seed, "GetSpecificFeature2")
+        except Exception as exc:
+            raise _AssemblyNativeError(
+                "component_pattern_seed_resolution_failed",
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        if component is None:
+            raise _AssemblyNativeError("component_pattern_seed_resolution_failed")
+        try:
+            identity = self.api.component_name(component)
+        except Exception as exc:
+            raise _AssemblyNativeError(
+                "component_pattern_seed_resolution_failed",
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        if not identity:
+            raise _AssemblyNativeError("component_pattern_seed_resolution_failed")
+        return component
 
     def _pattern_feature(self, assembly: Any, pattern_id: str) -> Any:
         matches: list[Any] = []
