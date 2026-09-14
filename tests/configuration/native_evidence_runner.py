@@ -12,7 +12,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
+import traceback
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from cdt_solidworks.configuration.domain import (
     ConfigurationRefusal,
@@ -148,6 +153,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _material_readback(value: Any) -> tuple[str, str] | None:
+    if value is None:
+        return None
+    return (value.database, value.name)
+
+
 def run_configuration_evidence(
     session: SolidWorksSession, root: Path
 ) -> dict[str, Any]:
@@ -174,6 +185,8 @@ def run_configuration_evidence(
 
     # Derived configuration lifecycle and configuration-specific dimension state.
     service.create(native_path, "Alternate", parent=default_name)
+    if adapter.read_configuration_parent(native_path, "Alternate") != default_name:
+        raise RuntimeError("derived configuration parent did not read back")
     service.create(native_path, "DeleteMe", parent=default_name)
     service.rename(native_path, "DeleteMe", "DeleteMeRenamed")
     service.delete(native_path, "DeleteMeRenamed")
@@ -191,6 +204,38 @@ def run_configuration_evidence(
     service.set_property(native_path, None, "M90_RUN", "Agent-C")
     service.set_property(
         native_path, "Alternate", "Description", "Alternate native state"
+    )
+
+    # Display-state lifecycle. Keep one renamed state so save/reopen proves persistence.
+    display_state = service.create_display_state(
+        native_path, "Alternate", "M95 Inspection"
+    )
+    display_state = service.rename_display_state(
+        native_path, "Alternate", display_state, "M95 Review"
+    )
+    if display_state not in service.list_display_states(native_path, "Alternate"):
+        raise RuntimeError("display state did not read back after rename")
+
+    # Material assignment is evidence-gated by an explicit installed database/name.
+    material_database = os.environ.get("CDT_SW_MATERIAL_DATABASE")
+    material_name = os.environ.get("CDT_SW_MATERIAL_NAME", "Plain Carbon Steel")
+    if not material_database:
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidate = (
+            program_files
+            / "SOLIDWORKS Corp"
+            / "SOLIDWORKS"
+            / "lang"
+            / "english"
+            / "sldmaterials"
+            / "solidworks materials.sldmat"
+        )
+        if candidate.is_file():
+            material_database = str(candidate)
+    if not material_database or not Path(material_database).is_file():
+        raise RuntimeError("installed SOLIDWORKS material database was not found")
+    assigned_material = service.set_material(
+        native_path, "Alternate", material_database, material_name
     )
 
     # Equation/global-variable CRUD with evaluated read-back.
@@ -221,6 +266,11 @@ def run_configuration_evidence(
 
     before_save = {
         "configurations": service.list(native_path),
+        "alternate_parent": adapter.read_configuration_parent(native_path, "Alternate"),
+        "alternate_material": _material_readback(
+            adapter.read_material(native_path, "Alternate")
+        ),
+        "alternate_display_states": service.list_display_states(native_path, "Alternate"),
         "default_dimension": adapter.read_dimension(
             native_path, default_name, dimension_name
         ),
@@ -248,6 +298,15 @@ def run_configuration_evidence(
     reopened_service = ConfigurationService(reopened_adapter)
     after_reopen = {
         "configurations": reopened_service.list(native_path),
+        "alternate_parent": reopened_adapter.read_configuration_parent(
+            native_path, "Alternate"
+        ),
+        "alternate_material": _material_readback(
+            reopened_adapter.read_material(native_path, "Alternate")
+        ),
+        "alternate_display_states": reopened_service.list_display_states(
+            native_path, "Alternate"
+        ),
         "default_dimension": reopened_adapter.read_dimension(
             native_path, default_name, dimension_name
         ),
@@ -280,6 +339,12 @@ def run_configuration_evidence(
         "feature_name": feature_name,
         "dimension_name": dimension_name,
         "active_delete_reason": active_delete_reason,
+        "material_database": material_database,
+        "material_name": material_name,
+        "material_readback": {
+            "database": assigned_material.database,
+            "name": assigned_material.name,
+        },
         "readback": after_reopen,
     }
 
@@ -294,11 +359,18 @@ def main() -> None:
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 
+    report_path = Path(__file__).with_name("native_evidence_report.json")
     session = SolidWorksSession()
+    connected = None
+    report: dict[str, Any] = {
+        "ok": False,
+        "verdict": "FAIL",
+        "root": str(root),
+    }
     try:
         connected = _require(
             session.connect(
-                policy=AttachPolicy.ATTACH_OR_START,
+                policy=AttachPolicy.START_NEW,
                 version=2024,
                 visible=False,
                 timeout=180.0,
@@ -306,25 +378,38 @@ def main() -> None:
             "connect",
         )
         evidence = run_configuration_evidence(session, root)
-        print(
-            json.dumps(
-                {
-                    "verdict": "PASS",
-                    "solidworks_revision": connected.revision,
-                    "solidworks_version_year": connected.version_year,
-                    "session_ownership": connected.ownership.value,
-                    "root": str(root),
-                    "configuration": evidence,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        report.update(
+            ok=True,
+            verdict="PASS",
+            solidworks_revision=connected.revision,
+            solidworks_version_year=connected.version_year,
+            session_ownership=connected.ownership.value,
+            configuration=evidence,
         )
+    except BaseException as exc:
+        report.update(
+            error_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        if connected is not None:
+            report.update(
+                solidworks_revision=connected.revision,
+                solidworks_version_year=connected.version_year,
+                session_ownership=connected.ownership.value,
+            )
+        raise
     finally:
         try:
             session.disconnect(timeout=15.0)
+        except Exception as exc:
+            report["disconnect_error"] = f"{type(exc).__name__}: {exc}"
         finally:
             session.close_dispatcher(timeout=5.0)
+            report_path.write_text(
+                json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            print(json.dumps(report, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ class FakeAssemblyAdapter:
         self.mates = {}
         self.rebuild = RebuildReport(ok=True)
         self.force_transform_mismatch = False
+        self.replace_changes_identity = False
         self.mate_state = MateState.SOLVED
 
     def read_component(self, assembly_id, component_id):
@@ -47,13 +48,16 @@ class FakeAssemblyAdapter:
 
     def replace_component(self, assembly_id, component_id, source_path, configuration):
         current = self.read_component(assembly_id, component_id)
-        self.components[component_id] = ComponentSnapshot(
-            identity=current.identity,
+        replacement_id = "replacement-1" if self.replace_changes_identity else component_id
+        self.components.pop(component_id)
+        self.components[replacement_id] = ComponentSnapshot(
+            identity=replacement_id,
             source_path=source_path,
             configuration=configuration,
             transform=current.transform,
             load_state=current.load_state,
         )
+        return replacement_id
 
     def set_component_transform(self, assembly_id, component_id, transform):
         current = self.read_component(assembly_id, component_id)
@@ -112,6 +116,14 @@ class AssemblyServiceTests(unittest.TestCase):
         )
         self.assertEqual(r"C:\\fixtures\\replacement.SLDPRT", component.source_path)
         self.assertEqual("Machined", component.configuration)
+
+    def test_replace_component_accepts_native_identity_change_and_reads_new_identity(self):
+        self.adapter.replace_changes_identity = True
+        component = self.service.replace_component(
+            "asm-1", "base", r"C:\\fixtures\\replacement.SLDPRT", "Machined"
+        )
+        self.assertEqual("replacement-1", component.identity)
+        self.assertNotIn("base", self.adapter.components)
 
     def test_missing_component_is_typed_refusal(self):
         with self.assertRaisesRegex(AssemblyRefusal, "missing_component"):

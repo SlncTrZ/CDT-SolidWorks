@@ -5,6 +5,7 @@ from cdt_solidworks.configuration.domain import (
     ConfigurationRefusal,
     ConfigurationService,
     EquationSnapshot,
+    MaterialSnapshot,
     RebuildReport,
 )
 
@@ -29,6 +30,15 @@ class ExtendedConfigurationAdapter:
             },
         }
         self.document_properties = {"Project": "CDT"}
+        self.parents = {"Default": None, "Alternate": None}
+        self.materials = {
+            ("doc-1", "Default"): MaterialSnapshot("SOLIDWORKS Materials", "Plain Carbon Steel"),
+            ("doc-1", "Alternate"): None,
+        }
+        self.display_states = {
+            "Default": ["Display State-1"],
+            "Alternate": ["Display State-1"],
+        }
         self.equations = [
             EquationSnapshot(
                 identity='"WIDTH"',
@@ -51,12 +61,24 @@ class ExtendedConfigurationAdapter:
             "component_configs": {},
         }
         self.configs[name] = {key: dict(value) for key, value in source.items()}
+        self.parents[name] = parent
+        self.display_states[name] = ["Display State-1"]
+
+    def read_configuration_parent(self, document_id, name):
+        return self.parents.get(name)
 
     def delete_configuration(self, document_id, name):
         del self.configs[name]
+        self.parents.pop(name, None)
+        self.display_states.pop(name, None)
 
     def rename_configuration(self, document_id, old_name, new_name):
         self.configs[new_name] = self.configs.pop(old_name)
+        self.parents[new_name] = self.parents.pop(old_name, None)
+        self.display_states[new_name] = self.display_states.pop(old_name, ["Display State-1"])
+        for child, parent in tuple(self.parents.items()):
+            if parent == old_name:
+                self.parents[child] = new_name
         if self.active == old_name:
             self.active = new_name
 
@@ -103,6 +125,25 @@ class ExtendedConfigurationAdapter:
     def set_component_configuration(self, document_id, configuration, component_id, referenced_configuration):
         self.configs[configuration]["component_configs"][component_id] = referenced_configuration
 
+    def read_material(self, document_id, configuration):
+        return self.materials.get((document_id, configuration))
+
+    def set_material(self, document_id, configuration, database, material_name):
+        self.materials[(document_id, configuration)] = MaterialSnapshot(database, material_name)
+
+    def list_display_states(self, document_id, configuration):
+        return tuple(self.display_states[configuration])
+
+    def create_display_state(self, document_id, configuration, name):
+        self.display_states[configuration].append(name)
+
+    def rename_display_state(self, document_id, configuration, old_name, new_name):
+        states = self.display_states[configuration]
+        states[states.index(old_name)] = new_name
+
+    def delete_display_state(self, document_id, configuration, name):
+        self.display_states[configuration].remove(name)
+
     def list_equations(self, document_id):
         return tuple(self.equations)
 
@@ -136,6 +177,10 @@ class ExtendedConfigurationServiceTests(unittest.TestCase):
     def setUp(self):
         self.adapter = ExtendedConfigurationAdapter()
         self.service = ConfigurationService(self.adapter)
+
+    def test_create_derived_configuration_requires_parent_readback(self):
+        self.service.create("doc-1", "Machined", parent="Default")
+        self.assertEqual("Default", self.adapter.read_configuration_parent("doc-1", "Machined"))
 
     def test_rename_configuration_requires_identity_readback(self):
         self.service.rename("doc-1", "Alternate", "Machined")
@@ -182,6 +227,48 @@ class ExtendedConfigurationServiceTests(unittest.TestCase):
     def test_component_referenced_configuration_is_read_back(self):
         value = self.service.set_component_configuration("doc-1", "Default", "Bracket-1", "Machined")
         self.assertEqual("Machined", value)
+
+    def test_material_assignment_is_configuration_specific_and_read_back(self):
+        result = self.service.set_material(
+            "doc-1", "Alternate", "SOLIDWORKS Materials", "AISI 304"
+        )
+        self.assertEqual(MaterialSnapshot("SOLIDWORKS Materials", "AISI 304"), result)
+        self.assertEqual(
+            MaterialSnapshot("SOLIDWORKS Materials", "Plain Carbon Steel"),
+            self.adapter.read_material("doc-1", "Default"),
+        )
+
+    def test_material_database_path_matches_canonical_library_name(self):
+        original = self.adapter.set_material
+
+        def canonicalizing_set(document_id, configuration, database, material_name):
+            original(document_id, configuration, database, material_name)
+            self.adapter.materials[(document_id, configuration)] = MaterialSnapshot(
+                "SOLIDWORKS Materials", material_name
+            )
+
+        self.adapter.set_material = canonicalizing_set
+        result = self.service.set_material(
+            "doc-1",
+            "Alternate",
+            r"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\lang\english\sldmaterials\solidworks materials.sldmat",
+            "Plain Carbon Steel",
+        )
+        self.assertEqual(
+            MaterialSnapshot("SOLIDWORKS Materials", "Plain Carbon Steel"), result
+        )
+
+    def test_display_state_lifecycle_requires_exact_readback(self):
+        self.assertEqual(("Display State-1",), self.service.list_display_states("doc-1", "Default"))
+        self.service.create_display_state("doc-1", "Default", "Inspection")
+        self.service.rename_display_state("doc-1", "Default", "Inspection", "Review")
+        self.assertIn("Review", self.service.list_display_states("doc-1", "Default"))
+        self.service.delete_display_state("doc-1", "Default", "Review")
+        self.assertNotIn("Review", self.service.list_display_states("doc-1", "Default"))
+
+    def test_display_state_delete_refuses_last_state(self):
+        with self.assertRaisesRegex(ConfigurationRefusal, "cannot_delete_last_display_state"):
+            self.service.delete_display_state("doc-1", "Default", "Display State-1")
 
     def test_equation_readback_tolerates_solidworks_assignment_spacing_normalization(self):
         original = self.adapter.set_equation

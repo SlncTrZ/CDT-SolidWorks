@@ -18,6 +18,7 @@ from .domain import (
     AssemblyPostconditionError,
     AssemblyRefusal,
     ComponentLoadState,
+    ComponentPatternSnapshot,
     ComponentSnapshot,
     MateKind,
     MateRequest,
@@ -49,8 +50,13 @@ _SW_SUPPRESSION_CHANGE_OK = 2
 _SW_THIS_CONFIGURATION = 1
 _SW_SUPPRESS_FEATURE = 0
 _SW_UNSUPPRESS_FEATURE = 1
+_SW_FM_LOCAL_LINEAR_PATTERN = 108
+_SW_PATTERN_SPACING_AND_INSTANCES = 0
 
 _STANDARD_PLANE_INDEX = {"front": 0, "top": 1, "right": 2}
+_SELECT_ENTITY_TYPE = {"edge": 1, "face": 2, "vertex": 3}
+_WIDTH_CONSTRAINT = {"centered": 0, "free": 1}
+_SLOT_CONSTRAINT = {"free": 0, "centered": 1}
 _MATE_TYPE = {
     MateKind.COINCIDENT: 0,
     MateKind.CONCENTRIC: 1,
@@ -144,12 +150,17 @@ class AssemblyNativeAdapter:
         component_id: str,
         source_path: str,
         configuration: str | None,
-    ) -> None:
+    ) -> str:
         source = str(source_path)
 
-        def operation(app: Any) -> None:
+        def operation(app: Any) -> str:
             assembly = self._assembly(app, assembly_id)
             component = self._component(assembly, component_id)
+            before_target_ids = {
+                self.api.component_name(item)
+                for item in self.api.components(assembly, False)
+                if self.api.component_path(item) == source
+            }
             self._select_component(assembly, component)
             try:
                 ok = bool(
@@ -168,7 +179,36 @@ class AssemblyNativeAdapter:
             if not ok:
                 raise _AssemblyNativeError("component_replace_failed", component_id)
 
-        self._run("assembly_component_replace", True, operation)
+            candidates = tuple(
+                item
+                for item in self.api.components(assembly, False)
+                if self.api.component_path(item) == source
+                and (
+                    configuration is None
+                    or str(
+                        self.api._member(item, "ReferencedConfiguration") or ""
+                    )
+                    == configuration
+                )
+            )
+            candidate_ids = tuple(self.api.component_name(item) for item in candidates)
+            if component_id in candidate_ids:
+                return component_id
+            new_ids = tuple(
+                candidate_id
+                for candidate_id in candidate_ids
+                if candidate_id not in before_target_ids
+            )
+            if len(new_ids) == 1:
+                return new_ids[0]
+            if len(candidate_ids) == 1:
+                return candidate_ids[0]
+            raise _AssemblyNativeError(
+                "component_replace_identity_ambiguous",
+                f"before={component_id}; candidates={candidate_ids!r}",
+            )
+
+        return self._run("assembly_component_replace", True, operation)
 
     def delete_component(self, assembly_id: str, component_id: str) -> None:
         def operation(app: Any) -> None:
@@ -244,6 +284,73 @@ class AssemblyNativeAdapter:
 
         self._run("assembly_component_configuration", True, operation)
 
+    def create_linear_component_pattern(
+        self,
+        assembly_id: str,
+        seed_component_ids: tuple[str, ...],
+        direction_ref: str,
+        spacing_m: float,
+        total_instances: int,
+    ) -> str:
+        def operation(app: Any) -> str:
+            assembly = self._assembly(app, assembly_id)
+            seeds = tuple(
+                self._component(assembly, component_id)
+                for component_id in seed_component_ids
+            )
+            direction = self._resolve_selection_reference(assembly, direction_ref)
+            manager = self.api._member(assembly, "FeatureManager")
+            data = self.api._member(
+                manager,
+                "CreateDefinition",
+                _SW_FM_LOCAL_LINEAR_PATTERN,
+            )
+            if data is None:
+                raise _AssemblyNativeError("component_pattern_data_create_failed")
+            data.SeedComponentArray = self.api.dispatch_array(seeds)
+            data.D1Axis = direction
+            data.D1EndCondition = _SW_PATTERN_SPACING_AND_INSTANCES
+            data.D1Spacing = float(spacing_m)
+            data.D1TotalInstances = int(total_instances)
+            data.D1ReverseDirection = False
+            data.D2PatternSeedOnly = True
+            feature = self.api._member(manager, "CreateFeature", data)
+            if feature is None:
+                raise _AssemblyNativeError("component_pattern_create_failed")
+            return self.api.feature_name(feature)
+
+        return self._run("assembly_component_pattern_create", True, operation)
+
+    def read_component_pattern(
+        self, assembly_id: str, pattern_id: str
+    ) -> ComponentPatternSnapshot:
+        def operation(app: Any) -> ComponentPatternSnapshot:
+            assembly = self._assembly(app, assembly_id)
+            feature = self._pattern_feature(assembly, pattern_id)
+            data = self.api._member(feature, "GetDefinition")
+            if data is None:
+                raise _AssemblyNativeError(
+                    "component_pattern_definition_missing", pattern_id
+                )
+            raw_seeds = self.api._member(data, "SeedComponentArray")
+            if raw_seeds is None:
+                seeds = ()
+            elif isinstance(raw_seeds, (tuple, list)):
+                seeds = tuple(raw_seeds)
+            else:
+                seeds = (raw_seeds,)
+            seed_ids = tuple(self.api.component_name(seed) for seed in seeds)
+            axis = self.api._member(data, "D1Axis")
+            return ComponentPatternSnapshot(
+                identity=self.api.feature_name(feature),
+                seed_component_ids=seed_ids,
+                spacing_m=float(self.api._member(data, "D1Spacing")),
+                total_instances=int(self.api._member(data, "D1TotalInstances")),
+                direction_resolved=axis is not None,
+            )
+
+        return self._run("assembly_component_pattern_read", False, operation)
+
     def add_mate(self, assembly_id: str, request: MateRequest) -> str:
         kind = request.kind if isinstance(request.kind, MateKind) else MateKind(request.kind)
 
@@ -258,23 +365,42 @@ class AssemblyNativeAdapter:
             )
             if mate_data is None:
                 raise _AssemblyNativeError("mate_data_create_failed", kind.value)
-            mate_data.EntitiesToMate = self.api.dispatch_array(entities)
-            if request.alignment is not None:
-                if kind not in _MATE_ALIGNMENT_KINDS:
-                    raise _AssemblyNativeError(
-                        "mate_alignment_not_supported", kind.value
-                    )
-                mate_data.MateAlignment = _MATE_ALIGNMENT[request.alignment]
-            if kind is MateKind.DISTANCE and request.value is not None:
-                mate_data.Distance = float(request.value)
-            if kind is MateKind.ANGLE and request.value is not None:
-                mate_data.Angle = float(request.value)
+            self._configure_mate_data(kind, mate_data, entities, request)
             feature = self.api._member(assembly, "CreateMate", mate_data)
             if feature is None:
                 raise _AssemblyNativeError("mate_create_failed", kind.value)
             return self.api.feature_name(feature)
 
         return self._run("assembly_mate_add", True, operation)
+
+    def _configure_mate_data(
+        self,
+        kind: MateKind,
+        mate_data: Any,
+        entities: tuple[Any, ...],
+        request: MateRequest,
+    ) -> None:
+        if kind is MateKind.WIDTH:
+            if len(entities) != 4:
+                raise _AssemblyNativeError("invalid_width_mate_selection")
+            mate_data.WidthSelection = self.api.dispatch_array(entities[:2])
+            mate_data.TabSelection = self.api.dispatch_array(entities[2:])
+            mate_data.ConstraintType = _WIDTH_CONSTRAINT[request.constraint or "centered"]
+            return
+
+        mate_data.EntitiesToMate = self.api.dispatch_array(entities)
+        if request.alignment is not None:
+            if kind not in _MATE_ALIGNMENT_KINDS:
+                raise _AssemblyNativeError("mate_alignment_not_supported", kind.value)
+            mate_data.MateAlignment = _MATE_ALIGNMENT[request.alignment]
+        if kind is MateKind.CONCENTRIC:
+            mate_data.LockRotation = False
+        elif kind is MateKind.DISTANCE and request.value is not None:
+            mate_data.Distance = float(request.value)
+        elif kind is MateKind.ANGLE and request.value is not None:
+            mate_data.Angle = float(request.value)
+        elif kind is MateKind.SLOT:
+            mate_data.Constraint = _SLOT_CONSTRAINT[request.constraint or "centered"]
 
     def list_mates(self, assembly_id: str) -> tuple[MateSnapshot, ...]:
         return self._run(
@@ -388,6 +514,13 @@ class AssemblyNativeAdapter:
             configuration = str(self.api._member(component, "ReferencedConfiguration") or "") or None
         except Exception:
             configuration = None
+        try:
+            parent = self.api._member(component, "GetParent")
+            parent_identity = (
+                self.api.component_name(parent) if parent is not None else None
+            )
+        except Exception:
+            parent_identity = None
         return ComponentSnapshot(
             identity=self.api.component_name(component),
             source_path=self.api.component_path(component),
@@ -397,6 +530,7 @@ class AssemblyNativeAdapter:
                 int(self.api._member(component, "GetSuppression"))
             ),
             fixed=fixed,
+            parent_identity=parent_identity,
         )
 
     def _select_component(self, assembly: Any, component: Any) -> None:
@@ -444,20 +578,41 @@ class AssemblyNativeAdapter:
         return model, True
 
     def _resolve_selection_reference(self, assembly: Any, reference: str) -> Any:
-        component_id, plane = self._parse_selection_ref(reference)
+        component_id, reference_kind, name = self._parse_selection_ref(reference)
+        if reference_kind == "component":
+            assert component_id is not None
+            return self._component(assembly, component_id)
         if component_id is None:
-            feature = self._standard_plane_feature(assembly, plane)
-            return self.api._member(feature, "GetSpecificFeature2")
+            feature = self._standard_plane_feature(assembly, name)
+            entity = self.api._member(feature, "GetSpecificFeature2")
+            if entity is None:
+                raise _AssemblyNativeError(
+                    "assembly_plane_resolution_failed", reference
+                )
+            return entity
+
         component = self._component(assembly, component_id)
         model = self.api._member(component, "GetModelDoc2")
         if model is None:
             raise _AssemblyNativeError("component_model_not_resolved", component_id)
-        feature = self._standard_plane_feature(model, plane)
-        plane_object = self.api._member(feature, "GetSpecificFeature2")
-        corresponding = self.api._member(component, "GetCorresponding", plane_object)
+        if reference_kind == "plane":
+            feature = self._standard_plane_feature(model, name)
+            native_entity = self.api._member(feature, "GetSpecificFeature2")
+        else:
+            native_entity = self.api._member(
+                model,
+                "GetEntityByName",
+                name,
+                _SELECT_ENTITY_TYPE[reference_kind],
+            )
+        if native_entity is None:
+            raise _AssemblyNativeError(
+                "component_entity_missing", reference
+            )
+        corresponding = self.api._member(component, "GetCorresponding", native_entity)
         if corresponding is None:
             raise _AssemblyNativeError(
-                "component_plane_context_resolution_failed", reference
+                "component_entity_context_resolution_failed", reference
             )
         return corresponding
 
@@ -476,6 +631,25 @@ class AssemblyNativeAdapter:
                 index += 1
             feature = self.api.next_feature(feature)
         raise _AssemblyNativeError("standard_plane_missing", plane)
+
+    def _pattern_feature(self, assembly: Any, pattern_id: str) -> Any:
+        matches: list[Any] = []
+        feature = self.api.first_feature(assembly)
+        visited = 0
+        while feature is not None:
+            visited += 1
+            if visited > self.max_features:
+                raise _AssemblyNativeError("feature_traversal_limit")
+            if self.api.feature_name(feature) == pattern_id:
+                matches.append(feature)
+            feature = self.api.next_feature(feature)
+        if not matches:
+            raise _AssemblyNativeError("missing_component_pattern", pattern_id)
+        if len(matches) > 1:
+            raise _AssemblyNativeError("ambiguous_component_pattern", pattern_id)
+        if self.api.feature_type(matches[0]) != "LocalLPattern":
+            raise _AssemblyNativeError("feature_not_component_pattern", pattern_id)
+        return matches[0]
 
     def _mate_features(self, assembly: Any) -> tuple[Any, ...]:
         mate_group = None
@@ -522,21 +696,32 @@ class AssemblyNativeAdapter:
         kind = self._kind_from_native(native_kind)
         suppressed = self._feature_suppressed_current(feature)
         code, warning = self.api.feature_error(feature)
+        definition = self.api._member(feature, "GetDefinition")
+        try:
+            error_status = (
+                int(self.api._member(definition, "ErrorStatus"))
+                if definition is not None
+                else None
+            )
+        except Exception:
+            error_status = None
         if suppressed:
             state = MateState.SUPPRESSED
-        elif int(code) == 0:
+        elif error_status == 5:
+            state = MateState.OVER_DEFINED
+        elif int(code) != 0:
+            state = MateState.DANGLING
+        elif error_status in (None, 1):
             state = MateState.SOLVED
         else:
-            state = MateState.DANGLING
+            state = MateState.UNKNOWN
         value = None
-        if kind in (MateKind.DISTANCE, MateKind.ANGLE):
-            definition = self.api._member(feature, "GetDefinition")
-            if definition is not None:
-                attr = "Distance" if kind is MateKind.DISTANCE else "Angle"
-                try:
-                    value = float(self.api._member(definition, attr))
-                except Exception:
-                    value = None
+        if kind in (MateKind.DISTANCE, MateKind.ANGLE) and definition is not None:
+            attr = "Distance" if kind is MateKind.DISTANCE else "Angle"
+            try:
+                value = float(self.api._member(definition, attr))
+            except Exception:
+                value = None
         component_ids: list[str] = []
         try:
             count = int(self.api._member(mate, "GetMateEntityCount"))
@@ -558,6 +743,7 @@ class AssemblyNativeAdapter:
             rebuild_errors=errors,
             kind=kind,
             value=value,
+            error_status=error_status,
         )
 
     def _feature_suppressed_current(self, feature: Any) -> bool:
@@ -572,16 +758,24 @@ class AssemblyNativeAdapter:
         return bool(value)
 
     @staticmethod
-    def _parse_selection_ref(reference: str) -> tuple[str | None, str]:
-        if not isinstance(reference, str):
+    def _parse_selection_ref(reference: str) -> tuple[str | None, str, str]:
+        if not isinstance(reference, str) or not reference.strip():
             raise AssemblyRefusal("unsupported_selection_reference")
         parts = reference.split(":")
-        if len(parts) != 3 or parts[1] != "plane" or parts[2] not in _STANDARD_PLANE_INDEX:
+        if len(parts) == 2 and parts[0] == "component" and parts[1].strip():
+            return parts[1], "component", ""
+        if len(parts) != 3 or not parts[0].strip() or not parts[2].strip():
             raise AssemblyRefusal("unsupported_selection_reference", reference)
         component = None if parts[0] == "assembly" else parts[0]
-        if component is not None and not component.strip():
-            raise AssemblyRefusal("unsupported_selection_reference", reference)
-        return component, parts[2]
+        kind = parts[1]
+        name = parts[2]
+        if kind == "plane":
+            if name not in _STANDARD_PLANE_INDEX:
+                raise AssemblyRefusal("unsupported_selection_reference", reference)
+            return component, kind, name
+        if component is not None and kind in _SELECT_ENTITY_TYPE:
+            return component, kind, name
+        raise AssemblyRefusal("unsupported_selection_reference", reference)
 
     @staticmethod
     def _native_suppression(state: ComponentLoadState) -> int:

@@ -1,6 +1,12 @@
 import unittest
 
-from cdt_solidworks.assembly.domain import AssemblyRefusal, ComponentLoadState, MateKind
+from cdt_solidworks.assembly.domain import (
+    AssemblyRefusal,
+    ComponentLoadState,
+    MateKind,
+    MateRequest,
+    MateState,
+)
 from cdt_solidworks.assembly.native import AssemblyNativeAdapter
 from cdt_solidworks.native.models import NativeCallResult
 
@@ -11,7 +17,7 @@ class FakeTransform:
 
 
 class FakeComponent:
-    def __init__(self, name="Bracket-1", path=r"C:\fixtures\bracket.SLDPRT"):
+    def __init__(self, name="Bracket-1", path=r"C:\fixtures\bracket.SLDPRT", parent=None):
         self.Name2 = name
         self._path = path
         self.ReferencedConfiguration = "Default"
@@ -20,6 +26,7 @@ class FakeComponent:
         self._fixed = False
         self.last_suppression = None
         self.last_select_data = None
+        self.parent = parent
 
     def GetPathName(self):
         return self._path
@@ -29,6 +36,9 @@ class FakeComponent:
 
     def IsFixed(self):
         return self._fixed
+
+    def GetParent(self):
+        return self.parent
 
     def SetSuppression2(self, state):
         self.last_suppression = state
@@ -106,6 +116,10 @@ class FakeApi:
     def null_dispatch():
         return _NULL_DISPATCH
 
+    @staticmethod
+    def dispatch_array(values):
+        return tuple(values)
+
 
 _NULL_DISPATCH = object()
 
@@ -113,10 +127,14 @@ _NULL_DISPATCH = object()
 class FakeDistanceDefinition:
     def __init__(self):
         self.Distance = 0.02
+        self.ErrorStatus = 1
 
 
 class FakeMateSpecific:
     Type = 5
+
+    def GetMateEntityCount(self):
+        return 0
 
 
 class FakeDistanceMateFeature:
@@ -124,6 +142,7 @@ class FakeDistanceMateFeature:
         self.definition = FakeDistanceDefinition()
         self.specific = FakeMateSpecific()
         self.modify_component = None
+        self.Name = "Distance1"
 
     def GetDefinition(self):
         return self.definition
@@ -134,6 +153,44 @@ class FakeDistanceMateFeature:
     def ModifyDefinition(self, definition, top_doc, component):
         self.modify_component = component
         return True
+
+    def IsSuppressed2(self, option, config_names):
+        return False
+
+
+class FakePatternData:
+    def __init__(self):
+        self.SeedComponentArray = ()
+        self.D1Axis = None
+        self.D1EndCondition = None
+        self.D1Spacing = 0.0
+        self.D1TotalInstances = 0
+        self.D1ReverseDirection = False
+        self.D2PatternSeedOnly = False
+
+
+class FakePatternFeature:
+    def __init__(self, data):
+        self.Name = "LocalLPattern1"
+        self.data = data
+
+    def GetDefinition(self):
+        return self.data
+
+
+class FakeFeatureManager:
+    def __init__(self):
+        self.data = None
+        self.feature = None
+
+    def CreateDefinition(self, feature_id):
+        assert feature_id == 108
+        self.data = FakePatternData()
+        return self.data
+
+    def CreateFeature(self, data):
+        self.feature = FakePatternFeature(data)
+        return self.feature
 
 
 class FakeSession:
@@ -180,11 +237,111 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.assertEqual(ComponentLoadState.LIGHTWEIGHT, self.adapter._domain_suppression(4))
         self.assertEqual(ComponentLoadState.RESOLVED, self.adapter._domain_suppression(2))
 
-    def test_selection_reference_parser_is_bounded_to_standard_planes(self):
-        self.assertEqual((None, "front"), self.adapter._parse_selection_ref("assembly:plane:front"))
-        self.assertEqual(("Bracket-1", "right"), self.adapter._parse_selection_ref("Bracket-1:plane:right"))
+    def test_selection_reference_parser_accepts_bounded_stable_identity_forms(self):
+        self.assertEqual(
+            (None, "plane", "front"),
+            self.adapter._parse_selection_ref("assembly:plane:front"),
+        )
+        self.assertEqual(
+            ("Bracket-1", "plane", "right"),
+            self.adapter._parse_selection_ref("Bracket-1:plane:right"),
+        )
+        self.assertEqual(
+            ("Bracket-1", "face", "bore"),
+            self.adapter._parse_selection_ref("Bracket-1:face:bore"),
+        )
+        self.assertEqual(
+            ("Bracket-1", "component", ""),
+            self.adapter._parse_selection_ref("component:Bracket-1"),
+        )
         with self.assertRaisesRegex(AssemblyRefusal, "unsupported_selection_reference"):
-            self.adapter._parse_selection_ref("Bracket-1:face:Face1")
+            self.adapter._parse_selection_ref("Bracket-1:face:")
+
+    def test_component_snapshot_reports_parent_identity(self):
+        parent = FakeComponent(name="SubAsm-1", path=r"C:\fixtures\sub.SLDASM")
+        child = FakeComponent(name="Nested-1@SubAsm-1", parent=parent)
+        snapshot = self.adapter._component_snapshot(child)
+        self.assertEqual("SubAsm-1", snapshot.parent_identity)
+
+    def test_mate_specific_data_is_configured_explicitly(self):
+        class MateData:
+            pass
+
+        width = MateData()
+        self.adapter._configure_mate_data(
+            MateKind.WIDTH,
+            width,
+            ("w1", "w2", "t1", "t2"),
+            MateRequest(
+                MateKind.WIDTH,
+                ("a", "b", "c", "d"),
+                constraint="centered",
+            ),
+        )
+        self.assertEqual(("w1", "w2"), width.WidthSelection)
+        self.assertEqual(("t1", "t2"), width.TabSelection)
+        self.assertEqual(0, width.ConstraintType)
+
+        slot = MateData()
+        self.adapter._configure_mate_data(
+            MateKind.SLOT,
+            slot,
+            ("slot", "pin"),
+            MateRequest(MateKind.SLOT, ("a", "b"), constraint="centered"),
+        )
+        self.assertEqual(("slot", "pin"), slot.EntitiesToMate)
+        self.assertEqual(1, slot.Constraint)
+
+        concentric = MateData()
+        self.adapter._configure_mate_data(
+            MateKind.CONCENTRIC,
+            concentric,
+            ("bore", "shaft"),
+            MateRequest(MateKind.CONCENTRIC, ("a", "b")),
+        )
+        self.assertFalse(concentric.LockRotation)
+
+    def test_mate_error_status_maps_overdefined_instead_of_dangling(self):
+        feature = FakeDistanceMateFeature()
+        feature.definition.ErrorStatus = 5
+        self.session.api.feature_name = lambda value: value.Name
+        self.session.api.feature_error = lambda value: (0, False)
+        snapshot = self.adapter._mate_snapshot(feature)
+        self.assertEqual(MateState.OVER_DEFINED, snapshot.state)
+        self.assertEqual(5, snapshot.error_status)
+
+    def test_linear_component_pattern_uses_native_feature_data_and_readback(self):
+        manager = FakeFeatureManager()
+        self.session.model.FeatureManager = manager
+        seed = self.session.model.component
+        self.adapter._assembly = lambda app, assembly_id: self.session.model
+        self.adapter._component = lambda assembly, component_id: seed
+        self.adapter._resolve_selection_reference = lambda assembly, ref: "named-edge"
+        self.session.api.feature_name = lambda feature: feature.Name
+        self.adapter._pattern_feature = lambda assembly, pattern_id: manager.feature
+
+        pattern_id = self.adapter.create_linear_component_pattern(
+            self.assembly_id,
+            ("Bracket-1",),
+            "Bracket-1:edge:pattern-axis",
+            0.025,
+            3,
+        )
+        self.assertEqual("LocalLPattern1", pattern_id)
+        self.assertEqual((seed,), manager.data.SeedComponentArray)
+        self.assertEqual("named-edge", manager.data.D1Axis)
+        self.assertEqual(0, manager.data.D1EndCondition)
+        self.assertEqual(0.025, manager.data.D1Spacing)
+        self.assertEqual(3, manager.data.D1TotalInstances)
+        self.assertTrue(manager.data.D2PatternSeedOnly)
+
+        snapshot = self.adapter.read_component_pattern(
+            self.assembly_id, "LocalLPattern1"
+        )
+        self.assertEqual(("Bracket-1",), snapshot.seed_component_ids)
+        self.assertEqual(0.025, snapshot.spacing_m)
+        self.assertEqual(3, snapshot.total_instances)
+        self.assertTrue(snapshot.direction_resolved)
 
     def test_distance_mate_edit_uses_typed_null_dispatch_for_component(self):
         feature = FakeDistanceMateFeature()

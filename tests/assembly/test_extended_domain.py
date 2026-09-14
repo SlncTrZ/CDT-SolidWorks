@@ -5,6 +5,7 @@ from cdt_solidworks.assembly.domain import (
     AssemblyRefusal,
     AssemblyService,
     ComponentLoadState,
+    ComponentPatternSnapshot,
     ComponentSnapshot,
     MateKind,
     MateRequest,
@@ -54,6 +55,15 @@ class ExtendedAssemblyAdapter:
                 fixed=False,
             ),
         }
+        self.components["NestedPart-1@SubAsm-1"] = ComponentSnapshot(
+            identity="NestedPart-1@SubAsm-1",
+            source_path="C:/fixtures/nested.SLDPRT",
+            configuration="Default",
+            transform=_IDENTITY,
+            load_state=ComponentLoadState.RESOLVED,
+            fixed=False,
+            parent_identity="SubAsm-1",
+        )
         self.mates = {
             "MateCoincident1": MateSnapshot(
                 identity="MateCoincident1",
@@ -64,6 +74,7 @@ class ExtendedAssemblyAdapter:
                 value=None,
             )
         }
+        self.patterns = {}
         self.rebuild = RebuildReport(ok=True)
 
     def list_components(self, assembly_id, recursive):
@@ -86,7 +97,9 @@ class ExtendedAssemblyAdapter:
             transform=current.transform,
             load_state=current.load_state,
             fixed=current.fixed,
+            parent_identity=current.parent_identity,
         )
+        return component_id
 
     def delete_component(self, assembly_id, component_id):
         self.components.pop(component_id)
@@ -125,7 +138,37 @@ class ExtendedAssemblyAdapter:
             transform=current.transform,
             load_state=current.load_state,
             fixed=current.fixed,
+            parent_identity=current.parent_identity,
         )
+
+    def create_linear_component_pattern(
+        self, assembly_id, seed_component_ids, direction_ref, spacing_m, total_instances
+    ):
+        identity = "LocalLPattern1"
+        self.patterns[identity] = ComponentPatternSnapshot(
+            identity=identity,
+            seed_component_ids=tuple(seed_component_ids),
+            spacing_m=spacing_m,
+            total_instances=total_instances,
+            direction_resolved=True,
+        )
+        for index in range(1, total_instances):
+            for seed in seed_component_ids:
+                current = self.read_component(assembly_id, seed)
+                pattern_id = f"{seed}@{identity}[{index}]"
+                self.components[pattern_id] = ComponentSnapshot(
+                    identity=pattern_id,
+                    source_path=current.source_path,
+                    configuration=current.configuration,
+                    transform=current.transform,
+                    load_state=current.load_state,
+                    fixed=False,
+                    parent_identity=current.parent_identity,
+                )
+        return identity
+
+    def read_component_pattern(self, assembly_id, pattern_id):
+        return self.patterns[pattern_id]
 
     def add_mate(self, assembly_id, request):
         mate_id = f"Mate{request.kind.value.title()}2"
@@ -178,9 +221,11 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
         self.adapter = ExtendedAssemblyAdapter()
         self.service = AssemblyService(self.adapter)
 
-    def test_recursive_component_query_preserves_unique_identity(self):
+    def test_recursive_component_query_preserves_unique_identity_and_parent(self):
         components = self.service.list_components("asm-1", recursive=True)
-        self.assertEqual(("Base-1", "Bracket-1"), tuple(item.identity for item in components))
+        nested = next(item for item in components if item.identity.startswith("NestedPart"))
+        self.assertEqual("SubAsm-1", nested.parent_identity)
+        self.assertEqual(3, len({item.identity for item in components}))
 
     def test_delete_component_requires_absence_readback(self):
         self.service.delete_component("asm-1", "Bracket-1")
@@ -195,6 +240,38 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
     def test_component_referenced_configuration_requires_readback(self):
         component = self.service.set_component_configuration("asm-1", "Bracket-1", "Machined")
         self.assertEqual("Machined", component.configuration)
+
+    def test_linear_component_pattern_requires_feature_and_component_count_readback(self):
+        pattern = self.service.create_linear_component_pattern(
+            "asm-1",
+            seed_component_ids=("Bracket-1",),
+            direction_ref="Bracket-1:edge:pattern-axis",
+            spacing_m=0.025,
+            total_instances=3,
+        )
+        self.assertEqual("LocalLPattern1", pattern.identity)
+        self.assertEqual(3, pattern.total_instances)
+        self.assertEqual(5, len(self.service.list_components("asm-1", recursive=True)))
+
+    def test_linear_component_pattern_rejects_invalid_count_and_spacing_pre_dispatch(self):
+        before = tuple(self.adapter.patterns)
+        with self.assertRaisesRegex(AssemblyRefusal, "invalid_pattern_instance_count"):
+            self.service.create_linear_component_pattern(
+                "asm-1",
+                seed_component_ids=("Bracket-1",),
+                direction_ref="Bracket-1:edge:pattern-axis",
+                spacing_m=0.025,
+                total_instances=1,
+            )
+        with self.assertRaisesRegex(AssemblyRefusal, "invalid_pattern_spacing"):
+            self.service.create_linear_component_pattern(
+                "asm-1",
+                seed_component_ids=("Bracket-1",),
+                direction_ref="Bracket-1:edge:pattern-axis",
+                spacing_m=0.0,
+                total_instances=3,
+            )
+        self.assertEqual(before, tuple(self.adapter.patterns))
 
     def test_mate_kind_is_bounded(self):
         with self.assertRaisesRegex(AssemblyRefusal, "unsupported_mate_kind"):
@@ -216,26 +293,68 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
             )
         self.assertEqual(before, tuple(self.adapter.mates))
 
-    def test_common_mate_family_is_accepted(self):
-        for kind in (
-            MateKind.COINCIDENT,
-            MateKind.CONCENTRIC,
-            MateKind.DISTANCE,
-            MateKind.ANGLE,
-            MateKind.PARALLEL,
-            MateKind.PERPENDICULAR,
-            MateKind.TANGENT,
-            MateKind.LOCK,
-            MateKind.WIDTH,
-            MateKind.SLOT,
-        ):
-            request = MateRequest(
-                kind=kind,
-                selection_refs=("Base-1:plane:front", "Bracket-1:plane:front"),
-                value=0.01 if kind is MateKind.DISTANCE else (0.5 if kind is MateKind.ANGLE else None),
-            )
+    def test_common_mate_family_is_accepted_with_kind_specific_shape(self):
+        requests = (
+            MateRequest(MateKind.COINCIDENT, ("Base-1:plane:front", "Bracket-1:plane:front")),
+            MateRequest(MateKind.CONCENTRIC, ("Base-1:face:bore", "Bracket-1:face:shaft")),
+            MateRequest(MateKind.DISTANCE, ("Base-1:plane:front", "Bracket-1:plane:front"), value=0.01),
+            MateRequest(MateKind.ANGLE, ("Base-1:plane:front", "Bracket-1:plane:front"), value=0.5),
+            MateRequest(MateKind.PARALLEL, ("Base-1:plane:front", "Bracket-1:plane:front")),
+            MateRequest(MateKind.PERPENDICULAR, ("Base-1:plane:front", "Bracket-1:plane:front")),
+            MateRequest(MateKind.TANGENT, ("Base-1:face:cylinder", "Bracket-1:plane:front")),
+            MateRequest(MateKind.LOCK, ("component:Base-1", "component:Bracket-1")),
+            MateRequest(
+                MateKind.WIDTH,
+                (
+                    "Base-1:face:width-left",
+                    "Base-1:face:width-right",
+                    "Bracket-1:face:tab-left",
+                    "Bracket-1:face:tab-right",
+                ),
+                constraint="centered",
+            ),
+            MateRequest(
+                MateKind.SLOT,
+                ("Base-1:face:slot", "Bracket-1:face:pin"),
+                constraint="centered",
+            ),
+        )
+        for request in requests:
             mate = self.service.add_mate("asm-1", request)
-            self.assertEqual(kind, mate.kind)
+            self.assertEqual(request.kind, mate.kind)
+
+    def test_width_and_slot_shape_fail_closed_before_dispatch(self):
+        before = tuple(self.adapter.mates)
+        with self.assertRaisesRegex(AssemblyRefusal, "invalid_width_mate_selection"):
+            self.service.add_mate(
+                "asm-1",
+                MateRequest(
+                    MateKind.WIDTH,
+                    ("Base-1:face:left", "Base-1:face:right"),
+                    constraint="centered",
+                ),
+            )
+        with self.assertRaisesRegex(AssemblyRefusal, "invalid_slot_constraint"):
+            self.service.add_mate(
+                "asm-1",
+                MateRequest(
+                    MateKind.SLOT,
+                    ("Base-1:face:slot", "Bracket-1:face:pin"),
+                    constraint="distance",
+                ),
+            )
+        self.assertEqual(before, tuple(self.adapter.mates))
+
+    def test_non_value_mate_rejects_value_instead_of_ignoring_it(self):
+        with self.assertRaisesRegex(AssemblyRefusal, "mate_value_not_supported"):
+            self.service.add_mate(
+                "asm-1",
+                MateRequest(
+                    MateKind.CONCENTRIC,
+                    ("Base-1:face:bore", "Bracket-1:face:shaft"),
+                    value=0.1,
+                ),
+            )
 
     def test_read_mate_preserves_explicit_identity(self):
         mate = self.service.read_mate("asm-1", "MateCoincident1")
