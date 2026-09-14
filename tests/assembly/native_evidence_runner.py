@@ -486,14 +486,10 @@ def _open_standard_mate_fixture(
                 0.0,
                 0.0,
             )
-            math_utility = session.api._member(app, "GetMathUtility")
-            transform = session.api._member(
-                math_utility,
-                "CreateTransform",
-                AssemblyNativeAdapter(session)._double_array(values),
-            )
+            transform = session.api._member(component, "Transform2")
             if transform is None:
-                raise EvidenceError("shaft transform creation failed")
+                raise EvidenceError("shaft transform missing")
+            transform.ArrayData = AssemblyNativeAdapter(session)._double_array(values)
             solved = bool(
                 session.api._member(component, "SetTransformAndSolve2", transform)
             )
