@@ -80,7 +80,7 @@ class FakeGtol:
         return 1
 
     def GetFrame(self, index):
-        return FakeGtolFrame(self) if index == 0 else None
+        return FakeGtolFrame(self) if index == 1 else None
 
     def GetAnnotation(self):
         return self.annotation

@@ -581,7 +581,7 @@ class SolidWorksDrawingAdapter:
             frame_count = int(self._api._member(gtol, "GetFrameCount"))
             if frame_count < 1:
                 raise DrawingPostconditionError("gtol_frame_readback_missing", view_id)
-            frame = self._api._member(gtol, "GetFrame", 0)
+            frame = self._api._member(gtol, "GetFrame", 1)
             if frame is None:
                 raise DrawingPostconditionError("gtol_frame_readback_missing", view_id)
             symbol_xml = str(self._api._member(frame, "GetSymbolXml") or "")
