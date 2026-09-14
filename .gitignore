@@ -23,6 +23,11 @@ obj/
 *.slddrw
 ~$*
 
+# Python / test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # OS / logs
 .DS_Store
 Thumbs.db

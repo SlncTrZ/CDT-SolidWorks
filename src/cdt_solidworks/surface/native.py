@@ -126,6 +126,110 @@ class SurfaceNativeAdapter(BodyNativeAdapter):
             mutation=True,
         )
 
+    def offset(
+        self,
+        path: str | Path,
+        *,
+        surface_body_name: str,
+        distance_mm: float,
+        reverse: bool = False,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Offset a single-face surface body without exposing topology handles to callers."""
+        try:
+            source = self._validate_part_path(path)
+            name = str(surface_body_name).strip()
+            distance = float(distance_mm)
+            if not name:
+                raise NativeRuntimeError(
+                    "cad_validation_error", "surface_offset", "surface_body_name must not be empty."
+                )
+            if not math.isfinite(distance) or distance <= 0:
+                raise NativeRuntimeError(
+                    "cad_validation_error", "surface_offset", "distance_mm must be positive and finite."
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "surface_offset")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                surfaces_before = tuple(self.api.bodies(model, 1, False))
+                solids_before = tuple(self.api.bodies(model, 0, False))
+                body = next((item for item in surfaces_before if self._body_name(item) == name), None)
+                if body is None:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "surface_offset",
+                        "Requested surface-body identity is not present in the part.",
+                    )
+                face = self.api._member(body, "GetFirstFace")
+                if face is None or self.api._member(face, "GetNextFace") is not None:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "surface_offset",
+                        "Bounded offset requires a surface body with exactly one face.",
+                    )
+                features_before = self._feature_names(model)
+                self.api._member(model, "ClearSelection2", True)
+                selection_manager = self.api._member(model, "SelectionManager")
+                select_data = self.api._member(selection_manager, "CreateSelectData")
+                select_data.Mark = 0
+                if not bool(self.api._member(face, "Select4", False, select_data)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "surface_offset",
+                        "The bounded surface face could not be selected for Offset Surface.",
+                    )
+                self.api._member(model, "InsertOffsetSurface", distance / 1000.0, bool(reverse))
+                self._require_clean_rebuild(model, "surface_offset")
+                surfaces_after = tuple(self.api.bodies(model, 1, False))
+                solids_after = tuple(self.api.bodies(model, 0, False))
+                if len(surfaces_after) != len(surfaces_before) + 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "surface_offset",
+                        "Offset Surface did not create exactly one additional surface body.",
+                        details={"before": len(surfaces_before), "after": len(surfaces_after)},
+                    )
+                if len(solids_after) != len(solids_before):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "surface_offset",
+                        "Offset Surface unexpectedly changed solid-body count.",
+                    )
+                features_after = self._feature_names(model)
+                new_features = [feature for feature in features_after if feature not in features_before]
+                if len(new_features) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "surface_offset",
+                        "Offset Surface feature-tree read-back is ambiguous.",
+                        details={"new_feature_count": len(new_features)},
+                    )
+                self._save(model, "surface_offset")
+                return {
+                    "path": source,
+                    "feature_name": new_features[0],
+                    "surface_body_name": name,
+                    "distance_mm": distance,
+                    "reverse": bool(reverse),
+                    "surface_body_count_before": len(surfaces_before),
+                    "surface_body_count_after": len(surfaces_after),
+                    "solid_body_count_before": len(solids_before),
+                    "solid_body_count_after": len(solids_after),
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="surface_offset",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
     def thicken(
         self,
         path: str | Path,
@@ -229,3 +333,19 @@ class SurfaceNativeAdapter(BodyNativeAdapter):
             timeout=self._timeout(timeout),
             mutation=True,
         )
+
+    def _feature_names(self, model: Any) -> tuple[str, ...]:
+        names: list[str] = []
+        feature = self.api.first_feature(model)
+        count = 0
+        while feature is not None:
+            count += 1
+            if count > self.max_features:
+                raise NativeRuntimeError(
+                    "query_limit_exceeded",
+                    "surface_feature_lookup",
+                    "Surface feature lookup exceeded its bounded item limit.",
+                )
+            names.append(self.api.feature_name(feature))
+            feature = self.api.next_feature(feature)
+        return tuple(names)

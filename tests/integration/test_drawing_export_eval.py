@@ -4,21 +4,31 @@ from pathlib import Path
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.drawing.domain import (
+    AnnotationSnapshot,
     DrawingPostconditionError,
     DrawingSnapshot,
     SheetSnapshot,
     ViewSnapshot,
 )
-from cdt_solidworks.evaluation.domain import BoundingBox, GeometrySanity, MassProperties
+from cdt_solidworks.evaluation.domain import (
+    BoundingBox,
+    GeometrySanity,
+    InterferenceSnapshot,
+    MassProperties,
+    MeasureSnapshot,
+)
 from cdt_solidworks.export.domain import (
     ArtifactInspection,
     ExportFormat,
     ExportPostconditionError,
+    ImportFormat,
+    ImportSnapshot,
 )
 from cdt_solidworks.integration.drawing_export_eval import (
     IntegratedDrawingService,
     IntegratedEvaluationService,
     IntegratedExportService,
+    IntegratedImportService,
 )
 from cdt_solidworks.native.models import NativeCallState
 
@@ -39,6 +49,24 @@ class _DrawingDomain:
         self.calls.append(("view", path, sheet, kind, source, configuration))
         return ViewSnapshot("Drawing View1", sheet, kind, source, configuration, False)
 
+    def create_projected_view(self, path: str, parent_view_id: str, x: float, y: float):
+        self.calls.append(("projected", path, parent_view_id, x, y))
+        return ViewSnapshot("Drawing View2", "Sheet1", "projected", "part.SLDPRT", None, False, (x, y), 1.0, 2, parent_view_id)
+
+    def create_section_view(self, path, parent_view_id, line_start, line_end, x, y, label):
+        self.calls.append(("section", path, parent_view_id, line_start, line_end, x, y, label))
+        return ViewSnapshot("Section View A-A", "Sheet1", "section", "part.SLDPRT", None, False, (x, y), 1.0, 2, parent_view_id)
+
+    def add_note(self, path: str, view_id: str, text: str):
+        self.calls.append(("note", path, view_id, text))
+        return AnnotationSnapshot("DetailItem1", view_id, "note", text, False)
+
+    def auto_insert_center_marks(self, path: str, view_id: str):
+        self.calls.append(("center_marks", path, view_id))
+        return (
+            AnnotationSnapshot("DetailItem2", view_id, "center_mark", "DetailItem2", False),
+        )
+
 
 class _ExportDomain:
     def __init__(self) -> None:
@@ -58,9 +86,26 @@ class _ExportDomain:
             },
             source_document_id=request.source_document_id,
             source_configuration=request.source_configuration,
-            drawing_sheet=None,
+            drawing_sheet=request.drawing_sheet,
             detected_extension=Path(request.target_path).suffix.lower(),
             byte_size=100,
+        )
+
+
+class _ImportDomain:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def import_model(self, request):
+        self.calls.append(request)
+        return ImportSnapshot(
+            source_path=request.source_path,
+            target_document_id=request.target_document_id,
+            format=request.format,
+            document_type=1,
+            solid_body_count=1,
+            surface_body_count=0,
+            component_count=0,
         )
 
 
@@ -80,6 +125,14 @@ class _EvaluationDomain:
         self.calls.append(("sanity", path, configuration))
         return GeometrySanity(1, 0, 0, 0)
 
+    def measure(self, path: str, first_ref: str, second_ref: str | None = None):
+        self.calls.append(("measure", path, first_ref, second_ref))
+        return MeasureSnapshot(0.1 if second_ref else None, 1.57 if second_ref else None, 0.005 if second_ref is None else None, 0.01 if second_ref is None else None)
+
+    def interferences(self, path: str, configuration: str | None = None):
+        self.calls.append(("interferences", path, configuration))
+        return (InterferenceSnapshot("A|B|0", "A-1", "B-1", 1e-6),)
+
 
 def _files(tmp_path: Path):
     part = tmp_path / "part.SLDPRT"; part.write_bytes(b"part")
@@ -88,7 +141,7 @@ def _files(tmp_path: Path):
     return part, drawing, assembly
 
 
-def test_drawing_wrapper_promotes_create_sheet_and_front_view_only(tmp_path: Path) -> None:
+def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path: Path) -> None:
     part, drawing, assembly = _files(tmp_path)
     domain = _DrawingDomain()
     service = IntegratedDrawingService(path_policy=DocumentPathPolicy((tmp_path,)), service=domain)
@@ -103,6 +156,20 @@ def test_drawing_wrapper_promotes_create_sheet_and_front_view_only(tmp_path: Pat
     view = service.create_front_view(str(drawing), "Sheet1", str(part))
     assert view.state is NativeCallState.SUCCESS
     assert domain.calls[-1][3] == "front"
+
+    for kind in ("top", "right", "isometric"):
+        standard = service.create_standard_view(str(drawing), "Sheet1", str(part), kind)
+        assert standard.state is NativeCallState.SUCCESS
+        assert domain.calls[-1][3] == kind
+
+    projected = service.create_projected_view(str(drawing), "Drawing View1", 0.24, 0.10)
+    assert projected.state is NativeCallState.SUCCESS
+    section = service.create_section_view(
+        str(drawing), "Drawing View1", (0.0, -0.04), (0.0, 0.04), 0.235, 0.10, "A"
+    )
+    assert section.state is NativeCallState.SUCCESS
+    assert service.add_note(str(drawing), "Drawing View1", "CHECK").state is NativeCallState.SUCCESS
+    assert service.auto_insert_center_marks(str(drawing), "Drawing View1").state is NativeCallState.SUCCESS
 
     wrong_source = service.create_front_view(str(drawing), "Sheet1", str(assembly))
     assert wrong_source.state is NativeCallState.FAILURE
@@ -143,12 +210,32 @@ def test_export_wrapper_allows_only_native_evidence_source_format_pairs(tmp_path
         result = service.export(str(drawing), str(tmp_path / f"drawing{suffix}"), fmt)
         assert result.state is NativeCallState.SUCCESS, fmt
 
+    single_sheet = service.export(
+        str(drawing), str(tmp_path / "sheet1.pdf"), "pdf", drawing_sheet="Sheet1"
+    )
+    assert single_sheet.state is NativeCallState.SUCCESS
+    assert domain.calls[-1].drawing_sheet == "Sheet1"
+
     before = len(domain.calls)
     assert service.export(str(assembly), str(tmp_path / "asm.step"), "step").dispatched is False
     assert service.export(str(part), str(tmp_path / "part.pdf"), "pdf").dispatched is False
     assert service.export(str(part), str(tmp_path / "part.stp"), "step_242").dispatched is False
     assert service.export(str(part), str(tmp_path / "part.pdf"), "step").dispatched is False
     assert len(domain.calls) == before
+
+
+def test_import_wrapper_promotes_only_step_iges_and_parasolid(tmp_path: Path) -> None:
+    part, _drawing, _assembly = _files(tmp_path)
+    domain = _ImportDomain()
+    service = IntegratedImportService(path_policy=DocumentPathPolicy((tmp_path,)), service=domain)
+    cases = (("step", ".step"), ("iges", ".igs"), ("parasolid", ".x_t"))
+    for fmt, suffix in cases:
+        foreign = tmp_path / f"source{suffix}"; foreign.write_bytes(b"foreign")
+        target = tmp_path / f"imported-{fmt}.SLDPRT"
+        result = service.import_model(str(foreign), str(target), fmt)
+        assert result.state is NativeCallState.SUCCESS, fmt
+    assert service.import_model(str(part), str(tmp_path / "bad.SLDPRT"), "step").dispatched is False
+    assert service.import_model(str(tmp_path / "source.step"), str(tmp_path / "bad.SLDDRW"), "step").dispatched is False
 
 
 def test_export_wrapper_preserves_uncertain_call_id(tmp_path: Path) -> None:
@@ -177,9 +264,17 @@ def test_evaluation_wrapper_is_read_only_part_surface(tmp_path: Path) -> None:
     assert service.mass_properties(str(part), "Default").state is NativeCallState.SUCCESS
     assert service.bounding_box(str(part), "Default").state is NativeCallState.SUCCESS
     assert service.geometry_sanity(str(part), "Default").state is NativeCallState.SUCCESS
+    assert service.measure(str(part), "Sketch1:segment:0", "Sketch1:segment:1").state is NativeCallState.SUCCESS
+    assert service.measure(str(part), "Sketch2:segment:0").state is NativeCallState.SUCCESS
 
     before = len(domain.calls)
     refused = service.mass_properties(str(assembly))
     assert refused.state is NativeCallState.FAILURE
     assert refused.dispatched is False
     assert len(domain.calls) == before
+
+    interference = service.interferences(str(assembly), "Default")
+    assert interference.state is NativeCallState.SUCCESS
+    wrong_interference_type = service.interferences(str(part))
+    assert wrong_interference_type.state is NativeCallState.FAILURE
+    assert wrong_interference_type.dispatched is False

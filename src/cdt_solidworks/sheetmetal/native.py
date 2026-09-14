@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import uuid
 from typing import Any
@@ -15,6 +16,19 @@ from cdt_solidworks.body.native import BodyNativeAdapter
 _SW_SUPPRESS_FEATURE = 0
 _SW_UNSUPPRESS_FEATURE = 1
 _SW_THIS_CONFIGURATION = 1
+_SW_HEM_OPEN = 0
+# SOLIDWORKS 2024 SP0.1 target type library (revision 32.0.1): Inside=0, Outside=1.
+_SW_HEM_POSITION = {"inside": 0, "outside": 1}
+_SW_RELIEF_NONE = 4
+_SW_RELIEF_OBROUND = 3
+_SW_FM_EDGE_FLANGE = 37
+_SW_FLANGE_OFFSET_BLIND = 1
+_SW_FLANGE_POSITION_MATERIAL_INSIDE = 1
+_SW_FLANGE_DIM_INNER_VIRTUAL_SHARP = 2
+_SW_FM_SKETCH_BEND = 35
+_SW_SELECT_FACES = 2
+_BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
+_EDGE_TOLERANCE_M = 1e-7
 
 
 class SheetMetalNativeAdapter(BodyNativeAdapter):
@@ -69,6 +83,1009 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             operation,
             stage="sheet_metal_inspect",
             timeout=self._timeout(timeout),
+        )
+
+    def add_edge_flange(
+        self,
+        path: str | Path,
+        *,
+        edge_selector: str,
+        length_mm: float,
+        angle_deg: float = 90.0,
+        bend_radius_mm: float | None = None,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create one bounded blind Edge Flange on a rectangular Base Flange perimeter edge."""
+        try:
+            source = self._validate_part_path(path)
+            selector = str(edge_selector).strip()
+            length = float(length_mm)
+            angle = float(angle_deg)
+            radius = None if bend_radius_mm is None else float(bend_radius_mm)
+            if selector not in _BOUNDARY_EDGE_SELECTORS:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y.",
+                )
+            if not math.isfinite(length) or length <= 0.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange length must be positive and finite.",
+                )
+            if not math.isfinite(angle) or not 0.0 < angle < 180.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange angle must be finite and in the range (0, 180).",
+                )
+            if radius is not None and (not math.isfinite(radius) or radius <= 0.0):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_edge_flange",
+                    "Edge Flange bend radius must be positive and finite when supplied.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_edge_flange")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            phase = "state_readback"
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange requires one formed Base Flange sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Bounded Edge Flange currently requires exactly one solid body.",
+                    )
+                phase = "edge_resolve"
+                edge = self._resolve_boundary_edge(solids[0], selector)
+                phase = "profile_sketch"
+                angle_rad = math.radians(angle)
+                sketch_feature = self.api._member(model, "InsertSketchForEdgeFlange", edge, angle_rad, False)
+                if sketch_feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the Edge Flange profile sketch.",
+                    )
+                if not bool(self.api._member(sketch_feature, "Select2", False, 0)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange profile sketch could not be selected for editing.",
+                    )
+                self.api._member(model, "EditSketch")
+                sketch = self.api._member(model, "GetActiveSketch2")
+                if sketch is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not enter the Edge Flange profile sketch.",
+                    )
+                self.api._member(model, "ClearSelection2", True)
+                if not bool(self.api._member(edge, "Select4", False, self.api.null_dispatch())):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Resolved Edge Flange boundary edge could not be selected in the profile sketch.",
+                    )
+                sketch_manager = self.api._member(model, "SketchManager")
+                if not bool(self.api._member(sketch_manager, "SketchUseEdge", False)):
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS could not project the selected edge into the Edge Flange profile sketch.",
+                    )
+                segments = self._as_tuple(self.api._member(sketch, "GetSketchSegments"))
+                if len(segments) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Bounded Edge Flange profile must begin with exactly one projected edge segment.",
+                        details={"segments": len(segments)},
+                    )
+                profile_edge = segments[0]
+                start_point = self.api._member(profile_edge, "GetStartPoint2")
+                end_point = self.api._member(profile_edge, "GetEndPoint2")
+                x1 = float(self.api._member(start_point, "X"))
+                y1 = float(self.api._member(start_point, "Y"))
+                x2 = float(self.api._member(end_point, "X"))
+                y2 = float(self.api._member(end_point, "Y"))
+                dx = x2 - x1
+                dy = y2 - y1
+                edge_length = math.hypot(dx, dy)
+                if not math.isfinite(edge_length) or edge_length <= _EDGE_TOLERANCE_M:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Projected Edge Flange profile edge is degenerate.",
+                    )
+                profile_depth = length / 1000.0
+                nx = -dy / edge_length
+                ny = dx / edge_length
+                p3 = (x2 + nx * profile_depth, y2 + ny * profile_depth)
+                p4 = (x1 + nx * profile_depth, y1 + ny * profile_depth)
+                created_profile = (
+                    self.api._member(sketch_manager, "CreateLine", x2, y2, 0.0, p3[0], p3[1], 0.0),
+                    self.api._member(sketch_manager, "CreateLine", p3[0], p3[1], 0.0, p4[0], p4[1], 0.0),
+                    self.api._member(sketch_manager, "CreateLine", p4[0], p4[1], 0.0, x1, y1, 0.0),
+                )
+                if any(segment is None for segment in created_profile):
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the bounded Edge Flange profile geometry.",
+                    )
+                self.api._member(model, "InsertSketch2", True)
+
+                phase = "insert_flange"
+                manager = self.api._member(model, "FeatureManager")
+                parent_radius_mm = float(state_before.get("bend_radius_mm") or 0.0)
+                effective_radius_mm = radius if radius is not None else parent_radius_mm
+                if effective_radius_mm <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange requires a positive parent or explicit bend radius.",
+                    )
+                definition = self.api._member(manager, "CreateDefinition", _SW_FM_EDGE_FLANGE)
+                if definition is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create Edge Flange feature data.",
+                    )
+                self._add_edge_flange_edges(definition, edge, sketch)
+                definition.UseDefaultBendRadius = radius is None
+                if radius is not None:
+                    definition.BendRadius = effective_radius_mm / 1000.0
+                definition.BendAngle = angle_rad
+                definition.OffsetType = _SW_FLANGE_OFFSET_BLIND
+                definition.OffsetDistance = length / 1000.0
+                definition.OffsetDimType = _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP
+                definition.PositionType = _SW_FLANGE_POSITION_MATERIAL_INSIDE
+                definition.UsePositionOffset = False
+                definition.UseDefaultBendAllowance = True
+                definition.UseDefaultBendRelief = True
+                feature = self.api._member(manager, "CreateFeature", definition)
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the Edge Flange feature.",
+                    )
+                phase = "rebuild"
+                self._require_clean_rebuild(model, "sheet_metal_add_edge_flange")
+                phase = "feature_readback"
+                definition = self.api._member(feature, "GetDefinition")
+                actual_angle = math.degrees(float(self.api._member(definition, "BendAngle")))
+                actual_radius_mm = float(self.api._member(definition, "BendRadius")) * 1000.0
+                actual_length_mm = float(self.api._member(definition, "OffsetDistance")) * 1000.0
+                if not math.isclose(actual_angle, angle, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange angle read-back does not match the request.",
+                    )
+                if not math.isclose(actual_length_mm, length, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange length read-back does not match the request.",
+                    )
+                if not math.isclose(actual_radius_mm, effective_radius_mm, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange bend-radius read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Edge Flange did not preserve formed sheet-metal state.",
+                    )
+                phase = "save"
+                self._save(model, "sheet_metal_add_edge_flange")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "edge_selector": selector,
+                    "length_mm": actual_length_mm,
+                    "angle_deg": actual_angle,
+                    "bend_radius_mm": actual_radius_mm,
+                    **state_after,
+                }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_edge_flange",
+                    f"SOLIDWORKS Edge Flange operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_edge_flange",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def add_sketched_bend(
+        self,
+        path: str | Path,
+        *,
+        line_x_mm: float,
+        angle_deg: float,
+        bend_radius_mm: float,
+        reverse: bool = False,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create one vertical sketched bend on a bounded rectangular +Z Base Flange face."""
+        try:
+            source = self._validate_part_path(path)
+            line_x = float(line_x_mm)
+            angle = float(angle_deg)
+            radius = float(bend_radius_mm)
+            if not math.isfinite(line_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend line_x_mm must be finite.",
+                )
+            if not math.isfinite(angle) or not 0.0 < angle < 180.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend angle must be finite and in the range (0, 180).",
+                )
+            if not math.isfinite(radius) or radius <= 0.0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_sketched_bend",
+                    "Sketched Bend radius must be positive and finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_sketched_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            phase = "state_readback"
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend requires one formed sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Bounded Sketched Bend currently requires exactly one solid body.",
+                    )
+                box = self._body_box(solids[0])
+                min_x, min_y, min_z, max_x, max_y, max_z = box
+                span_x = max_x - min_x
+                span_y = max_y - min_y
+                if span_x <= 0.0 or span_y <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend requires a non-degenerate rectangular sheet-metal footprint.",
+                    )
+                line_x_m = line_x / 1000.0
+                x_margin = max(span_x * 0.01, 1e-5)
+                if not min_x + x_margin < line_x_m < max_x - x_margin:
+                    raise NativeRuntimeError(
+                        "cad_validation_error",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend line_x_mm must lie inside the bounded sheet footprint.",
+                        details={"min_x_mm": min_x * 1000.0, "max_x_mm": max_x * 1000.0},
+                    )
+                y_margin = max(span_y * 0.08, 1e-5)
+                y1 = min_y + y_margin
+                y2 = max_y - y_margin
+                if y2 <= y1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend sheet footprint is too small for the bounded bend line.",
+                    )
+
+                extension = self.api._member(model, "Extension")
+                ray_z = max_z + max(max_z - min_z, 0.01)
+                center_y = (min_y + max_y) * 0.5
+
+                def select_top_face(*, append: bool, clear: bool) -> Any:
+                    if clear:
+                        self.api._member(model, "ClearSelection2", True)
+                    selected = bool(
+                        self.api._member(
+                            extension,
+                            "SelectByRay",
+                            line_x_m,
+                            center_y,
+                            ray_z,
+                            0.0,
+                            0.0,
+                            -1.0,
+                            1e-6,
+                            _SW_SELECT_FACES,
+                            append,
+                            0,
+                            0,
+                        )
+                    )
+                    if not selected:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "No planar +Z sheet-metal face was intersected by the bounded selection ray.",
+                        )
+                    selection_manager = self.api._member(model, "SelectionManager")
+                    selected_count = int(
+                        self.api._member(selection_manager, "GetSelectedObjectCount2", -1)
+                    )
+                    if selected_count <= 0:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "The bounded Sketched Bend selection list is unexpectedly empty.",
+                        )
+                    face = self.api._member(
+                        selection_manager, "GetSelectedObject6", selected_count, -1
+                    )
+                    if face is None:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "The bounded Sketched Bend face selection did not resolve a native face.",
+                        )
+                    surface = self.api._member(face, "GetSurface")
+                    if surface is None or not bool(self.api._member(surface, "IsPlane")):
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Bounded Sketched Bend requires a planar +Z fixed face.",
+                        )
+                    normal = self._as_tuple(self.api._member(face, "Normal"))
+                    if len(normal) != 3:
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Sketched Bend fixed face did not expose a three-value normal.",
+                        )
+                    nx, ny, nz = (float(value) for value in normal)
+                    if abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9:
+                        raise NativeRuntimeError(
+                            "cad_precondition_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "Bounded Sketched Bend requires an outward +Z planar fixed face.",
+                            details={"face_normal": [nx, ny, nz]},
+                        )
+                    return face
+
+                phase = "bend_sketch"
+                select_top_face(append=False, clear=True)
+                sketch_manager = self.api._member(model, "SketchManager")
+                self.api._member(sketch_manager, "InsertSketch", True)
+                if self.api._member(model, "GetActiveSketch2") is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not enter the bounded Sketched Bend face sketch.",
+                    )
+                line = self.api._member(
+                    sketch_manager,
+                    "CreateLine",
+                    line_x_m,
+                    y1,
+                    0.0,
+                    line_x_m,
+                    y2,
+                    0.0,
+                )
+                if line is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create the Sketched Bend line.",
+                    )
+                self.api._member(model, "ClearSelection2", True)
+                self.api._member(sketch_manager, "InsertSketch", True)
+                self.api._member(sketch_manager, "InsertSketch", True)
+                if self.api._member(model, "GetActiveSketch2") is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not restore the Sketched Bend sketch for feature creation.",
+                    )
+                select_top_face(append=True, clear=False)
+
+                phase = "create_feature"
+                manager = self.api._member(model, "FeatureManager")
+                definition = self.api._member(manager, "CreateDefinition", _SW_FM_SKETCH_BEND)
+                if definition is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create Sketched Bend feature data.",
+                    )
+                definition.BendAngle = math.radians(angle)
+                definition.UseDefaultBendRadius = False
+                definition.UseGaugeTable = False
+                definition.BendRadius = radius / 1000.0
+                definition.ReverseDirection = bool(reverse)
+                definition.UseDefaultBendAllowance = True
+                feature = self.api._member(manager, "CreateFeature", definition)
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "SOLIDWORKS did not create the Sketched Bend feature.",
+                    )
+                feature_name = self.api.feature_name(feature)
+                feature_type = self.api.feature_type(feature)
+                if not feature_name or feature_type != "SM3dBend":
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend feature read-back did not match the accepted SM3dBend contract.",
+                        details={"feature_name": feature_name, "feature_type": feature_type},
+                    )
+                phase = "rebuild"
+                self._require_clean_rebuild(model, "sheet_metal_add_sketched_bend")
+                phase = "feature_readback"
+                actual = self.api._member(feature, "GetDefinition")
+                actual_angle = math.degrees(float(self.api._member(actual, "BendAngle")))
+                actual_radius = float(self.api._member(actual, "BendRadius")) * 1000.0
+                actual_reverse = bool(self.api._member(actual, "ReverseDirection"))
+                if not math.isclose(actual_angle, angle, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend angle read-back does not match the request.",
+                    )
+                if not math.isclose(actual_radius, radius, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend radius read-back does not match the request.",
+                    )
+                if actual_reverse is not bool(reverse):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend direction read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_sketched_bend",
+                        "Sketched Bend did not preserve formed sheet-metal state.",
+                    )
+                phase = "save"
+                self._save(model, "sheet_metal_add_sketched_bend")
+                return {
+                    "path": source,
+                    "feature_name": feature_name,
+                    "feature_type": feature_type,
+                    "line_x_mm": line_x,
+                    "angle_deg": actual_angle,
+                    "bend_radius_mm": actual_radius,
+                    "reverse": actual_reverse,
+                    **state_after,
+                }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_sketched_bend",
+                    f"SOLIDWORKS Sketched Bend operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_sketched_bend",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def unfold_bend(
+        self,
+        path: str | Path,
+        *,
+        bend_feature_name: str,
+        fixed_x_mm: float,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Unfold one explicit underlying OneBend using a bounded planar fixed-face ray."""
+        try:
+            source = self._validate_part_path(path)
+            bend_name = str(bend_feature_name).strip()
+            fixed_x = float(fixed_x_mm)
+            if not bend_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_unfold_bend",
+                    "Unfold bend feature identity must not be empty.",
+                )
+            if not math.isfinite(fixed_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_unfold_bend",
+                    "Unfold fixed_x_mm must be finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_unfold_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold requires a formed sheet-metal body outside Flat Pattern mode.",
+                    )
+                bend = self.api._member(model, "FeatureByName", bend_name)
+                if bend is None or self.api.feature_type(bend) != "OneBend":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Requested bend identity is not present as a OneBend feature.",
+                        details={"bend_feature": bend_name},
+                    )
+                before_box = self._single_sheet_body_box(model, "sheet_metal_unfold_bend")
+                self.api._member(model, "ClearSelection2", True)
+                self._select_fixed_face_at_x(
+                    model,
+                    fixed_x_mm=fixed_x,
+                    append=False,
+                    mark=1,
+                    stage="sheet_metal_unfold_bend",
+                )
+                if not bool(self.api._member(bend, "Select2", True, 4)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_unfold_bend",
+                        "Underlying OneBend could not be selected with the required bend mark.",
+                    )
+                before_features = self._feature_rows(model)
+                self.api._member(model, "InsertSheetMetalUnfold")
+                self._require_clean_rebuild(model, "sheet_metal_unfold_bend")
+                after_features = self._feature_rows(model)
+                before_keys = {(row["name"], row["type"]) for row in before_features}
+                created = [
+                    row
+                    for row in after_features
+                    if (row["name"], row["type"]) not in before_keys and row["type"] == "UnFold"
+                ]
+                if len(created) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not create exactly one persisted UnFold feature identity.",
+                        details={"created": created},
+                    )
+                after_box = self._single_sheet_body_box(model, "sheet_metal_unfold_bend")
+                before_span = float(before_box[5]) - float(before_box[2])
+                after_span = float(after_box[5]) - float(after_box[2])
+                if before_span <= 0.0 or after_span >= before_span * 0.5:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not materially reduce the sheet-metal Z span.",
+                        details={"before_box": before_box, "after_box": after_box},
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_unfold_bend",
+                        "Unfold did not preserve the non-Flat-Pattern sheet-metal state.",
+                    )
+                self._save(model, "sheet_metal_unfold_bend")
+                return {
+                    "path": source,
+                    "feature_name": created[0]["name"],
+                    "feature_type": created[0]["type"],
+                    "bend_feature_name": bend_name,
+                    "fixed_x_mm": fixed_x,
+                    "before_box": before_box,
+                    "after_box": after_box,
+                    **state_after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_unfold_bend",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def fold_bend(
+        self,
+        path: str | Path,
+        *,
+        unfold_feature_name: str,
+        bend_feature_name: str,
+        fixed_x_mm: float,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Refold one explicit UnFold/OneBend pair using a bounded planar fixed-face ray."""
+        try:
+            source = self._validate_part_path(path)
+            unfold_name = str(unfold_feature_name).strip()
+            bend_name = str(bend_feature_name).strip()
+            fixed_x = float(fixed_x_mm)
+            if not unfold_name or not bend_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_fold_bend",
+                    "Fold UnFold and bend feature identities must not be empty.",
+                )
+            if not math.isfinite(fixed_x):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_fold_bend",
+                    "Fold fixed_x_mm must be finite.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_fold_bend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold requires a sheet-metal body outside Flat Pattern mode.",
+                    )
+                unfold = self.api._member(model, "FeatureByName", unfold_name)
+                bend = self.api._member(model, "FeatureByName", bend_name)
+                if unfold is None or self.api.feature_type(unfold) != "UnFold":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Requested unfold identity is not present as an UnFold feature.",
+                    )
+                if bend is None or self.api.feature_type(bend) != "OneBend":
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Requested bend identity is not present as a OneBend feature.",
+                    )
+                before_box = self._single_sheet_body_box(model, "sheet_metal_fold_bend")
+                self.api._member(model, "ClearSelection2", True)
+                if not bool(self.api._member(unfold, "Select2", False, 0)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_fold_bend",
+                        "UnFold feature could not be selected for Fold.",
+                    )
+                self._select_fixed_face_at_x(
+                    model,
+                    fixed_x_mm=fixed_x,
+                    append=True,
+                    mark=1,
+                    stage="sheet_metal_fold_bend",
+                )
+                if not bool(self.api._member(bend, "Select2", True, 4)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_fold_bend",
+                        "Underlying OneBend could not be selected for Fold with the required mark.",
+                    )
+                before_features = self._feature_rows(model)
+                self.api._member(model, "InsertSheetMetalFold")
+                self._require_clean_rebuild(model, "sheet_metal_fold_bend")
+                after_features = self._feature_rows(model)
+                before_keys = {(row["name"], row["type"]) for row in before_features}
+                created = [
+                    row
+                    for row in after_features
+                    if (row["name"], row["type"]) not in before_keys and row["type"] == "Fold"
+                ]
+                if len(created) != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not create exactly one persisted Fold feature identity.",
+                        details={"created": created},
+                    )
+                after_box = self._single_sheet_body_box(model, "sheet_metal_fold_bend")
+                before_span = float(before_box[5]) - float(before_box[2])
+                after_span = float(after_box[5]) - float(after_box[2])
+                if after_span <= max(before_span * 2.0, before_span + 0.005):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not materially restore the formed sheet-metal Z span.",
+                        details={"before_box": before_box, "after_box": after_box},
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_fold_bend",
+                        "Fold did not preserve formed sheet-metal state.",
+                    )
+                self._save(model, "sheet_metal_fold_bend")
+                return {
+                    "path": source,
+                    "feature_name": created[0]["name"],
+                    "feature_type": created[0]["type"],
+                    "unfold_feature_name": unfold_name,
+                    "bend_feature_name": bend_name,
+                    "fixed_x_mm": fixed_x,
+                    "before_box": before_box,
+                    "after_box": after_box,
+                    **state_after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_fold_bend",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def add_hem(
+        self,
+        path: str | Path,
+        *,
+        edge_selector: str,
+        length_mm: float,
+        gap_mm: float,
+        position: str = "outside",
+        reverse: bool = False,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create an open hem on one bounded top-boundary selector."""
+        try:
+            source = self._validate_part_path(path)
+            selector = str(edge_selector).strip()
+            length = float(length_mm)
+            gap = float(gap_mm)
+            position_key = str(position).strip().lower()
+            if selector not in _BOUNDARY_EDGE_SELECTORS:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem edge selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y.",
+                )
+            if not math.isfinite(length) or length <= 0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem length must be positive and finite.",
+                )
+            if not math.isfinite(gap) or gap <= 0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem gap must be positive and finite.",
+                )
+            if position_key not in _SW_HEM_POSITION:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem position must be 'inside' or 'outside'.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_hem")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            phase = "state_readback"
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem requires one formed Base Flange sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_hem",
+                        "Bounded hem creation currently requires exactly one solid body.",
+                    )
+                phase = "edge_resolve"
+                edge = self._resolve_boundary_edge(solids[0], selector)
+                phase = "edge_select"
+                self.api._member(model, "ClearSelection2", True)
+                selection_manager = self.api._member(model, "SelectionManager")
+                select_data = self.api._member(selection_manager, "CreateSelectData")
+                select_data.Mark = 0
+                if not bool(self.api._member(edge, "Select4", False, select_data)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_hem",
+                        "Resolved hem boundary edge could not be selected.",
+                    )
+                phase = "bend_allowance_create"
+                manager = self.api._member(model, "FeatureManager")
+                bend_allowance = self.api._member(manager, "CreateCustomBendAllowance")
+                if bend_allowance is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS did not create custom bend-allowance data for the Hem feature.",
+                    )
+                phase = "bend_allowance_set"
+                k_factor = state_before.get("k_factor")
+                bend_allowance.KFactor = (
+                    float(k_factor)
+                    if k_factor is not None
+                    and math.isfinite(float(k_factor))
+                    and 0.0 < float(k_factor) <= 1.0
+                    else 0.5
+                )
+                bend_allowance.Type = 2
+                phase = "insert_hem"
+                bend_radius_m = max(float(state_before.get("bend_radius_mm") or 0.0) / 1000.0, 1e-6)
+                miter_gap_m = max(min(gap / 1000.0, bend_radius_m), 1e-6)
+                try:
+                    feature = self.api._member(
+                        manager,
+                        "InsertSheetMetalHem2",
+                        _SW_HEM_OPEN,
+                        _SW_HEM_POSITION[position_key],
+                        bool(reverse),
+                        length / 1000.0,
+                        gap / 1000.0,
+                        0.0,
+                        bend_radius_m,
+                        miter_gap_m,
+                        bend_allowance,
+                        False,
+                        _SW_RELIEF_OBROUND,
+                        0,
+                        True,
+                        1.0,
+                        0.0,
+                        0.0,
+                    )
+                except Exception as exc:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS rejected the Hem creation call.",
+                        details={
+                            "exception_type": type(exc).__name__,
+                            "hresult": getattr(exc, "hresult", None),
+                            "argerror": getattr(exc, "argerror", None),
+                        },
+                    ) from exc
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS did not create the Hem feature.",
+                    )
+                phase = "rebuild"
+                self._require_clean_rebuild(model, "sheet_metal_add_hem")
+                phase = "feature_readback"
+                definition = self.api._member(feature, "GetDefinition")
+                actual_type = int(self.api._member(definition, "Type"))
+                actual_position = int(self.api._member(definition, "BendPosition"))
+                actual_length_mm = float(self.api._member(definition, "Length")) * 1000.0
+                actual_gap_mm = float(self.api._member(definition, "GapDistance")) * 1000.0
+                edge_count = int(self.api._member(definition, "GetEdgesCount"))
+                if actual_type != _SW_HEM_OPEN or actual_position != _SW_HEM_POSITION[position_key]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem type/position read-back does not match the request.",
+                    )
+                if edge_count != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem edge-count read-back is not exactly one.",
+                    )
+                if not math.isclose(actual_length_mm, length, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem length read-back does not match the request.",
+                    )
+                if not math.isclose(actual_gap_mm, gap, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem gap read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem mutation did not preserve formed sheet-metal state.",
+                    )
+                phase = "save"
+                self._save(model, "sheet_metal_add_hem")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "edge_selector": selector,
+                    "length_mm": actual_length_mm,
+                    "gap_mm": actual_gap_mm,
+                    "position": position_key,
+                    "reverse": bool(reverse),
+                    **state_after,
+                }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_hem",
+                    f"SOLIDWORKS Hem operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_hem",
+            timeout=self._timeout(timeout),
+            mutation=True,
         )
 
     def set_flattened(
@@ -137,6 +1154,108 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             mutation=True,
         )
 
+    def _single_sheet_body_box(self, model: Any, stage: str) -> tuple[float, ...]:
+        solids = tuple(self.api.bodies(model, 0, False))
+        if len(solids) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "Bounded sheet-metal bend state currently requires exactly one solid body.",
+            )
+        return tuple(float(value) for value in self._body_box(solids[0]))
+
+    def _feature_rows(self, model: Any) -> list[dict[str, str]]:
+        manager = self.api._member(model, "FeatureManager")
+        features = self._as_tuple(self.api._member(manager, "GetFeatures", False))
+        return [
+            {"name": self.api.feature_name(feature), "type": self.api.feature_type(feature)}
+            for feature in features
+        ]
+
+    def _select_fixed_face_at_x(
+        self,
+        model: Any,
+        *,
+        fixed_x_mm: float,
+        append: bool,
+        mark: int,
+        stage: str,
+    ) -> Any:
+        box = self._single_sheet_body_box(model, stage)
+        min_x, min_y, min_z, max_x, max_y, max_z = box
+        x_m = float(fixed_x_mm) / 1000.0
+        margin = max((max_x - min_x) * 0.01, 1e-5)
+        if not min_x + margin < x_m < max_x - margin:
+            raise NativeRuntimeError(
+                "cad_validation_error",
+                stage,
+                "fixed_x_mm must lie inside the current sheet-metal body bounds.",
+                details={"min_x_mm": min_x * 1000.0, "max_x_mm": max_x * 1000.0},
+            )
+        ray_z = max_z + max(max_z - min_z, 0.02)
+        extension = self.api._member(model, "Extension")
+        selected = bool(
+            self.api._member(
+                extension,
+                "SelectByRay",
+                x_m,
+                (min_y + max_y) * 0.5,
+                ray_z,
+                0.0,
+                0.0,
+                -1.0,
+                1e-6,
+                _SW_SELECT_FACES,
+                bool(append),
+                int(mark),
+                0,
+            )
+        )
+        if not selected:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The bounded fixed-face selection ray did not intersect the sheet-metal body.",
+            )
+        selection_manager = self.api._member(model, "SelectionManager")
+        selected_count = int(self.api._member(selection_manager, "GetSelectedObjectCount2", -1))
+        if selected_count <= 0:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The fixed-face selection list is unexpectedly empty.",
+            )
+        face = self.api._member(selection_manager, "GetSelectedObject6", selected_count, -1)
+        if face is None:
+            raise NativeRuntimeError(
+                "cad_selection_failed",
+                stage,
+                "The bounded fixed-face selection did not resolve a native face.",
+            )
+        surface = self.api._member(face, "GetSurface")
+        if surface is None or not bool(self.api._member(surface, "IsPlane")):
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed-face selector requires a planar face.",
+            )
+        normal = self._as_tuple(self.api._member(face, "Normal"))
+        if len(normal) != 3:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed face did not expose a three-value normal.",
+            )
+        nx, ny, nz = (float(value) for value in normal)
+        if abs(nx) > 1e-9 or abs(ny) > 1e-9 or nz < 1.0 - 1e-9:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                stage,
+                "The bounded fixed-face selector requires an outward +Z planar face.",
+                details={"face_normal": [nx, ny, nz]},
+            )
+        return face
+
     def _state(self, model: Any) -> dict[str, Any]:
         base = self._feature_of_type(model, "SMBaseFlange")
         flat = self._feature_of_type(model, "FlatPattern")
@@ -173,6 +1292,71 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
         except Exception:
             return None
 
+    def _resolve_boundary_edge(self, body: Any, selector: str) -> Any:
+        edges = self._as_tuple(self.api._member(body, "GetEdges"))
+        rows: list[tuple[Any, tuple[float, float, float], tuple[float, float, float]]] = []
+        points: list[tuple[float, float, float]] = []
+        for edge in edges:
+            start_vertex = self.api._member(edge, "GetStartVertex")
+            end_vertex = self.api._member(edge, "GetEndVertex")
+            if start_vertex is None or end_vertex is None:
+                continue
+            start = self._point3(self.api._member(start_vertex, "GetPoint"))
+            end = self._point3(self.api._member(end_vertex, "GetPoint"))
+            rows.append((edge, start, end))
+            points.extend((start, end))
+        if not rows or not points:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Sheet-metal body exposes no bounded linear boundary edges.",
+            )
+        extrema = {
+            "+x": max(point[0] for point in points),
+            "-x": min(point[0] for point in points),
+            "+y": max(point[1] for point in points),
+            "-y": min(point[1] for point in points),
+        }
+        top_z = max(point[2] for point in points)
+        key = selector.removeprefix("bbox:")
+        axis = 0 if key.endswith("x") else 1
+        target = extrema[key]
+        matches = [
+            edge
+            for edge, start, end in rows
+            if abs(start[2] - top_z) <= _EDGE_TOLERANCE_M
+            and abs(end[2] - top_z) <= _EDGE_TOLERANCE_M
+            and abs(start[axis] - target) <= _EDGE_TOLERANCE_M
+            and abs(end[axis] - target) <= _EDGE_TOLERANCE_M
+        ]
+        if len(matches) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Boundary selector did not resolve to exactly one top perimeter edge.",
+                details={"selector": selector, "matches": len(matches)},
+            )
+        return matches[0]
+
+    @staticmethod
+    def _point3(value: Any) -> tuple[float, float, float]:
+        raw = tuple(float(item) for item in (value or ()))
+        if len(raw) != 3 or any(not math.isfinite(item) for item in raw):
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Boundary edge vertex did not return a finite XYZ point.",
+            )
+        return raw  # type: ignore[return-value]
+
+    @staticmethod
+    def _as_tuple(value: Any) -> tuple[Any, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (tuple, list)):
+            return tuple(value)
+        return (value,)
+
     def _feature_of_type(self, model: Any, type_name: str) -> Any | None:
         feature = self.api.first_feature(model)
         count = 0
@@ -189,6 +1373,38 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             feature = self.api.next_feature(feature)
         return None
 
+    def _add_edge_flange_edges(self, definition: Any, edge: Any, sketch: Any) -> None:
+        """Invoke AddEdges through raw IDispatch to avoid pywin32 late-bound method/property ambiguity."""
+        ole = getattr(definition, "_oleobj_", None)
+        pythoncom = getattr(self.api, "_pythoncom", None)
+        if ole is None or pythoncom is None:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                "sheet_metal_add_edge_flange",
+                "Edge Flange feature data does not expose the required COM dispatch contract.",
+            )
+        dispid = ole.GetIDsOfNames("AddEdges")
+        if isinstance(dispid, (tuple, list)):
+            dispid = dispid[0]
+        error_code = int(
+            ole.InvokeTypes(
+                int(dispid),
+                0,
+                pythoncom.DISPATCH_METHOD,
+                (pythoncom.VT_I4, 0),
+                ((pythoncom.VT_VARIANT, 0), (pythoncom.VT_VARIANT, 0)),
+                self.api.dispatch_array((edge,)),
+                self.api.dispatch_array((sketch,)),
+            )
+        )
+        if error_code != 0:
+            raise NativeRuntimeError(
+                "cad_mutation_failed",
+                "sheet_metal_add_edge_flange",
+                "SOLIDWORKS rejected the Edge Flange edge/profile binding.",
+                details={"edge_flange_error": error_code},
+            )
+
     def _is_suppressed(self, feature: Any) -> bool:
         raw = self.api._member(feature, "IsSuppressed2", _SW_THIS_CONFIGURATION, None)
         if isinstance(raw, (tuple, list)):
@@ -200,10 +1416,3 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                 )
             return bool(raw[0])
         return bool(raw)
-
-    @staticmethod
-    def unsupported_edge_flange_reason() -> str:
-        return (
-            "Native Edge Flange requires a persistent edge-identity resolver; selection-name-only "
-            "automation is intentionally not exposed because it is not deterministic across rebuilds."
-        )

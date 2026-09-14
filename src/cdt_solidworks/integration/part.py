@@ -1,9 +1,10 @@
 """Part Integration — Evidence-gated provider binding for parametric features.
-Wing: Mechanical 90 | Topic: parametric-part | Updated: 2026-09-13
+Wing: Mechanical 90 | Topic: parametric-part | Updated: 2026-09-14
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import math
 from pathlib import Path
 from typing import Any
@@ -14,13 +15,26 @@ from cdt_solidworks.native.errors import NativeRuntimeError, failure_from_except
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
 from cdt_solidworks.native.rebuild import rebuild_document
 from cdt_solidworks.part.models import (
+    ChamferSpec,
+    CircularPatternSpec,
     CutSpec,
+    DraftSpec,
     FeatureKind,
     FeatureSnapshot,
+    FilletSpec,
     HoleSpec,
+    HoleWizardSize,
+    HoleWizardSpec,
+    LinearPatternSpec,
+    MirrorSpec,
     ProfileRef,
+    ReferenceAxisSpec,
+    ReferencePlaneSpec,
+    ReferencePointSpec,
     RevolveCutSpec,
     RevolveSpec,
+    RibSpec,
+    ShellSpec,
 )
 from cdt_solidworks.part.native import NativePartBinding, PartNativeRuntime
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult
@@ -39,6 +53,20 @@ _SIMPLE_HOLE_FACE_REF = "bbox:+z"
 _SIMPLE_HOLE_TYPES = frozenset({"Hole", "SketchHole", "SimpleHole"})
 _STANDARD_REFERENCE_PLANE_COUNT = 3
 _TRANSFORM_TOLERANCE = 1e-9
+_FACE_REFS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y", "bbox:+z", "bbox:-z"})
+_PLANE_REFS = frozenset({"plane:front", "plane:top", "plane:right"})
+_NATIVE_HOLE_WIZARD_SIZES = frozenset({HoleWizardSize.M2, HoleWizardSize.M4, HoleWizardSize.M6})
+_FILLET_EDGE_REF = "bbox:edge:+x:+z"
+_CHAMFER_EDGE_REF = "bbox:edge:-x:+z"
+_SHELL_FACE_REF = "bbox:+z"
+_DRAFT_FACE_REF = "bbox:+x"
+_DRAFT_NEUTRAL_REF = "bbox:+z"
+_LINEAR_DIRECTION_REF = "bbox:edge:+y:+z"
+_MIRROR_REF = "plane:right"
+_REFERENCE_PLANE_REF = "plane:front"
+_REFERENCE_AXIS_REFS = ("plane:top", "plane:right")
+_REFERENCE_POINT_REF = "bbox:+z"
+_MAX_PUBLIC_REFS = 512
 
 
 def _as_tuple(value: Any) -> tuple[Any, ...]:
@@ -380,6 +408,407 @@ class IntegratedPartFeatureService:
                 call_id=call_id,
                 dispatched=isinstance(exc, PartMutationError),
             )
+
+    def hole_wizard(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        size: str,
+        face_ref: str,
+        center_mm: Sequence[float],
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            spec = HoleWizardSpec(
+                name=self._name(name, "name"),
+                size=self._hole_wizard_size(size),
+                face_ref=self._exact_face(face_ref, "face_ref", allowed={_SIMPLE_HOLE_FACE_REF}),
+                center_mm=self._point(center_mm, "center_mm"),
+            )
+            return self.service.hole_wizard(target, spec)
+
+        return self._call_service("part_hole_wizard", operation, mutation=True)
+
+    def fillet(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        edge_refs: Sequence[str],
+        radius_mm: float,
+        tangent_propagation: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            refs = self._edge_refs(edge_refs, "edge_refs")
+            if refs != (_FILLET_EDGE_REF,):
+                raise PartValidationError(f"edge_refs must be exactly [{_FILLET_EDGE_REF!r}] for native-passed fillet")
+            tangent = self._boolean(tangent_propagation, "tangent_propagation")
+            if tangent:
+                raise PartValidationError("tangent_propagation must be false for native-passed fillet")
+            spec = FilletSpec(
+                self._name(name, "name"),
+                refs,
+                self._positive_number(radius_mm, "radius_mm"),
+                tangent,
+            )
+            return self.service.fillet(target, spec)
+
+        return self._call_service("part_fillet", operation, mutation=True)
+
+    def chamfer(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        edge_refs: Sequence[str],
+        distance_mm: float,
+        angle_deg: float = 45.0,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            angle = self._number(angle_deg, "angle_deg")
+            if angle <= 0.0 or angle >= 90.0:
+                raise PartValidationError("angle_deg must be in the range (0, 90)")
+            refs = self._edge_refs(edge_refs, "edge_refs")
+            if refs != (_CHAMFER_EDGE_REF,):
+                raise PartValidationError(f"edge_refs must be exactly [{_CHAMFER_EDGE_REF!r}] for native-passed chamfer")
+            spec = ChamferSpec(
+                self._name(name, "name"),
+                refs,
+                self._positive_number(distance_mm, "distance_mm"),
+                angle,
+            )
+            return self.service.chamfer(target, spec)
+
+        return self._call_service("part_chamfer", operation, mutation=True)
+
+    def shell(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        face_refs: Sequence[str],
+        thickness_mm: float,
+        outward: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            refs = self._face_refs(face_refs, "face_refs")
+            if refs != (_SHELL_FACE_REF,):
+                raise PartValidationError(f"face_refs must be exactly [{_SHELL_FACE_REF!r}] for native-passed shell")
+            outward_value = self._boolean(outward, "outward")
+            if outward_value:
+                raise PartValidationError("outward must be false for native-passed shell")
+            spec = ShellSpec(
+                self._name(name, "name"),
+                refs,
+                self._positive_number(thickness_mm, "thickness_mm"),
+                outward_value,
+            )
+            return self.service.shell(target, spec)
+
+        return self._call_service("part_shell", operation, mutation=True)
+
+    def draft(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        face_refs: Sequence[str],
+        neutral_plane_ref: str,
+        angle_deg: float,
+        reverse_direction: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            angle = self._number(angle_deg, "angle_deg")
+            if angle <= 0.0 or angle >= 90.0:
+                raise PartValidationError("angle_deg must be in the range (0, 90)")
+            refs = self._face_refs(face_refs, "face_refs")
+            if refs != (_DRAFT_FACE_REF,):
+                raise PartValidationError(f"face_refs must be exactly [{_DRAFT_FACE_REF!r}] for native-passed draft")
+            neutral = self._plane_or_face_ref(neutral_plane_ref, "neutral_plane_ref")
+            if neutral != _DRAFT_NEUTRAL_REF:
+                raise PartValidationError(f"neutral_plane_ref must be exactly {_DRAFT_NEUTRAL_REF!r} for native-passed draft")
+            reverse = self._boolean(reverse_direction, "reverse_direction")
+            if reverse:
+                raise PartValidationError("reverse_direction must be false for native-passed draft")
+            spec = DraftSpec(
+                self._name(name, "name"),
+                refs,
+                neutral,
+                angle,
+                reverse,
+            )
+            return self.service.draft(target, spec)
+
+        return self._call_service("part_draft", operation, mutation=True)
+
+    def rib(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        sketch_id: str,
+        thickness_mm: float,
+        both_sides: bool = True,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            both = self._boolean(both_sides, "both_sides")
+            if not both:
+                raise PartValidationError("both_sides must be true for native-passed rib")
+            spec = RibSpec(
+                self._name(name, "name"),
+                ProfileRef(self._identity(sketch_id, "sketch_id")),
+                self._positive_number(thickness_mm, "thickness_mm"),
+                both,
+            )
+            return self.service.rib(target, spec)
+
+        return self._call_service("part_rib", operation, mutation=True)
+
+    def linear_pattern(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        seed_feature_ids: Sequence[str],
+        direction_ref: str,
+        count: int,
+        spacing_mm: float,
+        geometry_pattern: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            direction = self._edge_ref(direction_ref, "direction_ref")
+            if direction != _LINEAR_DIRECTION_REF:
+                raise PartValidationError(f"direction_ref must be exactly {_LINEAR_DIRECTION_REF!r} for native-passed linear pattern")
+            geometry = self._boolean(geometry_pattern, "geometry_pattern")
+            if geometry:
+                raise PartValidationError("geometry_pattern must be false for native-passed linear pattern")
+            spec = LinearPatternSpec(
+                self._name(name, "name"),
+                self._feature_ids(seed_feature_ids, "seed_feature_ids"),
+                direction,
+                self._pattern_count(count),
+                self._positive_number(spacing_mm, "spacing_mm"),
+                geometry,
+            )
+            return self.service.linear_pattern(target, spec)
+
+        return self._call_service("part_linear_pattern", operation, mutation=True)
+
+    def circular_pattern(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        seed_feature_ids: Sequence[str],
+        axis_ref: str,
+        count: int,
+        angle_deg: float = 360.0,
+        geometry_pattern: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            angle = self._number(angle_deg, "angle_deg")
+            if angle <= 0.0 or angle > 360.0:
+                raise PartValidationError("angle_deg must be in the range (0, 360]")
+            geometry = self._boolean(geometry_pattern, "geometry_pattern")
+            if geometry:
+                raise PartValidationError("geometry_pattern must be false for native-passed circular pattern")
+            spec = CircularPatternSpec(
+                self._name(name, "name"),
+                self._feature_ids(seed_feature_ids, "seed_feature_ids"),
+                self._axis_feature_ref(axis_ref, "axis_ref"),
+                self._pattern_count(count),
+                angle,
+                geometry,
+            )
+            return self.service.circular_pattern(target, spec)
+
+        return self._call_service("part_circular_pattern", operation, mutation=True)
+
+    def mirror(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        seed_feature_ids: Sequence[str],
+        mirror_ref: str,
+        geometry_pattern: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            mirror = self._plane_ref(mirror_ref, "mirror_ref")
+            if mirror != _MIRROR_REF:
+                raise PartValidationError(f"mirror_ref must be exactly {_MIRROR_REF!r} for native-passed mirror")
+            geometry = self._boolean(geometry_pattern, "geometry_pattern")
+            if geometry:
+                raise PartValidationError("geometry_pattern must be false for native-passed mirror")
+            spec = MirrorSpec(
+                self._name(name, "name"),
+                self._feature_ids(seed_feature_ids, "seed_feature_ids"),
+                mirror,
+                geometry,
+            )
+            return self.service.mirror(target, spec)
+
+        return self._call_service("part_mirror", operation, mutation=True)
+
+    def reference_plane(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        reference: str,
+        offset_mm: float = 0.0,
+        reverse_direction: bool = False,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            source = self._plane_ref(reference, "reference")
+            if source != _REFERENCE_PLANE_REF:
+                raise PartValidationError(f"reference must be exactly {_REFERENCE_PLANE_REF!r} for native-passed reference plane")
+            reverse = self._boolean(reverse_direction, "reverse_direction")
+            if reverse:
+                raise PartValidationError("reverse_direction must be false for native-passed reference plane")
+            spec = ReferencePlaneSpec(
+                self._name(name, "name"),
+                source,
+                self._number(offset_mm, "offset_mm"),
+                reverse,
+            )
+            return self.service.reference_plane(target, spec)
+
+        return self._call_service("part_reference_plane", operation, mutation=True)
+
+    def reference_axis(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        first_ref: str,
+        second_ref: str,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            first = self._plane_ref(first_ref, "first_ref")
+            second = self._plane_ref(second_ref, "second_ref")
+            if (first, second) != _REFERENCE_AXIS_REFS:
+                raise PartValidationError(
+                    f"reference axis must use first_ref={_REFERENCE_AXIS_REFS[0]!r} and second_ref={_REFERENCE_AXIS_REFS[1]!r} for native-passed subset"
+                )
+            return self.service.reference_axis(
+                target,
+                ReferenceAxisSpec(self._name(name, "name"), first, second),
+            )
+
+        return self._call_service("part_reference_axis", operation, mutation=True)
+
+    def reference_point(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        name: str,
+        reference: str,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision)
+            return self.service.reference_point(
+                target,
+                ReferencePointSpec(
+                    self._name(name, "name"),
+                    self._exact_face(reference, "reference", allowed={_REFERENCE_POINT_REF}),
+                ),
+            )
+
+        return self._call_service("part_reference_point", operation, mutation=True)
+
+    def get_feature(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            return self.service.get_feature(
+                self._target(path, expected_revision),
+                self._identity(feature_id, "feature_id"),
+            )
+
+        return self._call_service("part_feature_get", operation, mutation=False)
+
+    def rename_feature(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+        new_name: str,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            return self.service.rename_feature(
+                self._target(path, expected_revision),
+                self._identity(feature_id, "feature_id"),
+                self._name(new_name, "new_name"),
+            )
+
+        return self._call_service("part_feature_rename", operation, mutation=True)
+
+    def set_feature_suppressed(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+        suppressed: bool,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            return self.service.set_feature_suppressed(
+                self._target(path, expected_revision),
+                self._identity(feature_id, "feature_id"),
+                self._boolean(suppressed, "suppressed"),
+            )
+
+        return self._call_service("part_feature_set_suppressed", operation, mutation=True)
+
+    def set_feature_parameter(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            if parameter != "radius_mm":
+                raise PartValidationError("parameter must be exactly 'radius_mm'")
+            return self.service.set_feature_parameter(
+                self._target(path, expected_revision),
+                self._identity(feature_id, "feature_id"),
+                parameter,
+                self._positive_number(value, "value"),
+            )
+
+        return self._call_service("part_feature_set_parameter", operation, mutation=True)
 
     def reconcile_simple_hole(
         self,
@@ -1104,6 +1533,154 @@ class IntegratedPartFeatureService:
             stage="part_cut_reconcile",
             timeout=self.default_timeout if timeout is None else max(0.0, float(timeout)),
         )
+
+    def _call_service(self, stage: str, operation: Any, *, mutation: bool) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            value = operation()
+            return NativeCallResult.success(value, call_id=call_id, dispatched=mutation)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, stage),
+                call_id=call_id,
+                dispatched=mutation and isinstance(exc, PartMutationError),
+            )
+
+    @staticmethod
+    def _name(raw: Any, label: str) -> str:
+        if not isinstance(raw, str) or not raw.strip():
+            raise PartValidationError(f"{label} must be a non-empty string")
+        return raw.strip()
+
+    @classmethod
+    def _identity(cls, raw: Any, label: str) -> str:
+        return cls._name(raw, label)
+
+    @staticmethod
+    def _number(raw: Any, label: str) -> float:
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise PartValidationError(f"{label} must be numeric")
+        value = float(raw)
+        if not math.isfinite(value):
+            raise PartValidationError(f"{label} must be finite")
+        return value
+
+    @classmethod
+    def _positive_number(cls, raw: Any, label: str) -> float:
+        value = cls._number(raw, label)
+        if value <= 0.0:
+            raise PartValidationError(f"{label} must be positive")
+        return value
+
+    @staticmethod
+    def _boolean(raw: Any, label: str) -> bool:
+        if not isinstance(raw, bool):
+            raise PartValidationError(f"{label} must be boolean")
+        return raw
+
+    @classmethod
+    def _point(cls, raw: Any, label: str) -> tuple[float, float]:
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence) or len(raw) != 2:
+            raise PartValidationError(f"{label} must be a two-value [x_mm, y_mm] coordinate")
+        return (cls._number(raw[0], f"{label}[0]"), cls._number(raw[1], f"{label}[1]"))
+
+    @classmethod
+    def _string_refs(cls, raw: Any, label: str) -> tuple[str, ...]:
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+            raise PartValidationError(f"{label} must be an array of references")
+        if not raw:
+            raise PartValidationError(f"{label} must not be empty")
+        if len(raw) > _MAX_PUBLIC_REFS:
+            raise PartValidationError(f"{label} supports at most {_MAX_PUBLIC_REFS} references")
+        values = tuple(cls._identity(item, label) for item in raw)
+        if len(set(values)) != len(values):
+            raise PartValidationError(f"{label} references must be unique")
+        return values
+
+    @classmethod
+    def _feature_ids(cls, raw: Any, label: str) -> tuple[str, ...]:
+        return cls._string_refs(raw, label)
+
+    @classmethod
+    def _edge_refs(cls, raw: Any, label: str) -> tuple[str, ...]:
+        return tuple(cls._edge_ref(item, label) for item in cls._string_refs(raw, label))
+
+    @classmethod
+    def _face_refs(cls, raw: Any, label: str) -> tuple[str, ...]:
+        return tuple(cls._exact_face(item, label) for item in cls._string_refs(raw, label))
+
+    @classmethod
+    def _edge_ref(cls, raw: Any, label: str) -> str:
+        value = cls._identity(raw, label)
+        parts = value.split(":")
+        if len(parts) != 4 or parts[:2] != ["bbox", "edge"]:
+            raise PartValidationError(f"{label} must use bbox:edge:<signed-axis>:<signed-axis>")
+        axes: set[str] = set()
+        for token in parts[2:]:
+            if len(token) != 2 or token[0] not in "+-" or token[1] not in "xyz":
+                raise PartValidationError(f"{label} contains an invalid bounded edge token")
+            if token[1] in axes:
+                raise PartValidationError(f"{label} bounded edge axes must be distinct")
+            axes.add(token[1])
+        return value
+
+    @classmethod
+    def _exact_face(
+        cls,
+        raw: Any,
+        label: str,
+        *,
+        allowed: set[str] | frozenset[str] = _FACE_REFS,
+    ) -> str:
+        value = cls._identity(raw, label).lower()
+        if value not in allowed:
+            raise PartValidationError(
+                f"{label} must be one of: {', '.join(sorted(allowed))}"
+            )
+        return value
+
+    @classmethod
+    def _plane_ref(cls, raw: Any, label: str) -> str:
+        value = cls._identity(raw, label).lower()
+        if value not in _PLANE_REFS:
+            raise PartValidationError(f"{label} must be plane:front, plane:top, or plane:right")
+        return value
+
+    @classmethod
+    def _plane_or_face_ref(cls, raw: Any, label: str) -> str:
+        value = cls._identity(raw, label).lower()
+        if value in _PLANE_REFS or value in _FACE_REFS:
+            return value
+        raise PartValidationError(
+            f"{label} must be a standard plane reference or bounded bbox face"
+        )
+
+    @classmethod
+    def _axis_feature_ref(cls, raw: Any, label: str) -> str:
+        value = cls._identity(raw, label)
+        if not value.startswith("feature:") or not value.split(":", 1)[1].strip():
+            raise PartValidationError(f"{label} must be feature:<reference-axis-name>")
+        return value
+
+    @staticmethod
+    def _pattern_count(raw: Any) -> int:
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 2 or raw > 1000:
+            raise PartValidationError("count must be an integer in [2, 1000]")
+        return raw
+
+    @staticmethod
+    def _hole_wizard_size(raw: Any) -> HoleWizardSize:
+        if not isinstance(raw, str):
+            raise PartValidationError("size must be one of M2, M4, or M6")
+        try:
+            size = HoleWizardSize(raw.strip().upper())
+        except ValueError as exc:
+            raise PartValidationError("size must be one of M2, M4, or M6") from exc
+        if size not in _NATIVE_HOLE_WIZARD_SIZES:
+            raise PartValidationError("size must be one of M2, M4, or M6")
+        return size
 
     def _target(self, path: str, expected_revision: int) -> DocumentTarget:
         source = self.path_policy.validate_open(path)

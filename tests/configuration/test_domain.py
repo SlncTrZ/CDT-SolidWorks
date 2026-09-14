@@ -22,6 +22,7 @@ class FakeConfigurationAdapter:
                 "components": {"Bracket-1": "suppressed"},
             },
         }
+        self.parents = {"Default": None, "Alternate": None}
         self.activation_readback_override = None
 
     def list_configurations(self, document_id):
@@ -33,6 +34,10 @@ class FakeConfigurationAdapter:
             "properties": {},
             "components": {},
         }
+        self.parents[name] = parent
+
+    def read_configuration_parent(self, document_id, name):
+        return self.parents.get(name)
 
     def activate_configuration(self, document_id, name):
         self.active = name

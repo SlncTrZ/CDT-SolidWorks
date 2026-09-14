@@ -264,6 +264,8 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             name: str,
             entities: list[dict[str, Any]],
             plane: Literal["front", "top", "right"] = "front",
+            constraints: list[dict[str, Any]] | None = None,
+            dimensions: list[dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.sketch_service.create_geometry(
@@ -272,6 +274,8 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     name=name,
                     plane=plane,
                     entities=entities,
+                    constraints=constraints,
+                    dimensions=dimensions,
                 )
             )
 
@@ -285,6 +289,59 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             return _result_payload(
                 runtime.sketch_service.get(
                     path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
+        @server.tool(
+            name="sketch_relations_list",
+            description="List native-accepted sketch relations for one explicit sketch identity.",
+        )
+        def sketch_relations_list(path: str, expected_revision: int, sketch_id: str) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.list_relations(
+                    path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
+        @server.tool(
+            name="sketch_relation_delete",
+            description="Delete one explicit native sketch relation and verify sketch state after mutation.",
+        )
+        def sketch_relation_delete(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            relation_id: str,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.delete_relation(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    relation_id=relation_id,
+                )
+            )
+
+        @server.tool(
+            name="sketch_dimension_set",
+            description="Set one evidence-backed sketch dimension value using explicit millimeter or degree units.",
+        )
+        def sketch_dimension_set(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            name: str,
+            value: float,
+            unit: Literal["mm", "deg"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.set_dimension(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    name=name,
+                    value=value,
+                    unit=unit,
                 )
             )
 
@@ -453,6 +510,227 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             )
 
         @server.tool(
+            name="part_hole_wizard",
+            description="Create one native ANSI Metric countersink Hole Wizard feature in the evidence-backed M2-M6 subset on bbox:+z.",
+        )
+        def part_hole_wizard(
+            path: str,
+            expected_revision: int,
+            name: str,
+            size: Literal["M2", "M4", "M6"],
+            center_mm: list[float],
+            face_ref: Literal["bbox:+z"] = "bbox:+z",
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.hole_wizard(
+                    path=path,
+                    expected_revision=expected_revision,
+                    name=name,
+                    size=size,
+                    face_ref=face_ref,
+                    center_mm=center_mm,
+                )
+            )
+
+        @server.tool(name="part_fillet", description="Create an evidence-backed constant-radius fillet from bounded bbox edge references.")
+        def part_fillet(
+            path: str,
+            expected_revision: int,
+            name: str,
+            edge_refs: list[str],
+            radius_mm: float,
+            tangent_propagation: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.fillet(
+                path=path, expected_revision=expected_revision, name=name,
+                edge_refs=edge_refs, radius_mm=radius_mm,
+                tangent_propagation=tangent_propagation,
+            ))
+
+        @server.tool(name="part_chamfer", description="Create an evidence-backed distance-angle chamfer from bounded bbox edge references.")
+        def part_chamfer(
+            path: str,
+            expected_revision: int,
+            name: str,
+            edge_refs: list[str],
+            distance_mm: float,
+            angle_deg: float = 45.0,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.chamfer(
+                path=path, expected_revision=expected_revision, name=name,
+                edge_refs=edge_refs, distance_mm=distance_mm, angle_deg=angle_deg,
+            ))
+
+        @server.tool(name="part_shell", description="Create an evidence-backed shell using bounded outer-face references.")
+        def part_shell(
+            path: str,
+            expected_revision: int,
+            name: str,
+            face_refs: list[str],
+            thickness_mm: float,
+            outward: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.shell(
+                path=path, expected_revision=expected_revision, name=name,
+                face_refs=face_refs, thickness_mm=thickness_mm, outward=outward,
+            ))
+
+        @server.tool(name="part_draft", description="Create an evidence-backed neutral-plane draft using bounded face and plane context.")
+        def part_draft(
+            path: str,
+            expected_revision: int,
+            name: str,
+            face_refs: list[str],
+            neutral_plane_ref: Literal["bbox:+z"],
+            angle_deg: float,
+            reverse_direction: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.draft(
+                path=path, expected_revision=expected_revision, name=name,
+                face_refs=face_refs, neutral_plane_ref=neutral_plane_ref,
+                angle_deg=angle_deg, reverse_direction=reverse_direction,
+            ))
+
+        @server.tool(name="part_rib", description="Create an evidence-backed rib from one explicit sketch profile.")
+        def part_rib(
+            path: str,
+            expected_revision: int,
+            name: str,
+            sketch_id: str,
+            thickness_mm: float,
+            both_sides: Literal[True] = True,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.rib(
+                path=path, expected_revision=expected_revision, name=name,
+                sketch_id=sketch_id, thickness_mm=thickness_mm, both_sides=both_sides,
+            ))
+
+        @server.tool(name="part_linear_pattern", description="Create an evidence-backed linear feature pattern along one bounded bbox edge direction.")
+        def part_linear_pattern(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            direction_ref: Literal["bbox:edge:+y:+z"],
+            count: int,
+            spacing_mm: float,
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.linear_pattern(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, direction_ref=direction_ref,
+                count=count, spacing_mm=spacing_mm, geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_circular_pattern", description="Create an evidence-backed circular feature pattern around one promoted reference-axis feature.")
+        def part_circular_pattern(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            axis_ref: str,
+            count: int,
+            angle_deg: float = 360.0,
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.circular_pattern(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, axis_ref=axis_ref, count=count,
+                angle_deg=angle_deg, geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_mirror", description="Mirror promoted feature seeds about one standard reference plane.")
+        def part_mirror(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            mirror_ref: Literal["plane:right"],
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.mirror(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, mirror_ref=mirror_ref,
+                geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_reference_plane", description="Create one offset reference plane from a standard Front/Top/Right datum plane.")
+        def part_reference_plane(
+            path: str,
+            expected_revision: int,
+            name: str,
+            reference: Literal["plane:front"],
+            offset_mm: float = 0.0,
+            reverse_direction: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_plane(
+                path=path, expected_revision=expected_revision, name=name,
+                reference=reference, offset_mm=offset_mm,
+                reverse_direction=reverse_direction,
+            ))
+
+        @server.tool(name="part_reference_axis", description="Create one reference axis from two distinct standard reference planes.")
+        def part_reference_axis(
+            path: str,
+            expected_revision: int,
+            name: str,
+            first_ref: Literal["plane:top"],
+            second_ref: Literal["plane:right"],
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_axis(
+                path=path, expected_revision=expected_revision, name=name,
+                first_ref=first_ref, second_ref=second_ref,
+            ))
+
+        @server.tool(name="part_reference_point", description="Create one reference point at the center of a bounded planar bbox face.")
+        def part_reference_point(
+            path: str,
+            expected_revision: int,
+            name: str,
+            reference: Literal["bbox:+z"],
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_point(
+                path=path, expected_revision=expected_revision, name=name, reference=reference,
+            ))
+
+        @server.tool(name="part_feature_get", description="Read one evidence-promoted parametric feature by explicit feature identity.")
+        def part_feature_get(path: str, expected_revision: int, feature_id: str) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.get_feature(
+                path=path, expected_revision=expected_revision, feature_id=feature_id,
+            ))
+
+        @server.tool(name="part_feature_rename", description="Rename one evidence-promoted feature and verify identity read-back.")
+        def part_feature_rename(
+            path: str, expected_revision: int, feature_id: str, new_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.rename_feature(
+                path=path, expected_revision=expected_revision,
+                feature_id=feature_id, new_name=new_name,
+            ))
+
+        @server.tool(name="part_feature_set_suppressed", description="Suppress or unsuppress one evidence-promoted feature with rebuild/read-back verification.")
+        def part_feature_set_suppressed(
+            path: str, expected_revision: int, feature_id: str, suppressed: bool
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.set_feature_suppressed(
+                path=path, expected_revision=expected_revision,
+                feature_id=feature_id, suppressed=suppressed,
+            ))
+
+        @server.tool(name="part_feature_set_parameter", description="Edit only the native-accepted constant-fillet radius_mm parameter; arbitrary feature definitions are not exposed.")
+        def part_feature_set_parameter(
+            path: str,
+            expected_revision: int,
+            feature_id: str,
+            parameter: Literal["radius_mm"],
+            value: float,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.set_feature_parameter(
+                path=path, expected_revision=expected_revision, feature_id=feature_id,
+                parameter=parameter, value=value,
+            ))
+
+        @server.tool(
             name="part_cut_reconcile",
             description=(
                 "Reconcile an uncertain Cut Extrude using its native call ID and expected feature "
@@ -555,27 +833,74 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         def assembly_component_set_configuration(path: str, component_id: str, configuration: str) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_component_configuration(path, component_id, configuration))
 
-        @server.tool(name="assembly_mate_create", description="Create one native-accepted common mate: coincident, parallel, perpendicular, distance, or angle, using explicit bounded selection references.")
+        @server.tool(name="assembly_component_delete", description="Delete one explicitly identified top-level component, rebuild, and verify it is absent.")
+        def assembly_component_delete(path: str, component_id: str) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.delete_component(path, component_id))
+
+        @server.tool(name="assembly_component_replace", description="Replace one explicitly identified top-level component with an allowed SOLIDWORKS part or assembly and verify source/configuration read-back.")
+        def assembly_component_replace(
+            path: str,
+            component_id: str,
+            source_path: str,
+            configuration: str | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.replace_component(path, component_id, source_path, configuration))
+
+        @server.tool(name="assembly_component_set_transform", description="Set one component 4x4 native transform represented by exactly 16 finite system-unit values and verify read-back.")
+        def assembly_component_set_transform(path: str, component_id: str, transform: list[float]) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_component_transform(path, component_id, transform))
+
+        @server.tool(name="assembly_component_pattern_create", description="Create a bounded one-direction linear component pattern from explicit seed component identities and a stable direction reference.")
+        def assembly_component_pattern_create(
+            path: str,
+            seed_component_ids: list[str],
+            direction_ref: str,
+            spacing_m: float,
+            total_instances: int,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.create_linear_component_pattern(
+                path,
+                seed_component_ids=seed_component_ids,
+                direction_ref=direction_ref,
+                spacing_m=spacing_m,
+                total_instances=total_instances,
+            ))
+
+        @server.tool(name="assembly_mate_create", description="Create one native-accepted bounded mate: coincident, concentric, distance, angle, parallel, perpendicular, tangent, lock, width, or slot.")
         def assembly_mate_create(
             path: str,
-            kind: Literal["coincident", "parallel", "perpendicular", "distance", "angle"],
+            kind: Literal["coincident", "concentric", "distance", "angle", "parallel", "perpendicular", "tangent", "lock", "width", "slot"],
             selection_refs: list[str],
             value: float | None = None,
             alignment: Literal["aligned", "anti_aligned", "closest"] | None = None,
+            constraint: Literal["centered", "free"] | None = None,
         ) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.create_mate(
-                path, kind=kind, selection_refs=selection_refs, value=value, alignment=alignment
+                path,
+                kind=kind,
+                selection_refs=selection_refs,
+                value=value,
+                alignment=alignment,
+                constraint=constraint,
             ))
 
-        @server.tool(name="assembly_mates_list", description="List native assembly mates with stable feature identity and bounded mate-family classification.")
+        @server.tool(name="assembly_mates_list", description="List native assembly mates with stable feature identity, solved/suppressed/dangling status, and bounded mate-family classification.")
         def assembly_mates_list(path: str) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.list_mates(path))
 
-        @server.tool(name="assembly_coincident_mate_set_suppressed", description="Suppress or unsuppress one mate only when read-back identifies it as a native-accepted coincident mate.")
+        @server.tool(name="assembly_mate_set_suppressed", description="Suppress or unsuppress one native-accepted mate using stable mate identity and solved-state read-back.")
+        def assembly_mate_set_suppressed(path: str, mate_id: str, suppressed: bool) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_mate_suppressed(path, mate_id, suppressed))
+
+        @server.tool(name="assembly_mate_set_value", description="Edit one native-accepted distance or angle mate value in system units and verify solved read-back.")
+        def assembly_mate_set_value(path: str, mate_id: str, value: float) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_mate_value(path, mate_id, value))
+
+        @server.tool(name="assembly_coincident_mate_set_suppressed", description="Compatibility tool: suppress or unsuppress one read-back-verified coincident mate.")
         def assembly_coincident_mate_set_suppressed(path: str, mate_id: str, suppressed: bool) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_coincident_mate_suppressed(path, mate_id, suppressed))
 
-        @server.tool(name="assembly_distance_mate_set_value", description="Edit one native-accepted distance mate value in system units and verify solved read-back.")
+        @server.tool(name="assembly_distance_mate_set_value", description="Compatibility tool: edit one read-back-verified distance mate value in system units.")
         def assembly_distance_mate_set_value(path: str, mate_id: str, value: float) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_distance_mate_value(path, mate_id, value))
 
@@ -621,6 +946,30 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             path: str, configuration: str, feature_id: str, suppressed: bool
         ) -> dict[str, Any]:
             return _result_payload(runtime.configuration_service.set_feature_suppressed(path, configuration, feature_id, suppressed))
+
+        @server.tool(name="configuration_set_material", description="Assign one explicit material from a named or path-addressed SOLIDWORKS material database to one configuration and verify read-back.")
+        def configuration_set_material(
+            path: str, configuration: str, database: str, material_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_material(path, configuration, database, material_name))
+
+        @server.tool(name="configuration_display_states_list", description="List stable display-state identities for one explicit configuration.")
+        def configuration_display_states_list(path: str, configuration: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.list_display_states(path, configuration))
+
+        @server.tool(name="configuration_display_state_create", description="Create one display state in one explicit configuration and verify presence.")
+        def configuration_display_state_create(path: str, configuration: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.create_display_state(path, configuration, name))
+
+        @server.tool(name="configuration_display_state_rename", description="Rename one existing display state in one explicit configuration and verify identity read-back.")
+        def configuration_display_state_rename(
+            path: str, configuration: str, old_name: str, new_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.rename_display_state(path, configuration, old_name, new_name))
+
+        @server.tool(name="configuration_display_state_delete", description="Delete one non-last display state from one explicit configuration and verify absence.")
+        def configuration_display_state_delete(path: str, configuration: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.delete_display_state(path, configuration, name))
 
         @server.tool(name="configuration_equations_list", description="List bounded equation/global-variable identities, canonical expressions, values, and disabled state.")
         def configuration_equations_list(path: str) -> dict[str, Any]:
@@ -674,6 +1023,80 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 )
             )
 
+        @server.tool(
+            name="drawing_standard_view_create",
+            description=(
+                "Create one native-accepted Front/Top/Right/Isometric view on an explicit drawing sheet from one native part source."
+            ),
+        )
+        def drawing_standard_view_create(
+            path: str,
+            sheet_name: str,
+            source_part_path: str,
+            view_kind: Literal["front", "top", "right", "isometric"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_standard_view(
+                    path, sheet_name, source_part_path, view_kind
+                )
+            )
+
+        @server.tool(
+            name="drawing_projected_view_create",
+            description="Create a projected drawing view from one explicit parent view and verify parent/source/position read-back.",
+        )
+        def drawing_projected_view_create(
+            path: str, parent_view_id: str, x: float, y: float
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_projected_view(
+                    path, parent_view_id, x, y
+                )
+            )
+
+        @server.tool(
+            name="drawing_section_view_create",
+            description="Create one bounded section view from an explicit parent view and section line, then verify persisted view identity/read-back.",
+        )
+        def drawing_section_view_create(
+            path: str,
+            parent_view_id: str,
+            line_start_x: float,
+            line_start_y: float,
+            line_end_x: float,
+            line_end_y: float,
+            x: float,
+            y: float,
+            label: str,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_section_view(
+                    path,
+                    parent_view_id,
+                    (line_start_x, line_start_y),
+                    (line_end_x, line_end_y),
+                    x,
+                    y,
+                    label,
+                )
+            )
+
+        @server.tool(
+            name="drawing_note_add",
+            description="Add one note to an explicit drawing view and verify non-dangling text read-back.",
+        )
+        def drawing_note_add(path: str, view_id: str, text: str) -> dict[str, Any]:
+            return _result_payload(runtime.drawing_service.add_note(path, view_id, text))
+
+        @server.tool(
+            name="drawing_center_marks_auto_insert",
+            description="Auto-insert bounded center marks for an explicit drawing view and verify unique persisted annotation identities.",
+        )
+        def drawing_center_marks_auto_insert(path: str, view_id: str) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.auto_insert_center_marks(path, view_id)
+            )
+
     if runtime.export_service is not None:
         @server.tool(
             name="export_document",
@@ -689,6 +1112,7 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 "step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg"
             ],
             source_configuration: str | None = None,
+            drawing_sheet: str | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.export_service.export(
@@ -696,7 +1120,22 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     target_path,
                     format,
                     source_configuration=source_configuration,
+                    drawing_sheet=drawing_sheet,
                 )
+            )
+
+    if runtime.import_service is not None:
+        @server.tool(
+            name="import_document",
+            description="Import a STEP, IGES, or Parasolid file into a new native .SLDPRT and require persisted geometry read-back.",
+        )
+        def import_document(
+            source_path: str,
+            target_path: str,
+            format: Literal["step", "iges", "parasolid"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.import_service.import_model(source_path, target_path, format)
             )
 
     if runtime.evaluation_service is not None:
@@ -738,6 +1177,32 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.evaluation_service.geometry_sanity(path, configuration)
+            )
+
+        @server.tool(
+            name="evaluation_measure",
+            description=(
+                "Measure one or two bounded stable references in a native part and return validated distance, angle, radius, and/or diameter in SOLIDWORKS system units."
+            ),
+        )
+        def evaluation_measure(
+            path: str, first_ref: str, second_ref: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.measure(path, first_ref, second_ref)
+            )
+
+        @server.tool(
+            name="evaluation_interferences",
+            description=(
+                "Detect native assembly interference pairs using explicit assembly path/configuration identity and return validated overlap volume where present."
+            ),
+        )
+        def evaluation_interferences(
+            path: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.interferences(path, configuration)
             )
 
     if runtime.cad_service is None:

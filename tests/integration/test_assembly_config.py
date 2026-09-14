@@ -25,6 +25,9 @@ class _AssemblyDomain:
             "Distance1": MateSnapshot("Distance1", MateState.SOLVED, (), 1, kind=MateKind.DISTANCE, value=0.02),
             "Angle1": MateSnapshot("Angle1", MateState.SOLVED, (), 1, kind=MateKind.ANGLE, value=0.2),
             "Coincident1": MateSnapshot("Coincident1", MateState.SOLVED, (), 1, kind=MateKind.COINCIDENT),
+            "Tangent1": MateSnapshot("Tangent1", MateState.SOLVED, (), 1, kind=MateKind.TANGENT),
+            "Width1": MateSnapshot("Width1", MateState.SOLVED, (), 1, kind=MateKind.WIDTH),
+            "Slot1": MateSnapshot("Slot1", MateState.SOLVED, (), 1, kind=MateKind.SLOT),
         }
 
     def list_components(self, path: str, *, recursive: bool = False):
@@ -44,6 +47,22 @@ class _AssemblyDomain:
     def set_component_configuration(self, path: str, component_id: str, configuration: str):
         self.calls.append(("set_configuration", path, component_id, configuration))
         return ComponentSnapshot(component_id, r"C:\\fixture.SLDPRT", configuration, tuple(range(16)), ComponentLoadState.RESOLVED)
+
+    def delete_component(self, path: str, component_id: str):
+        self.calls.append(("delete_component", path, component_id)); return None
+
+    def replace_component(self, path: str, component_id: str, source_path: str, configuration: str | None = None):
+        self.calls.append(("replace_component", path, component_id, source_path, configuration))
+        return ComponentSnapshot(component_id, source_path, configuration, tuple(range(16)), ComponentLoadState.RESOLVED)
+
+    def set_component_transform(self, path: str, component_id: str, transform):
+        values = tuple(transform)
+        self.calls.append(("set_transform", path, component_id, values))
+        return ComponentSnapshot(component_id, r"C:\\fixture.SLDPRT", "Default", values, ComponentLoadState.RESOLVED)
+
+    def create_linear_component_pattern(self, path: str, *, seed_component_ids, direction_ref: str, spacing_m: float, total_instances: int):
+        self.calls.append(("pattern", path, tuple(seed_component_ids), direction_ref, spacing_m, total_instances))
+        return {"identity": "LocalLPattern1", "total_instances": total_instances}
 
     def add_mate(self, path: str, request):
         self.calls.append(("add_mate", path, request))
@@ -99,6 +118,21 @@ class _ConfigurationDomain:
     def set_feature_suppressed(self, path: str, configuration: str, feature_id: str, suppressed: bool):
         self.calls.append(("set_feature_suppressed", path, configuration, feature_id, suppressed)); return "suppressed" if suppressed else "resolved"
 
+    def set_material(self, path: str, configuration: str, database: str, material_name: str):
+        self.calls.append(("set_material", path, configuration, database, material_name)); return {"database": database, "name": material_name}
+
+    def list_display_states(self, path: str, configuration: str):
+        self.calls.append(("list_display_states", path, configuration)); return ("Default Display", "Review")
+
+    def create_display_state(self, path: str, configuration: str, name: str):
+        self.calls.append(("create_display_state", path, configuration, name)); return name
+
+    def rename_display_state(self, path: str, configuration: str, old_name: str, new_name: str):
+        self.calls.append(("rename_display_state", path, configuration, old_name, new_name)); return new_name
+
+    def delete_display_state(self, path: str, configuration: str, name: str):
+        self.calls.append(("delete_display_state", path, configuration, name)); return None
+
     def list_equations(self, path: str):
         self.calls.append(("list_equations", path)); return ()
 
@@ -139,13 +173,20 @@ def test_assembly_wrapper_limits_promoted_native_surface(tmp_path: Path) -> None
     )
     assert mate.state is NativeCallState.SUCCESS
 
-    unsupported = service.create_mate(
+    concentric = service.create_mate(
         str(assembly), kind="concentric",
-        selection_refs=("Part-1:plane:front", "assembly:plane:front"),
-        value=None, alignment=None,
+        selection_refs=("Part-1:face:bore", "Part-2:face:shaft"),
+        value=None, alignment="anti_aligned",
     )
-    assert unsupported.state is NativeCallState.FAILURE
-    assert unsupported.failure is not None and unsupported.failure.code == "cad_validation_error"
+    assert concentric.state is NativeCallState.SUCCESS
+
+    width = service.create_mate(
+        str(assembly), kind="width",
+        selection_refs=("A:face:w1", "A:face:w2", "B:face:t1", "B:face:t2"),
+        constraint="free",
+    )
+    assert width.state is NativeCallState.SUCCESS
+    assert domain.calls[-1][2].constraint == "free"
 
     ignored_value = service.create_mate(
         str(assembly), kind="coincident",
@@ -170,6 +211,35 @@ def test_assembly_wrapper_limits_promoted_native_surface(tmp_path: Path) -> None
     assert invalid_alignment.dispatched is False
 
 
+def test_assembly_wrapper_promotes_component_lifecycle_and_pattern(tmp_path: Path) -> None:
+    assembly, part = _files(tmp_path)
+    replacement = tmp_path / "replacement.SLDPRT"; replacement.write_bytes(b"replacement")
+    bad = tmp_path / "replacement.txt"; bad.write_text("bad")
+    domain = _AssemblyDomain()
+    service = IntegratedAssemblyService(path_policy=DocumentPathPolicy((tmp_path,)), service=domain)
+
+    assert service.delete_component(str(assembly), "Part-1").state is NativeCallState.SUCCESS
+    replaced = service.replace_component(str(assembly), "Part-1", str(replacement), "Default")
+    assert replaced.state is NativeCallState.SUCCESS
+    assert domain.calls[-1] == ("replace_component", str(assembly.resolve()), "Part-1", str(replacement.resolve()), "Default")
+
+    refused_source = service.replace_component(str(assembly), "Part-1", str(bad))
+    assert refused_source.state is NativeCallState.FAILURE and refused_source.dispatched is False
+
+    transform = tuple(float(index) for index in range(16))
+    moved = service.set_component_transform(str(assembly), "Part-1", transform)
+    assert moved.state is NativeCallState.SUCCESS
+    bad_transform = service.set_component_transform(str(assembly), "Part-1", (1.0, 2.0))
+    assert bad_transform.state is NativeCallState.FAILURE and bad_transform.dispatched is False
+
+    pattern = service.create_linear_component_pattern(
+        str(assembly), seed_component_ids=("Part-1",), direction_ref="Part-1:edge:axis",
+        spacing_m=0.02, total_instances=3,
+    )
+    assert pattern.state is NativeCallState.SUCCESS
+    assert domain.calls[-1][0] == "pattern"
+
+
 def test_assembly_wrapper_guards_evidence_specific_mate_edits(tmp_path: Path) -> None:
     assembly, _ = _files(tmp_path)
     domain = _AssemblyDomain()
@@ -191,6 +261,13 @@ def test_assembly_wrapper_guards_evidence_specific_mate_edits(tmp_path: Path) ->
     suppressed = service.set_coincident_mate_suppressed(str(assembly), "Coincident1", True)
     assert suppressed.state is NativeCallState.SUCCESS
 
+    tangent_suppressed = service.set_mate_suppressed(str(assembly), "Tangent1", True)
+    assert tangent_suppressed.state is NativeCallState.SUCCESS
+    angle_value = service.set_mate_value(str(assembly), "Angle1", 0.4)
+    assert angle_value.state is NativeCallState.SUCCESS
+    wrong_generic_value = service.set_mate_value(str(assembly), "Tangent1", 0.4)
+    assert wrong_generic_value.state is NativeCallState.FAILURE
+
 
 def test_configuration_wrapper_accepts_only_native_document_types(tmp_path: Path) -> None:
     _, part = _files(tmp_path)
@@ -206,6 +283,20 @@ def test_configuration_wrapper_accepts_only_native_document_types(tmp_path: Path
     assert refused.state is NativeCallState.FAILURE
     assert refused.failure is not None and refused.failure.code == "document_type_mismatch"
     assert refused.dispatched is False
+
+
+def test_configuration_wrapper_promotes_material_and_display_states(tmp_path: Path) -> None:
+    _, part = _files(tmp_path)
+    domain = _ConfigurationDomain()
+    service = IntegratedConfigurationService(path_policy=DocumentPathPolicy((tmp_path,)), service=domain)
+
+    material = service.set_material(str(part), "Default", "SOLIDWORKS Materials", "Plain Carbon Steel")
+    assert material.state is NativeCallState.SUCCESS
+    assert domain.calls[-1][0] == "set_material"
+    assert service.list_display_states(str(part), "Default").state is NativeCallState.SUCCESS
+    assert service.create_display_state(str(part), "Default", "M95 Review").state is NativeCallState.SUCCESS
+    assert service.rename_display_state(str(part), "Default", "M95 Review", "M95 Final").state is NativeCallState.SUCCESS
+    assert service.delete_display_state(str(part), "Default", "M95 Final").state is NativeCallState.SUCCESS
 
 
 def test_uncertain_domain_state_is_preserved_for_callers(tmp_path: Path) -> None:

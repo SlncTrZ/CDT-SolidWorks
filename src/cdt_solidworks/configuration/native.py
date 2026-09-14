@@ -18,6 +18,7 @@ from .domain import (
     ConfigurationPostconditionError,
     ConfigurationRefusal,
     EquationSnapshot,
+    MaterialSnapshot,
     RebuildReport,
 )
 
@@ -34,6 +35,7 @@ class _ConfigurationNativeError(NativeRuntimeError):
         )
 _SW_DOC_PART = 1
 _SW_DOC_ASSEMBLY = 2
+_SW_ALL_CONFIGURATIONS = 2
 _SW_SPECIFY_CONFIGURATION = 3
 _SW_SET_VALUE_SUCCESS = 0
 _SW_SUPPRESS_FEATURE = 0
@@ -97,6 +99,21 @@ class ConfigurationNativeAdapter:
                     )
 
         self._run("configuration_create", True, operation)
+
+    def read_configuration_parent(self, document_id: str, name: str) -> str | None:
+        def operation(app: Any) -> str | None:
+            model = self._document(app, document_id)
+            configuration = self._configuration(model, name)
+            if not bool(self.api._member(configuration, "IsDerived")):
+                return None
+            parent = self.api._member(configuration, "GetParent")
+            if parent is None:
+                raise _ConfigurationNativeError(
+                    "configuration_parent_missing", name
+                )
+            return str(self.api._member(parent, "Name"))
+
+        return self._run("configuration_parent_read", False, operation)
 
     def delete_configuration(self, document_id: str, name: str) -> None:
         def operation(app: Any) -> None:
@@ -359,6 +376,141 @@ class ConfigurationNativeAdapter:
 
         self._run("configuration_component_config_set", True, operation)
 
+    def read_material(
+        self, document_id: str, configuration: str
+    ) -> MaterialSnapshot | None:
+        def operation(app: Any) -> MaterialSnapshot | None:
+            model = self._part(app, document_id)
+            client = getattr(self.api, "_client", None)
+            pythoncom = getattr(self.api, "_pythoncom", None)
+            database_out = None
+            try:
+                if client is not None and pythoncom is not None:
+                    database_out = client.VARIANT(
+                        pythoncom.VT_BYREF | pythoncom.VT_BSTR, ""
+                    )
+                    value = self.api._member(
+                        model,
+                        "GetMaterialPropertyName2",
+                        configuration,
+                        database_out,
+                    )
+                else:
+                    value = self.api._member(
+                        model, "GetMaterialPropertyName2", configuration
+                    )
+            except TypeError:
+                value = None
+            if isinstance(value, (tuple, list)):
+                values = tuple(value)
+                name = str(values[0] or "") if values else ""
+                database = str(values[1] or "") if len(values) > 1 else ""
+                if not name:
+                    return None
+                return MaterialSnapshot(database=database, name=name)
+            if value:
+                name = str(value)
+                database = (
+                    str(database_out.value or "") if database_out is not None else ""
+                )
+                if not database:
+                    material_id = str(
+                        self.api._member(model, "MaterialIdName") or ""
+                    )
+                    database = (
+                        material_id.split("|", 1)[0]
+                        if "|" in material_id
+                        else ""
+                    )
+                return MaterialSnapshot(database=database, name=name)
+
+            def read_active() -> MaterialSnapshot | None:
+                material_id = str(self.api._member(model, "MaterialIdName") or "")
+                if not material_id:
+                    return None
+                parts = material_id.split("|", 2)
+                if len(parts) < 2 or not parts[1]:
+                    raise _ConfigurationNativeError(
+                        "material_readback_invalid", material_id
+                    )
+                return MaterialSnapshot(database=parts[0], name=parts[1])
+
+            return self._with_configuration(model, configuration, read_active)
+
+        return self._run("configuration_material_read", False, operation)
+
+    def set_material(
+        self,
+        document_id: str,
+        configuration: str,
+        database: str,
+        material_name: str,
+    ) -> None:
+        def operation(app: Any) -> None:
+            model = self._part(app, document_id)
+            self.api._member(
+                model,
+                "SetMaterialPropertyName2",
+                configuration,
+                database,
+                material_name,
+            )
+
+        self._run("configuration_material_set", True, operation)
+
+    def list_display_states(
+        self, document_id: str, configuration: str
+    ) -> tuple[str, ...]:
+        def operation(app: Any) -> tuple[str, ...]:
+            model = self._document(app, document_id)
+            config = self._configuration(model, configuration)
+            value = self.api._member(config, "GetDisplayStates")
+            if value is None:
+                return ()
+            if isinstance(value, str):
+                return (value,)
+            return tuple(str(name) for name in value)
+
+        return self._run("configuration_display_state_list", False, operation)
+
+    def create_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> None:
+        def operation(app: Any) -> None:
+            config = self._configuration(self._document(app, document_id), configuration)
+            if not bool(self.api._member(config, "CreateDisplayState", name)):
+                raise _ConfigurationNativeError("display_state_create_failed", name)
+
+        self._run("configuration_display_state_create", True, operation)
+
+    def rename_display_state(
+        self,
+        document_id: str,
+        configuration: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        def operation(app: Any) -> None:
+            config = self._configuration(self._document(app, document_id), configuration)
+            if not bool(
+                self.api._member(config, "RenameDisplayState", old_name, new_name)
+            ):
+                raise _ConfigurationNativeError(
+                    "display_state_rename_failed", old_name
+                )
+
+        self._run("configuration_display_state_rename", True, operation)
+
+    def delete_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> None:
+        def operation(app: Any) -> None:
+            config = self._configuration(self._document(app, document_id), configuration)
+            if not bool(self.api._member(config, "DeleteDisplayState", name)):
+                raise _ConfigurationNativeError("display_state_delete_failed", name)
+
+        self._run("configuration_display_state_delete", True, operation)
+
     def list_equations(self, document_id: str) -> tuple[EquationSnapshot, ...]:
         def operation(app: Any) -> tuple[EquationSnapshot, ...]:
             model = self._document(app, document_id)
@@ -411,17 +563,19 @@ class ConfigurationNativeAdapter:
             if manager is None:
                 raise _ConfigurationNativeError("equation_manager_unavailable")
             index = self._equation_index(manager, identity)
-            delete_status = self.api._member(manager, "Delete", index)
-            if isinstance(delete_status, bool):
-                delete_ok = delete_status
-            else:
-                delete_ok = int(delete_status) == 0
-            if not delete_ok:
-                raise _ConfigurationNativeError("equation_edit_delete_failed", identity)
-            inserted = int(self.api._member(manager, "Add2", index, expression, True))
-            if inserted != index:
+            updated = int(
+                self.api._member(
+                    manager,
+                    "SetEquationAndConfigurationOption",
+                    index,
+                    expression,
+                    _SW_ALL_CONFIGURATIONS,
+                    None,
+                )
+            )
+            if updated != index:
                 raise _ConfigurationNativeError(
-                    "equation_edit_insert_failed", f"native_index={inserted}"
+                    "equation_edit_failed", f"native_index={updated}"
                 )
             self._evaluate_equations(manager)
 
@@ -470,6 +624,13 @@ class ConfigurationNativeAdapter:
             raise _ConfigurationNativeError("unsupported_document_type", str(doc_type))
         return model
 
+    def _part(self, app: Any, document_id: str) -> Any:
+        model = self._document(app, document_id)
+        doc_type = int(self.api.document_type(model)) if hasattr(self.api, "document_type") else int(self.api._member(model, "GetType"))
+        if doc_type != _SW_DOC_PART:
+            raise _ConfigurationNativeError("document_not_part", document_id)
+        return model
+
     def _assembly(self, app: Any, document_id: str) -> Any:
         model = self._document(app, document_id)
         doc_type = int(self.api.document_type(model)) if hasattr(self.api, "document_type") else int(self.api._member(model, "GetType"))
@@ -499,8 +660,8 @@ class ConfigurationNativeAdapter:
         return str(self.api._member(active, "Name"))
 
     def _with_configuration(
-        self, model: Any, configuration: str, operation: Callable[[], None]
-    ) -> None:
+        self, model: Any, configuration: str, operation: Callable[[], T]
+    ) -> T:
         previous = self._active_configuration(model)
         if previous != configuration:
             if not bool(self.api._member(model, "ShowConfiguration2", configuration)):
@@ -508,7 +669,7 @@ class ConfigurationNativeAdapter:
                     "configuration_activate_failed", configuration
                 )
         try:
-            operation()
+            return operation()
         finally:
             if previous != configuration:
                 if not bool(self.api._member(model, "ShowConfiguration2", previous)):

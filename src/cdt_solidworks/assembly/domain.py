@@ -87,6 +87,16 @@ class ComponentSnapshot:
     transform: tuple[float, ...]
     load_state: ComponentLoadState
     fixed: bool = False
+    parent_identity: str | None = None
+
+
+@dataclass(frozen=True)
+class ComponentPatternSnapshot:
+    identity: str
+    seed_component_ids: tuple[str, ...]
+    spacing_m: float
+    total_instances: int
+    direction_resolved: bool
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,7 @@ class MateRequest:
     selection_refs: tuple[str, ...]
     value: float | None = None
     alignment: str | None = None
+    constraint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +117,7 @@ class MateSnapshot:
     rebuild_errors: tuple[str, ...] = ()
     kind: MateKind | None = None
     value: float | None = None
+    error_status: int | None = None
 
 
 class AssemblyAdapter(Protocol):
@@ -125,7 +137,7 @@ class AssemblyAdapter(Protocol):
         component_id: str,
         source_path: str,
         configuration: str | None,
-    ) -> None: ...
+    ) -> str: ...
 
     def delete_component(self, assembly_id: str, component_id: str) -> None: ...
 
@@ -144,6 +156,19 @@ class AssemblyAdapter(Protocol):
     def set_component_configuration(
         self, assembly_id: str, component_id: str, configuration: str
     ) -> None: ...
+
+    def create_linear_component_pattern(
+        self,
+        assembly_id: str,
+        seed_component_ids: tuple[str, ...],
+        direction_ref: str,
+        spacing_m: float,
+        total_instances: int,
+    ) -> str: ...
+
+    def read_component_pattern(
+        self, assembly_id: str, pattern_id: str
+    ) -> ComponentPatternSnapshot: ...
 
     def add_mate(self, assembly_id: str, request: MateRequest) -> str: ...
 
@@ -210,12 +235,15 @@ class AssemblyService:
         self._require_path(source_path)
         if configuration is not None:
             self._require_identity("configuration", configuration)
-        self._adapter.read_component(assembly_id, component_id)
-        self._adapter.replace_component(
+        before = self._adapter.read_component(assembly_id, component_id)
+        if before.parent_identity is not None:
+            raise AssemblyRefusal("nested_component_replace_not_supported", component_id)
+        replacement_id = self._adapter.replace_component(
             assembly_id, component_id, source_path, configuration
         )
+        self._require_identity("replacement_component_id", replacement_id)
         self._require_rebuild(assembly_id)
-        component = self._adapter.read_component(assembly_id, component_id)
+        component = self._adapter.read_component(assembly_id, replacement_id)
         if component.source_path != source_path:
             raise AssemblyPostconditionError(
                 "component_source_readback_mismatch", component.source_path
@@ -308,6 +336,76 @@ class AssemblyService:
             )
         return component
 
+    def create_linear_component_pattern(
+        self,
+        assembly_id: str,
+        *,
+        seed_component_ids: Sequence[str],
+        direction_ref: str,
+        spacing_m: float,
+        total_instances: int,
+    ) -> ComponentPatternSnapshot:
+        self._require_identity("assembly_id", assembly_id)
+        seeds = tuple(seed_component_ids)
+        if not seeds or any(not isinstance(seed, str) or not seed.strip() for seed in seeds):
+            raise AssemblyRefusal("invalid_pattern_seed_components")
+        if len(set(seeds)) != len(seeds):
+            raise AssemblyRefusal("duplicate_pattern_seed_component")
+        self._require_identity("pattern_direction_ref", direction_ref)
+        spacing = self._finite_value(spacing_m, "invalid_pattern_spacing")
+        if spacing <= 0:
+            raise AssemblyRefusal("invalid_pattern_spacing")
+        if (
+            not isinstance(total_instances, int)
+            or isinstance(total_instances, bool)
+            or total_instances < 2
+        ):
+            raise AssemblyRefusal("invalid_pattern_instance_count")
+
+        before = self.list_components(assembly_id, recursive=True)
+        before_count = len(before)
+        by_id = {component.identity: component for component in before}
+        for seed in seeds:
+            component = by_id.get(seed)
+            if component is None:
+                raise AssemblyRefusal("missing_component", seed)
+            if component.parent_identity is not None:
+                raise AssemblyRefusal("nested_pattern_seed_not_supported", seed)
+
+        pattern_id = self._adapter.create_linear_component_pattern(
+            assembly_id,
+            seeds,
+            direction_ref,
+            spacing,
+            total_instances,
+        )
+        self._require_identity("pattern_id", pattern_id)
+        self._require_rebuild(assembly_id)
+        pattern = self._adapter.read_component_pattern(assembly_id, pattern_id)
+        if pattern.identity != pattern_id:
+            raise AssemblyPostconditionError(
+                "pattern_identity_readback_mismatch", pattern.identity
+            )
+        if pattern.seed_component_ids != seeds:
+            raise AssemblyPostconditionError("pattern_seed_readback_mismatch")
+        if not pattern.direction_resolved:
+            raise AssemblyPostconditionError("pattern_direction_readback_missing")
+        if pattern.total_instances != total_instances:
+            raise AssemblyPostconditionError("pattern_count_readback_mismatch")
+        if not math.isclose(
+            pattern.spacing_m, spacing, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise AssemblyPostconditionError("pattern_spacing_readback_mismatch")
+
+        after_count = len(self.list_components(assembly_id, recursive=True))
+        expected_count = before_count + len(seeds) * (total_instances - 1)
+        if after_count != expected_count:
+            raise AssemblyPostconditionError(
+                "pattern_component_count_readback_mismatch",
+                f"expected={expected_count}, actual={after_count}",
+            )
+        return pattern
+
     def add_mate(self, assembly_id: str, request: MateRequest) -> MateSnapshot:
         self._require_identity("assembly_id", assembly_id)
         normalized = self._validate_mate_request(request)
@@ -397,9 +495,13 @@ class AssemblyService:
             kind = request.kind if isinstance(request.kind, MateKind) else MateKind(str(request.kind).strip())
         except ValueError as exc:
             raise AssemblyRefusal("unsupported_mate_kind", str(request.kind)) from exc
-        if len(request.selection_refs) < 2 or any(
-            not isinstance(ref, str) or not ref.strip() for ref in request.selection_refs
-        ):
+        refs = tuple(request.selection_refs)
+        if any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+            raise AssemblyRefusal("invalid_mate_selection")
+        if kind is MateKind.WIDTH:
+            if len(refs) != 4:
+                raise AssemblyRefusal("invalid_width_mate_selection")
+        elif len(refs) != 2:
             raise AssemblyRefusal("invalid_mate_selection")
         value = request.value
         if kind in (MateKind.DISTANCE, MateKind.ANGLE):
@@ -407,18 +509,39 @@ class AssemblyService:
                 raise AssemblyRefusal("mate_value_required", kind.value)
             value = cls._finite_value(value, "invalid_mate_value")
         elif value is not None:
-            value = cls._finite_value(value, "invalid_mate_value")
+            raise AssemblyRefusal("mate_value_not_supported", kind.value)
+        constraint = request.constraint
+        if kind is MateKind.WIDTH:
+            constraint = "centered" if constraint is None else constraint
+            if constraint not in {"centered", "free"}:
+                raise AssemblyRefusal("invalid_width_constraint", str(constraint))
+        elif kind is MateKind.SLOT:
+            constraint = "centered" if constraint is None else constraint
+            if constraint not in {"centered", "free"}:
+                raise AssemblyRefusal("invalid_slot_constraint", str(constraint))
+        elif constraint is not None:
+            raise AssemblyRefusal("mate_constraint_not_supported", kind.value)
         if request.alignment is not None:
             if request.alignment not in {"aligned", "anti_aligned", "closest"}:
                 raise AssemblyRefusal("invalid_mate_alignment", request.alignment)
             if kind not in _MATE_ALIGNMENT_KINDS:
                 raise AssemblyRefusal("mate_alignment_not_supported", kind.value)
-        return replace(request, kind=kind, value=value)
+        return replace(
+            request,
+            kind=kind,
+            selection_refs=refs,
+            value=value,
+            constraint=constraint,
+        )
 
     @staticmethod
     def _require_solved_mate(mate: MateSnapshot) -> None:
         if mate.state is not MateState.SOLVED:
             raise AssemblyPostconditionError("mate_not_solved", mate.state.value)
+        if mate.error_status not in (None, 0, 1):
+            raise AssemblyPostconditionError(
+                "mate_error_status", str(mate.error_status)
+            )
         if mate.rebuild_errors:
             raise AssemblyPostconditionError(
                 "mate_rebuild_error", "; ".join(mate.rebuild_errors)

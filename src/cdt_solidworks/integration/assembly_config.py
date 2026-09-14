@@ -31,14 +31,20 @@ from cdt_solidworks.native.models import NativeCallResult, NativeCallState, Nati
 T = TypeVar("T")
 
 _ASSEMBLY_EXTENSIONS = frozenset({".sldasm"})
+_COMPONENT_SOURCE_EXTENSIONS = frozenset({".sldprt", ".sldasm"})
 _CONFIGURATION_EXTENSIONS = frozenset({".sldprt", ".sldasm"})
 _PROMOTED_MATE_KINDS = frozenset(
     {
         MateKind.COINCIDENT,
-        MateKind.PARALLEL,
-        MateKind.PERPENDICULAR,
+        MateKind.CONCENTRIC,
         MateKind.DISTANCE,
         MateKind.ANGLE,
+        MateKind.PARALLEL,
+        MateKind.PERPENDICULAR,
+        MateKind.TANGENT,
+        MateKind.LOCK,
+        MateKind.WIDTH,
+        MateKind.SLOT,
     }
 )
 _PROMOTED_COMPONENT_STATES = {
@@ -216,6 +222,132 @@ class IntegratedAssemblyService(_EvidenceGatedService):
             ),
         )
 
+    def delete_component(
+        self, path: str, component_id: str
+    ) -> NativeCallResult[Any]:
+        return self._call(
+            stage="assembly_component_delete",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.delete_component(target, component_id),
+        )
+
+    def replace_component(
+        self,
+        path: str,
+        component_id: str,
+        source_path: str,
+        configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        stage = "assembly_component_replace"
+        try:
+            source = self.path_policy.validate_open(source_path)
+            if Path(source).suffix.lower() not in _COMPONENT_SOURCE_EXTENSIONS:
+                raise NativeRuntimeError(
+                    "document_type_mismatch",
+                    stage,
+                    "Replacement source must be a SOLIDWORKS part or assembly.",
+                )
+        except Exception as exc:
+            call_id = uuid.uuid4().hex
+            return NativeCallResult.failed(
+                failure_from_exception(exc, stage),
+                call_id=call_id,
+                dispatched=False,
+            )
+        return self._call(
+            stage=stage,
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.replace_component(
+                target, component_id, source, configuration
+            ),
+        )
+
+    def set_component_transform(
+        self, path: str, component_id: str, transform: Sequence[float]
+    ) -> NativeCallResult[Any]:
+        if isinstance(transform, (str, bytes)):
+            return _local_failure(
+                "assembly_component_set_transform",
+                "transform must contain exactly 16 finite numeric values.",
+            )
+        values = tuple(transform)
+        if len(values) != 16 or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in values
+        ):
+            return _local_failure(
+                "assembly_component_set_transform",
+                "transform must contain exactly 16 finite numeric values.",
+            )
+        normalized = tuple(float(value) for value in values)
+        return self._call(
+            stage="assembly_component_set_transform",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.set_component_transform(
+                target, component_id, normalized
+            ),
+        )
+
+    def create_linear_component_pattern(
+        self,
+        path: str,
+        *,
+        seed_component_ids: Sequence[str],
+        direction_ref: str,
+        spacing_m: float,
+        total_instances: int,
+    ) -> NativeCallResult[Any]:
+        if isinstance(seed_component_ids, (str, bytes)):
+            return _local_failure(
+                "assembly_component_pattern_create",
+                "seed_component_ids must contain one or more explicit component identities.",
+            )
+        seeds = tuple(seed_component_ids)
+        if not seeds or any(not isinstance(item, str) or not item.strip() for item in seeds):
+            return _local_failure(
+                "assembly_component_pattern_create",
+                "seed_component_ids must contain one or more explicit component identities.",
+            )
+        if not isinstance(direction_ref, str) or not direction_ref.strip():
+            return _local_failure(
+                "assembly_component_pattern_create",
+                "direction_ref must be a non-empty stable selection reference.",
+            )
+        if (
+            isinstance(spacing_m, bool)
+            or not isinstance(spacing_m, (int, float))
+            or not math.isfinite(float(spacing_m))
+            or float(spacing_m) <= 0
+            or isinstance(total_instances, bool)
+            or not isinstance(total_instances, int)
+            or total_instances < 2
+        ):
+            return _local_failure(
+                "assembly_component_pattern_create",
+                "spacing_m must be positive and total_instances must be an integer >= 2.",
+            )
+        return self._call(
+            stage="assembly_component_pattern_create",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.create_linear_component_pattern(
+                target,
+                seed_component_ids=seeds,
+                direction_ref=direction_ref,
+                spacing_m=float(spacing_m),
+                total_instances=total_instances,
+            ),
+        )
+
     def create_mate(
         self,
         path: str,
@@ -224,31 +356,33 @@ class IntegratedAssemblyService(_EvidenceGatedService):
         selection_refs: Sequence[str],
         value: float | None = None,
         alignment: str | None = None,
+        constraint: str | None = None,
     ) -> NativeCallResult[Any]:
         try:
             mate_kind = MateKind(str(kind).strip().lower())
         except ValueError:
             return _local_failure(
                 "assembly_mate_create",
-                "kind must be coincident, parallel, perpendicular, distance, or angle.",
+                "kind is not a native-accepted common mate family.",
             )
         if mate_kind not in _PROMOTED_MATE_KINDS:
             return _local_failure(
                 "assembly_mate_create",
-                "This mate family is implemented but not native-accepted for the public tool surface.",
+                "This mate family is not native-accepted for the public tool surface.",
             )
         if isinstance(selection_refs, (str, bytes)):
             return _local_failure(
                 "assembly_mate_create",
-                "selection_refs must contain exactly two explicit selection references.",
+                "selection_refs must contain explicit stable selection references.",
             )
         refs = tuple(selection_refs)
-        if len(refs) != 2 or any(
+        expected_count = 4 if mate_kind is MateKind.WIDTH else 2
+        if len(refs) != expected_count or any(
             not isinstance(ref, str) or not ref.strip() for ref in refs
         ):
             return _local_failure(
                 "assembly_mate_create",
-                "selection_refs must contain exactly two non-empty selection references.",
+                f"{mate_kind.value} requires exactly {expected_count} non-empty selection references.",
             )
         if mate_kind in {MateKind.DISTANCE, MateKind.ANGLE}:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -267,22 +401,51 @@ class IntegratedAssemblyService(_EvidenceGatedService):
                 "assembly_mate_create",
                 "value is only valid for distance or angle mates.",
             )
+        alignment_kinds = {
+            MateKind.COINCIDENT,
+            MateKind.CONCENTRIC,
+            MateKind.DISTANCE,
+            MateKind.ANGLE,
+            MateKind.PARALLEL,
+            MateKind.TANGENT,
+            MateKind.SLOT,
+        }
         if alignment is not None:
             if alignment not in {"aligned", "anti_aligned", "closest"}:
                 return _local_failure(
                     "assembly_mate_create",
                     "alignment must be aligned, anti_aligned, or closest.",
                 )
-            if mate_kind is MateKind.PERPENDICULAR:
+            if mate_kind not in alignment_kinds:
                 return _local_failure(
                     "assembly_mate_create",
-                    "perpendicular mates do not expose MateAlignment in the accepted native API.",
+                    f"{mate_kind.value} does not expose MateAlignment in the accepted native API.",
                 )
+        if mate_kind is MateKind.WIDTH:
+            constraint = "centered" if constraint is None else constraint
+            if constraint not in {"centered", "free"}:
+                return _local_failure(
+                    "assembly_mate_create",
+                    "width constraint must be centered or free.",
+                )
+        elif mate_kind is MateKind.SLOT:
+            constraint = "centered" if constraint is None else constraint
+            if constraint not in {"centered", "free"}:
+                return _local_failure(
+                    "assembly_mate_create",
+                    "slot constraint must be centered or free.",
+                )
+        elif constraint is not None:
+            return _local_failure(
+                "assembly_mate_create",
+                "constraint is only valid for width or slot mates.",
+            )
         request = MateRequest(
             kind=mate_kind,
             selection_refs=refs,
             value=value,
             alignment=alignment,
+            constraint=constraint,
         )
         return self._call(
             stage="assembly_mate_create",
@@ -301,6 +464,27 @@ class IntegratedAssemblyService(_EvidenceGatedService):
             operation=lambda target: self.service.list_mates(target),
         )
 
+    def set_mate_suppressed(
+        self, path: str, mate_id: str, suppressed: bool
+    ) -> NativeCallResult[Any]:
+        def operation(target: str) -> Any:
+            mate = self.service.read_mate(target, mate_id)
+            if mate.kind not in _PROMOTED_MATE_KINDS:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "assembly_mate_set_suppressed",
+                    "Only a native-accepted mate can be changed by this tool.",
+                )
+            return self.service.set_mate_suppressed(target, mate_id, suppressed)
+
+        return self._call(
+            stage="assembly_mate_set_suppressed",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=operation,
+        )
+
     def set_coincident_mate_suppressed(
         self, path: str, mate_id: str, suppressed: bool
     ) -> NativeCallResult[Any]:
@@ -310,12 +494,33 @@ class IntegratedAssemblyService(_EvidenceGatedService):
                 raise NativeRuntimeError(
                     "cad_validation_error",
                     "assembly_coincident_mate_set_suppressed",
-                    "Only a native-accepted coincident mate can be changed by this tool.",
+                    "Only a native-accepted coincident mate can be changed by this compatibility tool.",
                 )
             return self.service.set_mate_suppressed(target, mate_id, suppressed)
 
         return self._call(
             stage="assembly_coincident_mate_set_suppressed",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=operation,
+        )
+
+    def set_mate_value(
+        self, path: str, mate_id: str, value: float
+    ) -> NativeCallResult[Any]:
+        def operation(target: str) -> Any:
+            mate = self.service.read_mate(target, mate_id)
+            if mate.kind not in {MateKind.DISTANCE, MateKind.ANGLE}:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "assembly_mate_set_value",
+                    "Only native-accepted distance or angle mates expose editable values.",
+                )
+            return self.service.set_mate_value(target, mate_id, value)
+
+        return self._call(
+            stage="assembly_mate_set_value",
             path=path,
             extensions=_ASSEMBLY_EXTENSIONS,
             mutation=True,
@@ -331,7 +536,7 @@ class IntegratedAssemblyService(_EvidenceGatedService):
                 raise NativeRuntimeError(
                     "cad_validation_error",
                     "assembly_distance_mate_set_value",
-                    "Only a native-accepted distance mate can be changed by this tool.",
+                    "Only a native-accepted distance mate can be changed by this compatibility tool.",
                 )
             return self.service.set_mate_value(target, mate_id, value)
 
@@ -479,6 +684,68 @@ class IntegratedConfigurationService(_EvidenceGatedService):
             lambda target: self.service.set_feature_suppressed(
                 target, configuration, feature_id, suppressed
             ),
+            mutation=True,
+        )
+
+    def set_material(
+        self,
+        path: str,
+        configuration: str,
+        database: str,
+        material_name: str,
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_set_material",
+            path,
+            lambda target: self.service.set_material(
+                target, configuration, database, material_name
+            ),
+            mutation=True,
+        )
+
+    def list_display_states(
+        self, path: str, configuration: str
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_display_states_list",
+            path,
+            lambda target: self.service.list_display_states(target, configuration),
+            mutation=False,
+        )
+
+    def create_display_state(
+        self, path: str, configuration: str, name: str
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_display_state_create",
+            path,
+            lambda target: self.service.create_display_state(target, configuration, name),
+            mutation=True,
+        )
+
+    def rename_display_state(
+        self,
+        path: str,
+        configuration: str,
+        old_name: str,
+        new_name: str,
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_display_state_rename",
+            path,
+            lambda target: self.service.rename_display_state(
+                target, configuration, old_name, new_name
+            ),
+            mutation=True,
+        )
+
+    def delete_display_state(
+        self, path: str, configuration: str, name: str
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_display_state_delete",
+            path,
+            lambda target: self.service.delete_display_state(target, configuration, name),
             mutation=True,
         )
 

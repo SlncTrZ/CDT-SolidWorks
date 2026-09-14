@@ -6,7 +6,12 @@ import math
 
 from cdt_solidworks.body.models import BodyKind
 from cdt_solidworks.body.runtime import DocumentTarget, FabricationRuntime, ResolvedDocument
-from cdt_solidworks.surface.models import SurfaceKnitSpec, SurfaceMutationResult, ThickenSpec
+from cdt_solidworks.surface.models import (
+    OffsetSurfaceSpec,
+    SurfaceKnitSpec,
+    SurfaceMutationResult,
+    ThickenSpec,
+)
 
 
 class SurfaceError(RuntimeError):
@@ -54,6 +59,29 @@ class SurfaceService:
         self._require_persistence(document)
         return SurfaceMutationResult(receipt.feature_id, after_surfaces, after_solids)
 
+    def offset(self, target: DocumentTarget, spec: OffsetSurfaceSpec) -> SurfaceMutationResult:
+        self._validate_target(target)
+        self._validate_offset(spec)
+        document = self._resolve_part(target)
+        before_surfaces = self._runtime.list_bodies(document, BodyKind.SURFACE)
+        before_solids = self._runtime.list_bodies(document, BodyKind.SOLID)
+        if spec.surface_body_id not in {body.body_id for body in before_surfaces}:
+            raise SurfaceContextError("surface body identity not found for offset")
+        receipt = self._runtime.offset_surface(document, spec)
+        if not receipt.feature_id.strip():
+            raise SurfaceMutationError("offset surface returned an empty feature identity")
+        self._require_rebuild(document)
+        after_surfaces = self._runtime.list_bodies(document, BodyKind.SURFACE)
+        after_solids = self._runtime.list_bodies(document, BodyKind.SOLID)
+        if len(after_surfaces) != len(before_surfaces) + 1:
+            raise SurfaceMutationError(
+                "offset surface read-back did not create exactly one additional surface body"
+            )
+        if len(after_solids) != len(before_solids):
+            raise SurfaceMutationError("offset surface unexpectedly changed solid-body count")
+        self._require_persistence(document)
+        return SurfaceMutationResult(receipt.feature_id, after_surfaces, after_solids)
+
     def thicken(self, target: DocumentTarget, spec: ThickenSpec) -> SurfaceMutationResult:
         self._validate_target(target)
         self._validate_thicken(spec)
@@ -95,6 +123,13 @@ class SurfaceService:
             raise SurfaceValidationError("surface body identities must not be empty")
         if not math.isfinite(spec.tolerance_mm) or spec.tolerance_mm <= 0:
             raise SurfaceValidationError("knit tolerance must be positive and finite")
+
+    @staticmethod
+    def _validate_offset(spec: OffsetSurfaceSpec) -> None:
+        if not spec.name.strip() or not spec.surface_body_id.strip():
+            raise SurfaceValidationError("offset name and surface body identity must not be empty")
+        if not math.isfinite(spec.distance_mm) or spec.distance_mm <= 0:
+            raise SurfaceValidationError("offset distance must be positive and finite")
 
     @staticmethod
     def _validate_thicken(spec: ThickenSpec) -> None:

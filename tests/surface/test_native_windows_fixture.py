@@ -37,9 +37,24 @@ def test_native_surface_to_solid_thicken_fixture(tmp_path) -> None:
         surfaces = before.value["surface_bodies"]
         assert len(surfaces) == 1
 
-        thickened = adapter.thicken(
+        offset = adapter.offset(
             path,
             surface_body_name=surfaces[0]["name"],
+            distance_mm=3.0,
+            reverse=False,
+        )
+        assert offset.state is NativeCallState.SUCCESS, offset.failure
+        assert offset.value is not None
+        assert offset.value["surface_body_count_after"] == 2
+
+        reopened_offset = adapter.inspect(path)
+        assert reopened_offset.state is NativeCallState.SUCCESS, reopened_offset.failure
+        assert reopened_offset.value is not None
+        assert len(reopened_offset.value["surface_bodies"]) == 2
+
+        thickened = adapter.thicken(
+            path,
+            surface_body_name=reopened_offset.value["surface_bodies"][0]["name"],
             thickness_mm=2.0,
             merge=False,
         )

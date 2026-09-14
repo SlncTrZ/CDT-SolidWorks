@@ -165,6 +165,270 @@ class BodyNativeAdapter:
             mutation=True,
         )
 
+    def move_copy(
+        self,
+        path: str | Path,
+        *,
+        body_names: Iterable[str],
+        translation_mm: tuple[float, float, float],
+        copy: bool = False,
+        copies: int = 1,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Move or copy selected solid bodies using a bounded translation-only contract."""
+        try:
+            source = self._validate_part_path(path)
+            names = tuple(str(name).strip() for name in body_names)
+            if not names or len(set(names)) != len(names) or any(not name for name in names):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "body_move_copy",
+                    "Move/copy requires unique non-empty solid-body names.",
+                )
+            if len(translation_mm) != 3:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "body_move_copy",
+                    "translation_mm must contain exactly three components.",
+                )
+            translation = tuple(float(value) for value in translation_mm)
+            if any(not math.isfinite(value) for value in translation) or all(
+                abs(value) <= 1e-12 for value in translation
+            ):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "body_move_copy",
+                    "translation_mm must be finite and non-zero.",
+                )
+            copy_count = int(copies)
+            if bool(copy):
+                if copy_count < 1 or copy_count > 100:
+                    raise NativeRuntimeError(
+                        "cad_validation_error",
+                        "body_move_copy",
+                        "copies must be in the range 1..100 for copy operations.",
+                    )
+            elif copy_count != 1:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "body_move_copy",
+                    "copies must equal 1 for move operations.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "body_move_copy")
+
+        def operation_fn(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                before = tuple(self.api.bodies(model, 0, False))
+                by_name = {self._body_name(body): body for body in before}
+                missing = [name for name in names if name not in by_name]
+                if missing:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "body_move_copy",
+                        "Requested solid-body identity is not present in the part.",
+                        details={"missing_body": missing[0]},
+                    )
+                before_boxes = {name: self._body_box(by_name[name]) for name in names}
+                self._select_bodies(model, tuple(by_name[name] for name in names), "body_move_copy")
+                manager = self.api._member(model, "FeatureManager")
+                dx_m, dy_m, dz_m = (value / 1000.0 for value in translation)
+                feature = self.api._member(
+                    manager,
+                    "InsertMoveCopyBody2",
+                    dx_m,
+                    dy_m,
+                    dz_m,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    bool(copy),
+                    copy_count,
+                )
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "body_move_copy",
+                        "SOLIDWORKS did not create the Move/Copy Body feature.",
+                    )
+                self._require_clean_rebuild(model, "body_move_copy")
+                after = tuple(self.api.bodies(model, 0, False))
+                expected_count = len(before) + (len(names) * copy_count if copy else 0)
+                if len(after) != expected_count:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "body_move_copy",
+                        "Move/copy body-count read-back does not match the requested operation.",
+                        details={"before": len(before), "after": len(after), "expected": expected_count},
+                    )
+                after_boxes = tuple(self._body_box(body) for body in after)
+                delta = (dx_m, dy_m, dz_m)
+                for name in names:
+                    original = before_boxes[name]
+                    translated = self._translated_box(original, delta)
+                    if copy and not any(self._boxes_close(box, original) for box in after_boxes):
+                        raise NativeRuntimeError(
+                            "cad_postcondition_failed",
+                            "body_move_copy",
+                            "Copy operation did not preserve the source body geometry.",
+                            details={"body": name},
+                        )
+                    if not any(self._boxes_close(box, translated) for box in after_boxes):
+                        raise NativeRuntimeError(
+                            "cad_postcondition_failed",
+                            "body_move_copy",
+                            "Move/copy bounding-box read-back does not match the requested translation.",
+                            details={"body": name},
+                        )
+                self._save(model, "body_move_copy")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "copy": bool(copy),
+                    "copies": copy_count,
+                    "translation_mm": translation,
+                    "body_count_before": len(before),
+                    "body_count_after": len(after),
+                    "body_names_after": [self._body_name(body) for body in after],
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation_fn,
+            stage="body_move_copy",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def delete_keep(
+        self,
+        path: str | Path,
+        *,
+        body_names: Iterable[str],
+        keep: bool,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create a Body-Delete/Keep feature for explicit solid-body identities."""
+        try:
+            source = self._validate_part_path(path)
+            names = tuple(str(name).strip() for name in body_names)
+            if not names or len(set(names)) != len(names) or any(not name for name in names):
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "body_delete_keep",
+                    "Body-Delete/Keep requires unique non-empty solid-body names.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "body_delete_keep")
+
+        def operation_fn(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                before = tuple(self.api.bodies(model, 0, False))
+                by_name = {self._body_name(body): body for body in before}
+                missing = [name for name in names if name not in by_name]
+                if missing:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "body_delete_keep",
+                        "Requested solid-body identity is not present in the part.",
+                        details={"missing_body": missing[0]},
+                    )
+                self._select_bodies(model, tuple(by_name[name] for name in names), "body_delete_keep")
+                manager = self.api._member(model, "FeatureManager")
+                feature = self.api._member(manager, "InsertDeleteBody2", bool(keep))
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "body_delete_keep",
+                        "SOLIDWORKS did not create the Body-Delete/Keep feature.",
+                    )
+                self._require_clean_rebuild(model, "body_delete_keep")
+                after = tuple(self.api.bodies(model, 0, False))
+                expected_count = len(names) if keep else len(before) - len(names)
+                if len(after) != expected_count:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "body_delete_keep",
+                        "Body-Delete/Keep count read-back does not match the requested operation.",
+                        details={"before": len(before), "after": len(after), "expected": expected_count},
+                    )
+                self._save(model, "body_delete_keep")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "keep": bool(keep),
+                    "body_count_before": len(before),
+                    "body_count_after": len(after),
+                    "body_names_after": [self._body_name(body) for body in after],
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation_fn,
+            stage="body_delete_keep",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def _select_bodies(self, model: Any, bodies: tuple[Any, ...], stage: str) -> None:
+        self.api._member(model, "ClearSelection2", True)
+        selection_manager = self.api._member(model, "SelectionManager")
+        for body in bodies:
+            select_data = self.api._member(selection_manager, "CreateSelectData")
+            select_data.Mark = 1
+            if not bool(self.api._member(body, "Select2", True, select_data)):
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    stage,
+                    "A requested body could not be selected.",
+                    details={"body": self._body_name(body)},
+                )
+
+    def _body_box(self, body: Any) -> tuple[float, float, float, float, float, float]:
+        raw = self.api._member(body, "GetBodyBox")
+        values = tuple(float(value) for value in (raw or ()))
+        if len(values) != 6 or any(not math.isfinite(value) for value in values):
+            raise NativeRuntimeError(
+                "cad_postcondition_failed",
+                "body_geometry_readback",
+                "SOLIDWORKS did not return a finite six-value body bounding box.",
+            )
+        return values  # type: ignore[return-value]
+
+    @staticmethod
+    def _translated_box(
+        box: tuple[float, float, float, float, float, float],
+        delta: tuple[float, float, float],
+    ) -> tuple[float, float, float, float, float, float]:
+        dx, dy, dz = delta
+        return (
+            box[0] + dx,
+            box[1] + dy,
+            box[2] + dz,
+            box[3] + dx,
+            box[4] + dy,
+            box[5] + dz,
+        )
+
+    @staticmethod
+    def _boxes_close(
+        left: tuple[float, float, float, float, float, float],
+        right: tuple[float, float, float, float, float, float],
+        *,
+        tolerance_m: float = 1e-7,
+    ) -> bool:
+        return all(abs(a - b) <= tolerance_m for a, b in zip(left, right))
+
     def _validate_part_path(self, path: str | Path) -> str:
         source = self.path_policy.validate_open(path)
         if Path(source).suffix.lower() != _PART_EXT:

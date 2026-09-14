@@ -25,6 +25,14 @@ class ThickenSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class OffsetSurfaceSpec:
+    name: str
+    surface_body_id: str
+    distance_mm: float
+    reverse: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SurfaceMutationResult:
     feature_id: str
     surface_bodies: tuple[BodySnapshot, ...]

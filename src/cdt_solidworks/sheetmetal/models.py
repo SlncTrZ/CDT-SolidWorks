@@ -24,6 +24,38 @@ class EdgeFlangeSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class HemSpec:
+    name: str
+    edge_id: str
+    length_mm: float
+    gap_mm: float
+    position: str = "outside"
+    reverse: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SketchedBendSpec:
+    name: str
+    line_x_mm: float
+    angle_deg: float
+    bend_radius_mm: float
+    reverse: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UnfoldSpec:
+    bend_feature_id: str
+    fixed_x_mm: float
+
+
+@dataclass(frozen=True, slots=True)
+class FoldSpec:
+    unfold_feature_id: str
+    bend_feature_id: str
+    fixed_x_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class SheetMetalState:
     is_sheet_metal: bool
     thickness_mm: float | None

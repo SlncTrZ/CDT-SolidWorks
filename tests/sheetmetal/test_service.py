@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from cdt_solidworks.body.models import MutationReceipt
 from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, RebuildResult, ResolvedDocument
-from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, SheetMetalState
+from cdt_solidworks.sheetmetal.models import (
+    BaseFlangeSpec,
+    EdgeFlangeSpec,
+    FoldSpec,
+    HemSpec,
+    SheetMetalState,
+    SketchedBendSpec,
+    UnfoldSpec,
+)
 from cdt_solidworks.sheetmetal.service import (
     SheetMetalContextError,
     SheetMetalMutationError,
@@ -31,6 +39,25 @@ class FakeRuntime:
     def create_edge_flange(self, document, spec):
         self.calls.append("edge")
         return MutationReceipt("EdgeFlange1")
+
+    def create_hem(self, document, spec):
+        self.calls.append("hem")
+        return MutationReceipt("Hem1", {"length_mm": spec.length_mm})
+
+    def create_sketched_bend(self, document, spec):
+        self.calls.append("sketched_bend")
+        return MutationReceipt(
+            "Sketched Bend1",
+            {"angle_deg": spec.angle_deg, "bend_radius_mm": spec.bend_radius_mm},
+        )
+
+    def unfold_sheet_metal(self, document, spec):
+        self.calls.append("unfold")
+        return MutationReceipt("Unfold1", {"feature_type": "UnFold"})
+
+    def fold_sheet_metal(self, document, spec):
+        self.calls.append("fold")
+        return MutationReceipt("Fold1", {"feature_type": "Fold"})
 
     def set_flattened(self, document, flattened):
         self.calls.append("flatten")
@@ -81,13 +108,115 @@ def test_edge_flange_requires_existing_sheet_metal_state() -> None:
     runtime = FakeRuntime()
     try:
         SheetMetalService(runtime).add_edge_flange(
-            target(), EdgeFlangeSpec("Edge1", "edge-1", 25.0, 90.0, 1.0)
+            target(), EdgeFlangeSpec("Edge1", "bbox:+x", 25.0, 90.0, 1.0)
         )
     except SheetMetalContextError as exc:
         assert "existing sheet-metal" in str(exc)
     else:
         raise AssertionError("expected SheetMetalContextError")
     assert "edge" not in runtime.calls
+
+
+def test_edge_flange_rejects_unbounded_edge_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, None)
+    try:
+        SheetMetalService(runtime).add_edge_flange(
+            target(), EdgeFlangeSpec("Edge1", "Edge<123>", 25.0, 90.0, 1.0)
+        )
+    except SheetMetalValidationError as exc:
+        assert "edge selector" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
+
+
+def test_edge_flange_persists_formed_sheet_metal_state() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_edge_flange(
+        target(), EdgeFlangeSpec("Edge1", "bbox:+x", 25.0, 90.0, 1.0)
+    )
+    assert result.feature_id == "EdgeFlange1"
+    assert runtime.calls == ["resolve", "state", "edge", "rebuild", "state", "persist"]
+
+
+def test_hem_requires_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_hem(
+        target(), HemSpec("Hem1", "bbox:+x", 12.0, 0.5)
+    )
+    assert result.feature_id == "Hem1"
+    assert runtime.calls == ["resolve", "state", "hem", "rebuild", "state", "persist"]
+
+
+def test_sketched_bend_requires_formed_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_sketched_bend(
+        target(), SketchedBendSpec("Sketched Bend1", 0.0, 90.0, 1.5)
+    )
+    assert result.feature_id == "Sketched Bend1"
+    assert runtime.calls == ["resolve", "state", "sketched_bend", "rebuild", "state", "persist"]
+
+
+def test_sketched_bend_rejects_nonfinite_line_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        SheetMetalService(runtime).add_sketched_bend(
+            target(), SketchedBendSpec("Sketched Bend1", float("nan"), 90.0, 1.5)
+        )
+    except SheetMetalValidationError as exc:
+        assert "line_x_mm" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
+
+
+def test_unfold_bend_requires_formed_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).unfold_bend(
+        target(), UnfoldSpec("SketchBend1", 25.0)
+    )
+    assert result.feature_id == "Unfold1"
+    assert runtime.calls == ["resolve", "state", "unfold", "rebuild", "state", "persist"]
+
+
+def test_fold_bend_requires_unfold_and_bend_identities_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.5, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).fold_bend(
+        target(), FoldSpec("Unfold1", "SketchBend1", 25.0)
+    )
+    assert result.feature_id == "Fold1"
+    assert runtime.calls == ["resolve", "state", "fold", "rebuild", "state", "persist"]
+
+
+def test_unfold_rejects_empty_bend_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        SheetMetalService(runtime).unfold_bend(target(), UnfoldSpec("", 25.0))
+    except SheetMetalValidationError as exc:
+        assert "bend feature" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
+
+
+def test_hem_rejects_unbounded_edge_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, None)
+    try:
+        SheetMetalService(runtime).add_hem(
+            target(), HemSpec("Hem1", "Edge<123>", 12.0, 0.5)
+        )
+    except SheetMetalValidationError as exc:
+        assert "edge selector" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
 
 
 def test_flatten_requires_flat_pattern_identity() -> None:

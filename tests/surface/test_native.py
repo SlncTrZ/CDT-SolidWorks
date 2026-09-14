@@ -30,6 +30,21 @@ def test_knit_rejects_tolerance_above_documented_range_before_dispatch(tmp_path)
     assert session.calls == 0
 
 
+def test_offset_rejects_nonpositive_distance_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "surface.sldprt"
+    source.write_bytes(b"fixture")
+    session = NeverExecuteSession()
+    adapter = SurfaceNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.offset(source, surface_body_name="S1", distance_mm=0.0)
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
 def test_thicken_rejects_nonpositive_thickness_before_dispatch(tmp_path) -> None:
     source = tmp_path / "surface.sldprt"
     source.write_bytes(b"fixture")

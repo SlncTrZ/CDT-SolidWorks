@@ -13,8 +13,10 @@ This repo owns SOLIDWORKS-native runtime code, tests, Windows COM integration an
 The provider has native Windows evidence for:
 
 - application/session lifecycle and document open/query/save/close/reopen;
-- bounded sketch geometry creation/query, including line/centerline/circle/arc/ellipse/point/spline plus rectangular sketch primitives;
-- solid extrude, hardened blind/through-all Cut Extrude, bounded boss/cut Revolve, bounded single-center blind/through-all Simple Hole with feature-specific uncertainty reconciliation, and multi-body creation;
+- bounded sketch geometry creation/query plus native-passed common relations, definition state, linear/angular/radius/diameter dimensions, relation deletion and dimension editing;
+- solid extrude, hardened blind/through-all Cut Extrude, bounded boss/cut Revolve, bounded Simple Hole and native-passed ANSI Metric M2/M4/M6 countersink Hole Wizard;
+- native-passed Fillet/Chamfer/Shell, Draft/Rib, Linear/Circular Pattern/Mirror, bounded reference plane/axis/point, and whitelist-only feature query/rename/suppression/fillet-radius edit;
+- multi-body creation;
 - body inspection plus bounded Boolean combine operations and core Combine/Split workflows;
 - sheet-metal Base Flange plus accepted sheet-metal inspection/flat-pattern state;
 - extruded surfaces plus accepted surface thickening;
@@ -28,7 +30,7 @@ The provider has native Windows evidence for:
 - part mass/volume/area, center of mass, inertia, bounding box, and geometry-sanity evaluation;
 - rebuild/error validation and bounded path policy.
 
-Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset is now registered in the provider and has passed a public-wrapper native smoke on SOLIDWORKS 2024. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated. The post-integration weighted audit confirms the mature 90–95 Mechanical Core release threshold is **not yet met**; unaccepted families remain explicitly partial/unavailable.
+M95-R3 Agent A's evidence-backed Sketch/Parametric Part subset is registered through granular public tools and capabilities; broader `solidworks.part.parametric` remains intentionally partial. Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset remains registered and native-verified. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated. The mature 90–95 Mechanical Core release threshold is **not yet met**; unaccepted families remain explicitly partial/unavailable.
 
 ## Correctness rules
 

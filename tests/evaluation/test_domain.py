@@ -23,7 +23,12 @@ class FakeEvaluationAdapter:
             inertia_kg_m2=(0.1, 0.2, 0.3, 0.0, 0.0, 0.0),
         )
         self.bounds = BoundingBox(min_m=(0.0, 0.0, 0.0), max_m=(0.1, 0.2, 0.3), approximate=True)
-        self.measurement = MeasureSnapshot(distance_m=0.025, angle_rad=None, radius_m=None)
+        self.measurement = MeasureSnapshot(
+            distance_m=0.025,
+            angle_rad=None,
+            radius_m=None,
+            diameter_m=None,
+        )
         self.interference_rows = (
             InterferenceSnapshot(
                 identity="int-1",
@@ -45,7 +50,8 @@ class FakeEvaluationAdapter:
     def bounding_box(self, document_id, configuration):
         return self.bounds
 
-    def measure(self, document_id, first_ref, second_ref):
+    def measure(self, document_id, refs):
+        self.measure_refs = refs
         return self.measurement
 
     def interferences(self, assembly_id, configuration):
@@ -87,10 +93,27 @@ class EvaluationServiceTests(unittest.TestCase):
             self.service.bounding_box("part-1")
 
     def test_measure_requires_explicit_references_and_a_finite_result(self):
-        result = self.service.measure("part-1", "Face1", "Face2")
+        result = self.service.measure("part-1", "plane:front", "plane:right")
         self.assertAlmostEqual(0.025, result.distance_m)
+        self.assertEqual(("plane:front", "plane:right"), self.adapter.measure_refs)
         with self.assertRaisesRegex(EvaluationRefusal, "invalid_first_ref"):
-            self.service.measure("part-1", "", "Face2")
+            self.service.measure("part-1", "", "plane:right")
+
+    def test_single_reference_radius_and_diameter_measurement_is_supported(self):
+        self.adapter.measurement = MeasureSnapshot(
+            distance_m=None,
+            angle_rad=None,
+            radius_m=0.005,
+            diameter_m=0.010,
+        )
+        result = self.service.measure("part-1", "sketch:Sketch1:segment:0")
+        self.assertEqual(("sketch:Sketch1:segment:0",), self.adapter.measure_refs)
+        self.assertAlmostEqual(0.005, result.radius_m)
+        self.assertAlmostEqual(0.010, result.diameter_m)
+
+    def test_measurement_rejects_more_than_two_references(self):
+        with self.assertRaisesRegex(EvaluationRefusal, "invalid_measurement_reference_count"):
+            self.service.measure_refs("part-1", ("a", "b", "c"))
 
     def test_interference_results_require_distinct_component_identity_and_positive_volume(self):
         result = self.service.interferences("asm-1", "Default")
