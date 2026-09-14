@@ -465,20 +465,23 @@ def _select_rays_and_name_faces(
                     face,
                     selection_index=index,
                 )
-                ok = bool(
+                stable_name = str(
+                    session.api._member(part_model, "GetEntityName", underlying) or ""
+                )
+                if not stable_name:
                     session.api._member(
                         part_model, "SetEntityName", underlying, entity_name
                     )
-                )
-                actual = str(
-                    session.api._member(part_model, "GetEntityName", underlying) or ""
-                )
-                if not ok and actual != entity_name:
-                    raise EvidenceError(
-                        f"face naming failed at index {index}: {actual!r}"
+                    stable_name = str(
+                        session.api._member(part_model, "GetEntityName", underlying)
+                        or ""
                     )
+                    if stable_name != entity_name:
+                        raise EvidenceError(
+                            f"face naming failed at index {index}: {stable_name!r}"
+                        )
                 refs.append(
-                    f"{session.api.component_name(component)}:face:{entity_name}"
+                    f"{session.api.component_name(component)}:face:{stable_name}"
                 )
         finally:
             session.api._member(model, "ClearSelection2", True)
