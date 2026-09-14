@@ -3,7 +3,7 @@ from __future__ import annotations
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.native.errors import NativeRuntimeError
 from cdt_solidworks.native.models import NativeCallState
-from cdt_solidworks.sheetmetal.native import SheetMetalNativeAdapter
+from cdt_solidworks.sheetmetal.native import SheetMetalNativeAdapter, _SW_HEM_POSITION
 
 
 class FakePythonCom:
@@ -43,6 +43,10 @@ class Feature:
         assert config_opt == 1
         assert config_names is None
         return self.raw
+
+
+def test_target_hem_position_values_match_solidworks_2024_type_library() -> None:
+    assert _SW_HEM_POSITION == {"inside": 0, "outside": 1}
 
 
 def test_flat_pattern_suppression_readback_handles_com_array_shape() -> None:

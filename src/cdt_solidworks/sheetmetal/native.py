@@ -17,7 +17,8 @@ _SW_SUPPRESS_FEATURE = 0
 _SW_UNSUPPRESS_FEATURE = 1
 _SW_THIS_CONFIGURATION = 1
 _SW_HEM_OPEN = 0
-_SW_HEM_POSITION = {"inside": 1, "outside": 2}
+# SOLIDWORKS 2024 SP0.1 target type library (revision 32.0.1): Inside=0, Outside=1.
+_SW_HEM_POSITION = {"inside": 0, "outside": 1}
 _SW_RELIEF_NONE = 4
 _SW_RELIEF_OBROUND = 3
 _SW_FM_EDGE_FLANGE = 37
