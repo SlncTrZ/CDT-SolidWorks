@@ -55,25 +55,6 @@ class BreadthAdapter:
     ):
         return self._derived_view("section-1", "section", parent_view_id, x, y)
 
-    def create_detail_view(
-        self, drawing_id, parent_view_id, center, radius, x, y, label, scale
-    ):
-        view_id = self._derived_view("detail-1", "detail", parent_view_id, x, y)
-        current = self.views[view_id]
-        self.views[view_id] = ViewSnapshot(
-            identity=current.identity,
-            sheet_name=current.sheet_name,
-            view_kind=current.view_kind,
-            source_model_path=current.source_model_path,
-            source_configuration=current.source_configuration,
-            dangling=current.dangling,
-            position=current.position,
-            scale_decimal=scale,
-            display_style=current.display_style,
-            parent_view_id=current.parent_view_id,
-        )
-        return view_id
-
     def _derived_view(self, view_id, kind, parent_view_id, x, y):
         parent = self.views[parent_view_id]
         self.views[view_id] = ViewSnapshot(
@@ -174,21 +155,6 @@ class DrawingR3BreadthTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "invalid_section_line"):
             self.service.create_section_view(
                 "drawing", "base", (0.0, 0.0), (0.0, 0.0), 0.24, 0.10, "A"
-            )
-
-    def test_detail_view_preserves_parent_source_position_and_scale(self):
-        result = self.service.create_detail_view(
-            "drawing", "base", (0.0, 0.0), 0.02, 0.25, 0.10, "B", 2.0
-        )
-        self.assertEqual("detail", result.view_kind)
-        self.assertEqual("base", result.parent_view_id)
-        self.assertEqual((0.25, 0.10), result.position)
-        self.assertEqual(2.0, result.scale_decimal)
-
-    def test_detail_view_rejects_non_positive_radius_before_dispatch(self):
-        with self.assertRaisesRegex(Exception, "invalid_detail_radius"):
-            self.service.create_detail_view(
-                "drawing", "base", (0.0, 0.0), 0.0, 0.25, 0.10, "B", 2.0
             )
 
     def test_note_requires_non_dangling_readback(self):

@@ -77,14 +77,6 @@ class FakeSection:
         return self.label
 
 
-class FakeDetail:
-    def __init__(self, label):
-        self.label = label
-
-    def GetLabel(self):
-        return self.label
-
-
 class FakeSketchSegment:
     def __init__(self, drawing, kind):
         self.drawing = drawing
@@ -101,9 +93,6 @@ class FakeSketchManager:
 
     def CreateLine(self, *args):
         return FakeSketchSegment(self.drawing, "line")
-
-    def CreateCircle(self, *args):
-        return FakeSketchSegment(self.drawing, "circle")
 
 
 class FakeView:
@@ -127,9 +116,6 @@ class FakeView:
 
     def GetSection(self):
         return self._specific if isinstance(self._specific, FakeSection) else None
-
-    def GetDetail(self):
-        return self._specific if isinstance(self._specific, FakeDetail) else None
 
 
 class FakeExtension:
@@ -203,22 +189,6 @@ class FakeDrawing:
             config=self.selected_view.ReferencedConfiguration,
             specific=FakeSection(label),
         )
-        self.views.append(view)
-        return view
-
-    def CreateDetailViewAt4(
-        self, x, y, z, style, scale1, scale2, label, showtype,
-        full_outline, jagged_outline, no_outline, intensity,
-    ):
-        assert self.selected_view is not None
-        view = FakeView(
-            f"View{len(self.views) + 1}",
-            self.selected_view.ReferencedDocument.path,
-            position=(x + 0.01, y + 0.01),
-            config=self.selected_view.ReferencedConfiguration,
-            specific=FakeDetail(label),
-        )
-        view.ScaleDecimal = float(scale1) / float(scale2)
         self.views.append(view)
         return view
 
@@ -312,15 +282,9 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         section = self.service.create_section_view(
             self.path, self.base.identity, (0.0, -0.04), (0.0, 0.04), 0.23, 0.10, "A"
         )
-        detail = self.service.create_detail_view(
-            self.path, self.base.identity, (0.0, 0.0), 0.02, 0.27, 0.10, "B", 2.0
-        )
-
         self.assertEqual((0.25, 0.10), projected.position)
         self.assertEqual("section", section.view_kind)
         self.assertEqual((0.23, 0.10), section.position)
-        self.assertEqual("detail", detail.view_kind)
-        self.assertEqual(2.0, detail.scale_decimal)
         self.assertEqual("note", note.annotation_kind)
         self.assertEqual("display_dimension", annotations[0].annotation_kind)
         self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0])

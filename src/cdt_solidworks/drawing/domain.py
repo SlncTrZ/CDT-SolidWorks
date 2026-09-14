@@ -115,18 +115,6 @@ class DrawingAdapter(Protocol):
         label: str,
     ) -> str: ...
 
-    def create_detail_view(
-        self,
-        drawing_id: str,
-        parent_view_id: str,
-        center: tuple[float, float],
-        radius: float,
-        x: float,
-        y: float,
-        label: str,
-        scale: float,
-    ) -> str: ...
-
     def read_view(self, drawing_id: str, view_id: str) -> ViewSnapshot | None: ...
 
     def add_note(self, drawing_id: str, view_id: str, text: str) -> str: ...
@@ -304,61 +292,6 @@ class DrawingService:
             "section",
             (float(x), float(y)),
         )
-
-    def create_detail_view(
-        self,
-        drawing_id: str,
-        parent_view_id: str,
-        center: tuple[float, float],
-        radius: float,
-        x: float,
-        y: float,
-        label: str,
-        scale: float = 2.0,
-    ) -> ViewSnapshot:
-        self._require_identity("drawing_id", drawing_id)
-        self._require_identity("parent_view_id", parent_view_id)
-        self._require_point("detail_center", center)
-        self._require_position(x, y)
-        self._require_view_label(label)
-        if (
-            isinstance(radius, bool)
-            or not isinstance(radius, (int, float))
-            or not isfinite(float(radius))
-            or float(radius) <= 0.0
-        ):
-            raise DrawingRefusal("invalid_detail_radius")
-        if (
-            isinstance(scale, bool)
-            or not isinstance(scale, (int, float))
-            or not isfinite(float(scale))
-            or float(scale) <= 0.0
-        ):
-            raise DrawingRefusal("invalid_detail_scale")
-        parent = self._adapter.read_view(drawing_id, parent_view_id)
-        if parent is None or parent.dangling:
-            raise DrawingRefusal("invalid_parent_view", parent_view_id)
-        view_id = self._adapter.create_detail_view(
-            drawing_id,
-            parent_view_id,
-            (float(center[0]), float(center[1])),
-            float(radius),
-            float(x),
-            float(y),
-            label.strip().upper(),
-            float(scale),
-        )
-        view = self._require_derived_view(
-            drawing_id,
-            view_id,
-            parent,
-            parent_view_id,
-            "detail",
-            (float(x), float(y)),
-        )
-        if view.scale_decimal is None or abs(view.scale_decimal - float(scale)) > 1e-9:
-            raise DrawingPostconditionError("detail_view_scale_readback_mismatch", view_id)
-        return view
 
     def add_note(
         self, drawing_id: str, view_id: str, text: str
