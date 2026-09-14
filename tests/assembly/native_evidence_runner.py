@@ -333,6 +333,78 @@ def _save_as_current_model(
     )
 
 
+def _normalize_persistent_reference(value: Any) -> tuple[int, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (bytes, bytearray)):
+        return tuple(value)
+    if isinstance(value, (tuple, list)):
+        return tuple(int(item) for item in value)
+    try:
+        return tuple(int(item) for item in value)
+    except TypeError:
+        return (int(value),)
+
+
+def _underlying_part_face_by_persistent_reference(
+    session: SolidWorksSession,
+    assembly_extension: Any,
+    component: Any,
+    selected_face: Any,
+    *,
+    selection_index: int,
+) -> tuple[Any, Any]:
+    part_model = session.api._member(component, "GetModelDoc2")
+    if part_model is None:
+        raise EvidenceError(f"component model unresolved at index {selection_index}")
+
+    selected_ref = _normalize_persistent_reference(
+        session.api._member(
+            assembly_extension, "GetPersistReference3", selected_face
+        )
+    )
+    if not selected_ref:
+        raise EvidenceError(
+            f"selected face persistent reference missing at index {selection_index}"
+        )
+
+    matches: list[Any] = []
+    for body in session.api.bodies(part_model, 0, False):
+        raw_faces = session.api._member(body, "GetFaces")
+        if raw_faces is None:
+            faces: tuple[Any, ...] = ()
+        elif isinstance(raw_faces, (tuple, list)):
+            faces = tuple(raw_faces)
+        else:
+            try:
+                faces = tuple(raw_faces)
+            except TypeError:
+                faces = (raw_faces,)
+
+        for part_face in faces:
+            assembly_face = session.api._member(
+                component, "GetCorrespondingEntity", part_face
+            )
+            if assembly_face is None:
+                continue
+            candidate_ref = _normalize_persistent_reference(
+                session.api._member(
+                    assembly_extension, "GetPersistReference3", assembly_face
+                )
+            )
+            if candidate_ref == selected_ref:
+                matches.append(part_face)
+
+    if len(matches) != 1:
+        component_name = session.api.component_name(component)
+        raise EvidenceError(
+            "persistent-reference face recovery was not unique at "
+            f"index {selection_index}: component={component_name!r}; "
+            f"matches={len(matches)}"
+        )
+    return part_model, matches[0]
+
+
 def _select_rays_and_name_faces(
     session: SolidWorksSession,
     assembly_path: Path,
@@ -386,18 +458,13 @@ def _select_rays_and_name_faces(
                     raise EvidenceError(
                         f"selected face/component missing at index {index}"
                     )
-                underlying = session.api._member(
-                    extension, "GetCorrespondingEntity2", face
+                part_model, underlying = _underlying_part_face_by_persistent_reference(
+                    session,
+                    extension,
+                    component,
+                    face,
+                    selection_index=index,
                 )
-                if underlying is None:
-                    raise EvidenceError(
-                        f"underlying entity missing at index {index}"
-                    )
-                part_model = session.api._member(component, "GetModelDoc2")
-                if part_model is None:
-                    raise EvidenceError(
-                        f"component model unresolved at index {index}"
-                    )
                 ok = bool(
                     session.api._member(
                         part_model, "SetEntityName", underlying, entity_name
