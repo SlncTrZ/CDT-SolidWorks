@@ -258,6 +258,7 @@ class SolidWorksDrawingAdapter:
             except Exception:
                 pass
             extension = self._api._member(model, "Extension")
+            callout = self._api.null_dispatch()
             selected = bool(
                 self._api._member(
                     extension,
@@ -269,7 +270,7 @@ class SolidWorksDrawingAdapter:
                     0.0,
                     False,
                     0,
-                    None,
+                    callout,
                     0,
                 )
             )
@@ -604,14 +605,20 @@ class SolidWorksDrawingAdapter:
         if result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH:
             detail = result.state.value
             if result.failure is not None:
-                detail = f"{result.failure.code}@{result.failure.stage}"
+                detail = (
+                    f"{result.failure.code}@{result.failure.stage}: "
+                    f"{result.failure.message}"
+                )
             raise DrawingPostconditionError(
                 "native_state_uncertain", f"call_id={result.call_id}; {detail}"
             )
         if result.state is not NativeCallState.SUCCESS:
             detail = result.state.value
             if result.failure is not None:
-                detail = f"{result.failure.code}@{result.failure.stage}"
+                detail = (
+                    f"{result.failure.code}@{result.failure.stage}: "
+                    f"{result.failure.message}"
+                )
             raise DrawingPostconditionError("native_drawing_failed", detail)
         return result.value
 

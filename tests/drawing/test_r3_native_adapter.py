@@ -192,6 +192,9 @@ class FakeApi:
     def first_feature(self, model):
         return None
 
+    def null_dispatch(self):
+        return object()
+
 
 class FakeSession:
     def __init__(self, api, app):

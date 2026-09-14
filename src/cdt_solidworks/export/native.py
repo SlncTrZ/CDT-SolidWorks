@@ -28,9 +28,9 @@ class ExportPathPolicy(Protocol):
 class SolidWorksExporter:
     """Executes bounded SaveAs conversions on the serialized SOLIDWORKS session.
 
-    This adapter intentionally refuses STEP 242 and single-sheet PDF until their
-    dedicated publish/export-data paths are bound. A generic SaveAs must not be
-    relabeled as those stronger semantics.
+    STEP 242 remains fail-closed until a dedicated PMI publish path is bound.
+    Single-sheet PDF uses IExportPdfData with explicit sheet selection rather than
+    relabeling a generic SaveAs as stronger export semantics.
     """
 
     _DOC_TYPES = {".sldprt": 1, ".sldasm": 2, ".slddrw": 3}
