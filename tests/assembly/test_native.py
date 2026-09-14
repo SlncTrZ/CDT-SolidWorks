@@ -26,6 +26,7 @@ class FakeComponent:
         self._fixed = False
         self.last_suppression = None
         self.last_select_data = None
+        self.transform_solve = None
         self.parent = parent
 
     def GetPathName(self):
@@ -48,6 +49,11 @@ class FakeComponent:
     def Select4(self, append, data, show_popup):
         self.last_select_data = data
         return data is not None
+
+    def SetTransformAndSolve2(self, transform):
+        self.transform_solve = transform
+        self.Transform2 = transform
+        return True
 
 
 class FakeSelectData:
@@ -276,6 +282,7 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
             (FakePythonCom.VT_ARRAY | FakePythonCom.VT_R8, values),
             self.session.app.math_utility.last_values,
         )
+        self.assertIsNotNone(self.session.model.component.transform_solve)
 
     def test_component_suppression_maps_to_native_enum_and_checks_status(self):
         self.adapter.set_component_load_state(
