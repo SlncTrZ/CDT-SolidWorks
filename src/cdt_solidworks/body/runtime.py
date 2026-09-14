@@ -16,7 +16,12 @@ if TYPE_CHECKING:
     )
     from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
     from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
-    from cdt_solidworks.weldment.models import CutListPropertySpec, StructuralMemberSpec, WeldmentState
+    from cdt_solidworks.weldment.models import (
+        CutListPropertySpec,
+        StructuralMemberSpec,
+        WeldmentState,
+        WeldmentTrimSpec,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +95,10 @@ class FabricationRuntime(Protocol):
 
     def set_cut_list_property(
         self, document: ResolvedDocument, spec: CutListPropertySpec
+    ) -> MutationReceipt: ...
+
+    def trim_weldment_member(
+        self, document: ResolvedDocument, spec: WeldmentTrimSpec
     ) -> MutationReceipt: ...
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...

@@ -7,6 +7,7 @@ from cdt_solidworks.weldment.models import (
     CutListPropertySpec,
     StructuralMemberSpec,
     WeldmentState,
+    WeldmentTrimSpec,
 )
 from cdt_solidworks.weldment.service import (
     WeldmentMutationError,
@@ -39,6 +40,10 @@ class FakeRuntime:
             (CutListItem("cut-1", "L40x40", 2, {"LENGTH": "500"}),),
         )
         return MutationReceipt("StructuralMember1")
+
+    def trim_weldment_member(self, document, spec):
+        self.calls.append("trim")
+        return MutationReceipt("Trim/Extend1", {"body": spec.body_to_trim_id})
 
     def set_cut_list_property(self, document, spec):
         self.calls.append("property")
@@ -125,6 +130,33 @@ def test_missing_cut_list_fails_acceptance() -> None:
     else:
         raise AssertionError("expected WeldmentMutationError")
     assert "persist" not in runtime.calls
+
+
+def test_weldment_trim_requires_existing_member_and_persistence() -> None:
+    runtime = FakeRuntime()
+    runtime.state = WeldmentState(
+        True,
+        1,
+        (CutListItem("cut-1", "L40x40", 2, {"LENGTH": "500"}),),
+    )
+    result = WeldmentService(runtime).trim_member(
+        target(), WeldmentTrimSpec("member-1", "member-2")
+    )
+    assert result.feature_id == "Trim/Extend1"
+    assert runtime.calls == ["resolve", "state", "trim", "rebuild", "state", "persist"]
+
+
+def test_weldment_trim_rejects_same_body_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        WeldmentService(runtime).trim_member(
+            target(), WeldmentTrimSpec("member-1", "member-1")
+        )
+    except WeldmentValidationError as exc:
+        assert "distinct" in str(exc)
+    else:
+        raise AssertionError("expected WeldmentValidationError")
+    assert runtime.calls == []
 
 
 def test_cut_list_property_requires_readback_and_persistence() -> None:

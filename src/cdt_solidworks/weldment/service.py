@@ -8,6 +8,7 @@ from cdt_solidworks.weldment.models import (
     StructuralMemberSpec,
     WeldmentMutationResult,
     WeldmentState,
+    WeldmentTrimSpec,
 )
 
 
@@ -58,6 +59,27 @@ class WeldmentService:
         self._require_persistence(document)
         return WeldmentMutationResult(receipt.feature_id, after)
 
+    def trim_member(
+        self, target: DocumentTarget, spec: WeldmentTrimSpec
+    ) -> WeldmentMutationResult:
+        self._validate_target(target)
+        self._validate_trim(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_weldment_state(document)
+        if not before.has_weldment or before.structural_member_count <= 0:
+            raise WeldmentContextError("weldment trim requires an existing structural member")
+        receipt = self._runtime.trim_weldment_member(document, spec)
+        if not receipt.feature_id.strip():
+            raise WeldmentMutationError("weldment trim returned an empty feature identity")
+        self._require_rebuild(document)
+        after = self._runtime.get_weldment_state(document)
+        if not after.has_weldment or after.structural_member_count <= 0:
+            raise WeldmentMutationError("weldment state disappeared after trim mutation")
+        if not after.cut_items or any(item.quantity <= 0 for item in after.cut_items):
+            raise WeldmentMutationError("weldment cut-list read-back is invalid after trim mutation")
+        self._require_persistence(document)
+        return WeldmentMutationResult(receipt.feature_id, after)
+
     def set_cut_list_property(
         self, target: DocumentTarget, spec: CutListPropertySpec
     ) -> WeldmentMutationResult:
@@ -89,6 +111,13 @@ class WeldmentService:
             raise WeldmentValidationError("document revision must be non-negative")
         if target.expected_units != "mm":
             raise WeldmentValidationError("weldment dimensions currently require millimeter units")
+
+    @staticmethod
+    def _validate_trim(spec: WeldmentTrimSpec) -> None:
+        if not spec.body_to_trim_id.strip() or not spec.boundary_body_id.strip():
+            raise WeldmentValidationError("weldment trim body identities must not be empty")
+        if spec.body_to_trim_id == spec.boundary_body_id:
+            raise WeldmentValidationError("weldment trim requires two distinct body identities")
 
     @staticmethod
     def _validate_cut_list_property(spec: CutListPropertySpec) -> None:

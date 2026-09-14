@@ -16,6 +16,9 @@ _SW_CONNECTED_SEGMENTS_SIMPLE_CUT = 1
 _SW_CUSTOM_INFO_TEXT = 30
 _SW_CUSTOM_PROPERTY_REPLACE_VALUE = 2
 _SW_CUSTOM_PROPERTY_OK = 0
+# SOLIDWORKS 2024 target type library / official trim example subset.
+_SW_WELDMENT_END_CONDITION_MITER = 1
+_SW_WELDMENT_TRIM_OPTIONS_BOUNDED = 1 | 2 | 4
 
 
 class WeldmentNativeAdapter(BodyNativeAdapter):
@@ -177,6 +180,115 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
         return self.session.execute(
             operation,
             stage="weldment_create_structural_member",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
+    def trim_extend(
+        self,
+        path: str | Path,
+        *,
+        body_to_trim_name: str,
+        boundary_body_name: str,
+        timeout: float | None = None,
+    ):
+        """Trim one explicit weldment body against one explicit body boundary using the accepted miter subset."""
+        try:
+            source = self._validate_part_path(path)
+            trim_name = str(body_to_trim_name).strip()
+            boundary_name = str(boundary_body_name).strip()
+            if not trim_name or not boundary_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "weldment_trim_extend",
+                    "Weldment trim body identities must not be empty.",
+                )
+            if trim_name == boundary_name:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "weldment_trim_extend",
+                    "Weldment trim requires two distinct body identities.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "weldment_trim_extend")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                solids = tuple(self.api.bodies(model, 0, False))
+                by_name = {self._body_name(body): body for body in solids}
+                missing = [name for name in (trim_name, boundary_name) if name not in by_name]
+                if missing:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "weldment_trim_extend",
+                        "Requested weldment body identity is not present in the part.",
+                        details={"missing_body": missing[0]},
+                    )
+                before_state = self._state(model, update_cut_list=False)
+                if not before_state["has_weldment"] or before_state["structural_member_count"] <= 0:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "weldment_trim_extend",
+                        "Weldment trim requires an existing structural-member environment.",
+                    )
+                manager = self.api._member(model, "FeatureManager")
+                feature = self.api._member(
+                    manager,
+                    "InsertWeldmentTrimFeature2",
+                    _SW_WELDMENT_END_CONDITION_MITER,
+                    _SW_WELDMENT_TRIM_OPTIONS_BOUNDED,
+                    0.0,
+                    self.api.dispatch_array((by_name[trim_name],)),
+                    self.api.dispatch_array((by_name[boundary_name],)),
+                )
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "weldment_trim_extend",
+                        "SOLIDWORKS did not create the Trim/Extend feature.",
+                    )
+                feature_name = self.api.feature_name(feature)
+                feature_type = self.api.feature_type(feature)
+                if not feature_name or feature_type != "WeldCornerFeat":
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "weldment_trim_extend",
+                        "Trim/Extend feature read-back does not match the accepted WeldCornerFeat contract.",
+                        details={"feature_name": feature_name, "feature_type": feature_type},
+                    )
+                self._require_clean_rebuild(model, "weldment_trim_extend")
+                after_state = self._state(model, update_cut_list=True)
+                if not after_state["has_weldment"] or after_state["structural_member_count"] <= 0:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "weldment_trim_extend",
+                        "Weldment state disappeared after Trim/Extend mutation.",
+                    )
+                if not after_state["cut_list_items"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "weldment_trim_extend",
+                        "Trim/Extend mutation did not preserve a readable cut list.",
+                    )
+                self._save(model, "weldment_trim_extend")
+                return {
+                    "path": source,
+                    "feature_name": feature_name,
+                    "feature_type": feature_type,
+                    "body_to_trim_name": trim_name,
+                    "boundary_body_name": boundary_name,
+                    "end_condition": _SW_WELDMENT_END_CONDITION_MITER,
+                    "options": _SW_WELDMENT_TRIM_OPTIONS_BOUNDED,
+                    **after_state,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="weldment_trim_extend",
             timeout=self._timeout(timeout),
             mutation=True,
         )

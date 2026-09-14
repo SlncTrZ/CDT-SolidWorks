@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.native.models import NativeCallState
-from cdt_solidworks.weldment.native import WeldmentNativeAdapter
+from cdt_solidworks.weldment.native import (
+    WeldmentNativeAdapter,
+    _SW_WELDMENT_END_CONDITION_MITER,
+    _SW_WELDMENT_TRIM_OPTIONS_BOUNDED,
+)
 
 
 class NeverExecuteSession:
@@ -139,6 +143,34 @@ def test_weldment_path_segments_exclude_construction_geometry(tmp_path) -> None:
 
     assert len(segments) == 2
     assert all(segment.ConstructionGeometry is False for segment in segments)
+
+
+def test_weldment_trim_rejects_same_body_before_dispatch(tmp_path) -> None:
+    part = tmp_path / "frame.sldprt"
+    part.write_bytes(b"fixture")
+    session = NeverExecuteSession()
+    adapter = WeldmentNativeAdapter(
+        session,
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        profile_roots=(),
+    )
+
+    result = adapter.trim_extend(
+        part,
+        body_to_trim_name="member-1",
+        boundary_body_name="member-1",
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
+def test_weldment_trim_contract_is_pinned_to_native_accepted_subset() -> None:
+    assert _SW_WELDMENT_END_CONDITION_MITER == 1
+    assert _SW_WELDMENT_TRIM_OPTIONS_BOUNDED == 7
 
 
 def test_cut_list_property_validation_fails_before_dispatch(tmp_path) -> None:

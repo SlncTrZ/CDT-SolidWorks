@@ -32,6 +32,12 @@ class CutListPropertySpec:
 
 
 @dataclass(frozen=True, slots=True)
+class WeldmentTrimSpec:
+    body_to_trim_id: str
+    boundary_body_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class WeldmentState:
     has_weldment: bool
     structural_member_count: int
