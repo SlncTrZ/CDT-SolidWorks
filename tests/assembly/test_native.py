@@ -26,6 +26,7 @@ class FakeComponent:
         self._fixed = False
         self.last_suppression = None
         self.last_select_data = None
+        self.selection_calls = []
         self.transform_solve = None
         self.parent = parent
 
@@ -48,6 +49,7 @@ class FakeComponent:
 
     def Select4(self, append, data, show_popup):
         self.last_select_data = data
+        self.selection_calls.append((bool(append), int(data.Mark), bool(show_popup)))
         return data is not None
 
     def SetTransformAndSolve2(self, transform):
@@ -57,7 +59,17 @@ class FakeComponent:
 
 
 class FakeSelectData:
-    pass
+    def __init__(self):
+        self.Mark = 0
+
+
+class FakeSelectableEntity:
+    def __init__(self):
+        self.selection_calls = []
+
+    def Select4(self, append, data):
+        self.selection_calls.append((bool(append), int(data.Mark)))
+        return True
 
 
 class FakePythonCom:
@@ -208,6 +220,10 @@ class FakePatternData:
         self.D1TotalInstances = 0
         self.D1ReverseDirection = False
         self.D2PatternSeedOnly = False
+        self.D2ReverseDirection = False
+        self.D2Spacing = 0.0
+        self.D2TotalInstances = 0
+        self.SynchronizeFlexibleComponents = True
 
 
 class FakePatternFeature:
@@ -374,9 +390,10 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         manager = FakeFeatureManager()
         self.session.model.FeatureManager = manager
         seed = self.session.model.component
+        direction = FakeSelectableEntity()
         self.adapter._assembly = lambda app, assembly_id: self.session.model
         self.adapter._component = lambda assembly, component_id: seed
-        self.adapter._resolve_selection_reference = lambda assembly, ref: "named-edge"
+        self.adapter._resolve_selection_reference = lambda assembly, ref: direction
         self.session.api.feature_name = lambda feature: feature.Name
         self.adapter._pattern_feature = lambda assembly, pattern_id: manager.feature
 
@@ -388,13 +405,17 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
             3,
         )
         self.assertEqual("LocalLPattern1", pattern_id)
-        self.assertEqual((seed,), manager.data.SeedComponentArray)
-        self.assertEqual("named-edge", manager.data.D1Axis)
-        self.assertEqual(0, manager.data.D1EndCondition)
+        self.assertEqual([(False, 2)], direction.selection_calls)
+        self.assertIn((True, 1, False), seed.selection_calls)
         self.assertEqual(0.025, manager.data.D1Spacing)
         self.assertEqual(3, manager.data.D1TotalInstances)
-        self.assertTrue(manager.data.D2PatternSeedOnly)
+        self.assertFalse(manager.data.D2PatternSeedOnly)
+        self.assertFalse(manager.data.D2ReverseDirection)
+        self.assertEqual(1, manager.data.D2TotalInstances)
+        self.assertFalse(manager.data.SynchronizeFlexibleComponents)
 
+        manager.data.SeedComponentArray = (seed,)
+        manager.data.D1Axis = direction
         snapshot = self.adapter.read_component_pattern(
             self.assembly_id, "LocalLPattern1"
         )

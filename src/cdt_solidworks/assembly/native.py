@@ -318,24 +318,36 @@ class AssemblyNativeAdapter:
             )
             direction = self._resolve_selection_reference(assembly, direction_ref)
             manager = self.api._member(assembly, "FeatureManager")
-            data = self.api._member(
-                manager,
-                "CreateDefinition",
-                _SW_FM_LOCAL_LINEAR_PATTERN,
-            )
-            if data is None:
-                raise _AssemblyNativeError("component_pattern_data_create_failed")
-            data.SeedComponentArray = self.api.dispatch_array(seeds)
-            data.D1Axis = direction
-            data.D1EndCondition = _SW_PATTERN_SPACING_AND_INSTANCES
-            data.D1Spacing = float(spacing_m)
-            data.D1TotalInstances = int(total_instances)
-            data.D1ReverseDirection = False
-            data.D2PatternSeedOnly = True
-            feature = self.api._member(manager, "CreateFeature", data)
-            if feature is None:
-                raise _AssemblyNativeError("component_pattern_create_failed")
-            return self.api.feature_name(feature)
+            self.api._member(assembly, "ClearSelection2", True)
+            try:
+                self._select_entity_with_mark(
+                    assembly, direction, append=False, mark=2
+                )
+                for seed in seeds:
+                    self._select_component_with_mark(
+                        assembly, seed, append=True, mark=1
+                    )
+                data = self.api._member(
+                    manager,
+                    "CreateDefinition",
+                    _SW_FM_LOCAL_LINEAR_PATTERN,
+                )
+                if data is None:
+                    raise _AssemblyNativeError("component_pattern_data_create_failed")
+                data.D1ReverseDirection = False
+                data.D1Spacing = float(spacing_m)
+                data.D1TotalInstances = int(total_instances)
+                data.D2PatternSeedOnly = False
+                data.D2ReverseDirection = False
+                data.D2Spacing = float(spacing_m)
+                data.D2TotalInstances = 1
+                data.SynchronizeFlexibleComponents = False
+                feature = self.api._member(manager, "CreateFeature", data)
+                if feature is None:
+                    raise _AssemblyNativeError("component_pattern_create_failed")
+                return self.api.feature_name(feature)
+            finally:
+                self.api._member(assembly, "ClearSelection2", True)
 
         return self._run("assembly_component_pattern_create", True, operation)
 
@@ -553,11 +565,24 @@ class AssemblyNativeAdapter:
 
     def _select_component(self, assembly: Any, component: Any) -> None:
         self.api._member(assembly, "ClearSelection2", True)
+        self._select_component_with_mark(assembly, component, append=False, mark=0)
+
+    def _select_component_with_mark(
+        self,
+        assembly: Any,
+        component: Any,
+        *,
+        append: bool,
+        mark: int,
+    ) -> None:
         try:
             selection_manager = self.api._member(assembly, "SelectionManager")
             select_data = self.api._member(selection_manager, "CreateSelectData")
+            select_data.Mark = int(mark)
             ok = bool(
-                self.api._member(component, "Select4", False, select_data, False)
+                self.api._member(
+                    component, "Select4", bool(append), select_data, False
+                )
             )
         except Exception as exc:
             raise _AssemblyNativeError(
@@ -566,6 +591,28 @@ class AssemblyNativeAdapter:
         if not ok:
             raise _AssemblyNativeError(
                 "component_selection_failed", self.api.component_name(component)
+            )
+
+    def _select_entity_with_mark(
+        self,
+        assembly: Any,
+        entity: Any,
+        *,
+        append: bool,
+        mark: int,
+    ) -> None:
+        try:
+            selection_manager = self.api._member(assembly, "SelectionManager")
+            select_data = self.api._member(selection_manager, "CreateSelectData")
+            select_data.Mark = int(mark)
+            ok = bool(self.api._member(entity, "Select4", bool(append), select_data))
+        except Exception as exc:
+            raise _AssemblyNativeError(
+                "pattern_direction_selection_failed", str(mark)
+            ) from exc
+        if not ok:
+            raise _AssemblyNativeError(
+                "pattern_direction_selection_failed", str(mark)
             )
 
     def _ensure_component_document(
