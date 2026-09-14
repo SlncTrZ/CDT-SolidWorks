@@ -394,6 +394,15 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.assertEqual(MateState.OVER_DEFINED, snapshot.state)
         self.assertEqual(5, snapshot.error_status)
 
+    def test_mate_warning_does_not_map_to_dangling(self):
+        feature = FakeDistanceMateFeature()
+        feature.definition = None
+        self.session.api.feature_name = lambda value: value.Name
+        self.session.api.feature_error = lambda value: (51, True)
+        snapshot = self.adapter._mate_snapshot(feature)
+        self.assertEqual(MateState.SOLVED, snapshot.state)
+        self.assertEqual((), snapshot.rebuild_errors)
+
     def test_linear_component_pattern_uses_native_feature_data_and_readback(self):
         manager = FakeFeatureManager()
         self.session.model.FeatureManager = manager

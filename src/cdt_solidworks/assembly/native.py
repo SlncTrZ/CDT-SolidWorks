@@ -812,7 +812,7 @@ class AssemblyNativeAdapter:
             state = MateState.SUPPRESSED
         elif error_status == 5:
             state = MateState.OVER_DEFINED
-        elif int(code) != 0:
+        elif int(code) != 0 and not warning:
             state = MateState.DANGLING
         elif error_status in (None, 1):
             state = MateState.SOLVED

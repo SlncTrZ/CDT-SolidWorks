@@ -999,7 +999,7 @@ def run_width_mate_evidence(
         MateRequest(
             kind=MateKind.WIDTH,
             selection_refs=refs,
-            constraint="centered",
+            constraint="free",
         ),
     )
     artifact = root / "width-mate.SLDASM"
