@@ -69,14 +69,52 @@ class FakeTable:
         return values[row][column]
 
 
+class FakeSection:
+    def __init__(self, label):
+        self.label = label
+
+    def GetLabel(self):
+        return self.label
+
+
+class FakeDetail:
+    def __init__(self, label):
+        self.label = label
+
+    def GetLabel(self):
+        return self.label
+
+
+class FakeSketchSegment:
+    def __init__(self, drawing, kind):
+        self.drawing = drawing
+        self.kind = kind
+
+    def Select4(self, append, data):
+        self.drawing.selected_segment = self
+        return True
+
+
+class FakeSketchManager:
+    def __init__(self, drawing):
+        self.drawing = drawing
+
+    def CreateLine(self, *args):
+        return FakeSketchSegment(self.drawing, "line")
+
+    def CreateCircle(self, *args):
+        return FakeSketchSegment(self.drawing, "circle")
+
+
 class FakeView:
-    def __init__(self, name, source, *, position=(0.15, 0.10), config="Default"):
+    def __init__(self, name, source, *, position=(0.15, 0.10), config="Default", specific=None):
         self.Name = name
         self.ReferencedDocument = FakeReferencedModel(source)
         self.ReferencedConfiguration = config
         self.Position = position
         self.ScaleDecimal = 1.0
         self._next = None
+        self._specific = specific
 
     def GetNextView(self):
         return self._next
@@ -86,6 +124,12 @@ class FakeView:
 
     def InsertBomTable5(self, *args):
         return FakeTable()
+
+    def GetSection(self):
+        return self._specific if isinstance(self._specific, FakeSection) else None
+
+    def GetDetail(self):
+        return self._specific if isinstance(self._specific, FakeDetail) else None
 
 
 class FakeExtension:
@@ -106,7 +150,9 @@ class FakeDrawing:
         self.sheet_names = ["Sheet1"]
         self.views = []
         self.selected_view = None
+        self.selected_segment = None
         self.Extension = FakeExtension(self)
+        self.SketchManager = FakeSketchManager(self)
 
     def GetType(self):
         return 3
@@ -144,6 +190,35 @@ class FakeDrawing:
             position=(x, y),
             config=self.selected_view.ReferencedConfiguration,
         )
+        self.views.append(view)
+        return view
+
+    def CreateSectionViewAt5(self, x, y, z, label, options, excluded, depth):
+        assert self.selected_view is not None
+        assert self.selected_segment is not None and self.selected_segment.kind == "line"
+        view = FakeView(
+            f"View{len(self.views) + 1}",
+            self.selected_view.ReferencedDocument.path,
+            position=(x, y),
+            config=self.selected_view.ReferencedConfiguration,
+            specific=FakeSection(label),
+        )
+        self.views.append(view)
+        return view
+
+    def CreateDetailViewAt4(
+        self, x, y, z, style, scale1, scale2, label, showtype,
+        full_outline, jagged_outline, no_outline, intensity,
+    ):
+        assert self.selected_view is not None
+        view = FakeView(
+            f"View{len(self.views) + 1}",
+            self.selected_view.ReferencedDocument.path,
+            position=(x, y),
+            config=self.selected_view.ReferencedConfiguration,
+            specific=FakeDetail(label),
+        )
+        view.ScaleDecimal = float(scale1) / float(scale2)
         self.views.append(view)
         return view
 
@@ -234,7 +309,18 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         )
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
 
+        section = self.service.create_section_view(
+            self.path, self.base.identity, (0.0, -0.04), (0.0, 0.04), 0.23, 0.10, "A"
+        )
+        detail = self.service.create_detail_view(
+            self.path, self.base.identity, (0.0, 0.0), 0.02, 0.27, 0.10, "B", 2.0
+        )
+
         self.assertEqual((0.25, 0.10), projected.position)
+        self.assertEqual("section", section.view_kind)
+        self.assertEqual((0.23, 0.10), section.position)
+        self.assertEqual("detail", detail.view_kind)
+        self.assertEqual(2.0, detail.scale_decimal)
         self.assertEqual("note", note.annotation_kind)
         self.assertEqual("display_dimension", annotations[0].annotation_kind)
         self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0])

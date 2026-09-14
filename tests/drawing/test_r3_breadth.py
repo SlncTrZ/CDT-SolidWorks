@@ -48,12 +48,38 @@ class BreadthAdapter:
         raise AssertionError("not used")
 
     def create_projected_view(self, drawing_id, parent_view_id, x, y):
-        view_id = "projected-1"
+        return self._derived_view("projected-1", "projected", parent_view_id, x, y)
+
+    def create_section_view(
+        self, drawing_id, parent_view_id, line_start, line_end, x, y, label
+    ):
+        return self._derived_view("section-1", "section", parent_view_id, x, y)
+
+    def create_detail_view(
+        self, drawing_id, parent_view_id, center, radius, x, y, label, scale
+    ):
+        view_id = self._derived_view("detail-1", "detail", parent_view_id, x, y)
+        current = self.views[view_id]
+        self.views[view_id] = ViewSnapshot(
+            identity=current.identity,
+            sheet_name=current.sheet_name,
+            view_kind=current.view_kind,
+            source_model_path=current.source_model_path,
+            source_configuration=current.source_configuration,
+            dangling=current.dangling,
+            position=current.position,
+            scale_decimal=scale,
+            display_style=current.display_style,
+            parent_view_id=current.parent_view_id,
+        )
+        return view_id
+
+    def _derived_view(self, view_id, kind, parent_view_id, x, y):
         parent = self.views[parent_view_id]
         self.views[view_id] = ViewSnapshot(
             identity=view_id,
             sheet_name=parent.sheet_name,
-            view_kind="projected",
+            view_kind=kind,
             source_model_path=parent.source_model_path,
             source_configuration=parent.source_configuration,
             dangling=False,
@@ -135,6 +161,35 @@ class DrawingR3BreadthTests(unittest.TestCase):
     def test_projected_view_rejects_non_finite_position_before_dispatch(self):
         with self.assertRaisesRegex(Exception, "invalid_view_position"):
             self.service.create_projected_view("drawing", "base", float("nan"), 0.1)
+
+    def test_section_view_preserves_parent_source_and_position(self):
+        result = self.service.create_section_view(
+            "drawing", "base", (0.0, -0.04), (0.0, 0.04), 0.24, 0.10, "A"
+        )
+        self.assertEqual("section", result.view_kind)
+        self.assertEqual("base", result.parent_view_id)
+        self.assertEqual((0.24, 0.10), result.position)
+
+    def test_section_view_rejects_degenerate_line_before_dispatch(self):
+        with self.assertRaisesRegex(Exception, "invalid_section_line"):
+            self.service.create_section_view(
+                "drawing", "base", (0.0, 0.0), (0.0, 0.0), 0.24, 0.10, "A"
+            )
+
+    def test_detail_view_preserves_parent_source_position_and_scale(self):
+        result = self.service.create_detail_view(
+            "drawing", "base", (0.0, 0.0), 0.02, 0.25, 0.10, "B", 2.0
+        )
+        self.assertEqual("detail", result.view_kind)
+        self.assertEqual("base", result.parent_view_id)
+        self.assertEqual((0.25, 0.10), result.position)
+        self.assertEqual(2.0, result.scale_decimal)
+
+    def test_detail_view_rejects_non_positive_radius_before_dispatch(self):
+        with self.assertRaisesRegex(Exception, "invalid_detail_radius"):
+            self.service.create_detail_view(
+                "drawing", "base", (0.0, 0.0), 0.0, 0.25, 0.10, "B", 2.0
+            )
 
     def test_note_requires_non_dangling_readback(self):
         result = self.service.add_note("drawing", "base", "CHECK TORQUE")

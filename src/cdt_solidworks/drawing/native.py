@@ -305,6 +305,174 @@ class SolidWorksDrawingAdapter:
             self._view_metadata[(drawing_path, view_id)] = entry
         return view_id
 
+    def create_section_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        line_start: tuple[float, float],
+        line_end: tuple[float, float],
+        x: float,
+        y: float,
+        label: str,
+    ) -> str:
+        drawing_path = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, parent_view_id),
+            self._view_metadata.get((drawing_path, parent_view_id)),
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        sheet_name, _, source_model_path, source_configuration, _ = metadata
+
+        def mutate(model: Any) -> str:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", parent_view_id)):
+                raise DrawingPostconditionError("view_activation_failed", parent_view_id)
+            sketch_manager = self._api._member(model, "SketchManager")
+            line = self._api._member(
+                sketch_manager,
+                "CreateLine",
+                float(line_start[0]),
+                float(line_start[1]),
+                0.0,
+                float(line_end[0]),
+                float(line_end[1]),
+                0.0,
+            )
+            if line is None:
+                raise DrawingPostconditionError("section_line_create_failed", parent_view_id)
+            if not bool(self._api._member(line, "Select4", False, self._api.null_dispatch())):
+                raise DrawingPostconditionError("section_line_selection_failed", parent_view_id)
+            view = self._api._member(
+                model,
+                "CreateSectionViewAt5",
+                float(x),
+                float(y),
+                0.0,
+                label,
+                0,
+                self._api.null_dispatch(),
+                0.0,
+            )
+            if view is None:
+                raise DrawingPostconditionError("section_view_create_failed", parent_view_id)
+            section = self._api._member(view, "GetSection")
+            if section is None:
+                raise DrawingPostconditionError("section_view_readback_missing", parent_view_id)
+            actual_label = str(self._api._member(section, "GetLabel") or "")
+            if actual_label and actual_label.casefold() != label.casefold():
+                raise DrawingPostconditionError("section_label_readback_mismatch", actual_label)
+            view_id = str(self._api._member(view, "Name") or "")
+            if not view_id:
+                raise DrawingPostconditionError("view_identity_missing")
+            self._persist(model, "section_view_create")
+            return view_id
+
+        view_id = self._with_drawing(
+            drawing_path,
+            stage="drawing_create_section_view",
+            reader=mutate,
+            mutation=True,
+        )
+        entry = (
+            sheet_name,
+            "section",
+            source_model_path,
+            source_configuration,
+            parent_view_id,
+        )
+        self._view_metadata[(drawing_id, view_id)] = entry
+        if drawing_path != drawing_id:
+            self._view_metadata[(drawing_path, view_id)] = entry
+        return view_id
+
+    def create_detail_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        center: tuple[float, float],
+        radius: float,
+        x: float,
+        y: float,
+        label: str,
+        scale: float,
+    ) -> str:
+        drawing_path = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, parent_view_id),
+            self._view_metadata.get((drawing_path, parent_view_id)),
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        sheet_name, _, source_model_path, source_configuration, _ = metadata
+
+        def mutate(model: Any) -> str:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", parent_view_id)):
+                raise DrawingPostconditionError("view_activation_failed", parent_view_id)
+            sketch_manager = self._api._member(model, "SketchManager")
+            circle = self._api._member(
+                sketch_manager,
+                "CreateCircle",
+                float(center[0]),
+                float(center[1]),
+                0.0,
+                float(center[0]) + float(radius),
+                float(center[1]),
+                0.0,
+            )
+            if circle is None:
+                raise DrawingPostconditionError("detail_circle_create_failed", parent_view_id)
+            view = self._api._member(
+                model,
+                "CreateDetailViewAt4",
+                float(x),
+                float(y),
+                0.0,
+                0,
+                float(scale),
+                1.0,
+                label,
+                1,
+                True,
+                False,
+                False,
+                5,
+            )
+            if view is None:
+                raise DrawingPostconditionError("detail_view_create_failed", parent_view_id)
+            detail = self._api._member(view, "GetDetail")
+            if detail is None:
+                raise DrawingPostconditionError("detail_view_readback_missing", parent_view_id)
+            actual_label = str(self._api._member(detail, "GetLabel") or "")
+            if actual_label and actual_label.casefold() != label.casefold():
+                raise DrawingPostconditionError("detail_label_readback_mismatch", actual_label)
+            view_id = str(self._api._member(view, "Name") or "")
+            if not view_id:
+                raise DrawingPostconditionError("view_identity_missing")
+            self._persist(model, "detail_view_create")
+            return view_id
+
+        view_id = self._with_drawing(
+            drawing_path,
+            stage="drawing_create_detail_view",
+            reader=mutate,
+            mutation=True,
+        )
+        entry = (
+            sheet_name,
+            "detail",
+            source_model_path,
+            source_configuration,
+            parent_view_id,
+        )
+        self._view_metadata[(drawing_id, view_id)] = entry
+        if drawing_path != drawing_id:
+            self._view_metadata[(drawing_path, view_id)] = entry
+        return view_id
+
     def read_view(self, drawing_id: str, view_id: str) -> ViewSnapshot | None:
         source = self._path_policy.validate_open(drawing_id)
         metadata = self._view_metadata.get((drawing_id, view_id), self._view_metadata.get((source, view_id)))

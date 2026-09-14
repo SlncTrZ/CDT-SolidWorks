@@ -104,6 +104,29 @@ class DrawingAdapter(Protocol):
         self, drawing_id: str, parent_view_id: str, x: float, y: float
     ) -> str: ...
 
+    def create_section_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        line_start: tuple[float, float],
+        line_end: tuple[float, float],
+        x: float,
+        y: float,
+        label: str,
+    ) -> str: ...
+
+    def create_detail_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        center: tuple[float, float],
+        radius: float,
+        x: float,
+        y: float,
+        label: str,
+        scale: float,
+    ) -> str: ...
+
     def read_view(self, drawing_id: str, view_id: str) -> ViewSnapshot | None: ...
 
     def add_note(self, drawing_id: str, view_id: str, text: str) -> str: ...
@@ -243,6 +266,100 @@ class DrawingService:
             raise DrawingPostconditionError("view_position_readback_mismatch", view_id)
         return view
 
+    def create_section_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        line_start: tuple[float, float],
+        line_end: tuple[float, float],
+        x: float,
+        y: float,
+        label: str,
+    ) -> ViewSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("parent_view_id", parent_view_id)
+        self._require_point("section_line_start", line_start)
+        self._require_point("section_line_end", line_end)
+        self._require_position(x, y)
+        self._require_view_label(label)
+        if all(abs(float(a) - float(b)) <= 1e-12 for a, b in zip(line_start, line_end)):
+            raise DrawingRefusal("invalid_section_line")
+        parent = self._adapter.read_view(drawing_id, parent_view_id)
+        if parent is None or parent.dangling:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        view_id = self._adapter.create_section_view(
+            drawing_id,
+            parent_view_id,
+            (float(line_start[0]), float(line_start[1])),
+            (float(line_end[0]), float(line_end[1])),
+            float(x),
+            float(y),
+            label.strip().upper(),
+        )
+        return self._require_derived_view(
+            drawing_id,
+            view_id,
+            parent,
+            parent_view_id,
+            "section",
+            (float(x), float(y)),
+        )
+
+    def create_detail_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        center: tuple[float, float],
+        radius: float,
+        x: float,
+        y: float,
+        label: str,
+        scale: float = 2.0,
+    ) -> ViewSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("parent_view_id", parent_view_id)
+        self._require_point("detail_center", center)
+        self._require_position(x, y)
+        self._require_view_label(label)
+        if (
+            isinstance(radius, bool)
+            or not isinstance(radius, (int, float))
+            or not isfinite(float(radius))
+            or float(radius) <= 0.0
+        ):
+            raise DrawingRefusal("invalid_detail_radius")
+        if (
+            isinstance(scale, bool)
+            or not isinstance(scale, (int, float))
+            or not isfinite(float(scale))
+            or float(scale) <= 0.0
+        ):
+            raise DrawingRefusal("invalid_detail_scale")
+        parent = self._adapter.read_view(drawing_id, parent_view_id)
+        if parent is None or parent.dangling:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        view_id = self._adapter.create_detail_view(
+            drawing_id,
+            parent_view_id,
+            (float(center[0]), float(center[1])),
+            float(radius),
+            float(x),
+            float(y),
+            label.strip().upper(),
+            float(scale),
+        )
+        view = self._require_derived_view(
+            drawing_id,
+            view_id,
+            parent,
+            parent_view_id,
+            "detail",
+            (float(x), float(y)),
+        )
+        if view.scale_decimal is None or abs(view.scale_decimal - float(scale)) > 1e-9:
+            raise DrawingPostconditionError("detail_view_scale_readback_mismatch", view_id)
+        return view
+
     def add_note(
         self, drawing_id: str, view_id: str, text: str
     ) -> AnnotationSnapshot:
@@ -351,6 +468,37 @@ class DrawingService:
             raise DrawingPostconditionError("bom_table_shape_mismatch", bom_id)
         return bom
 
+    def _require_derived_view(
+        self,
+        drawing_id: str,
+        view_id: str,
+        parent: ViewSnapshot,
+        parent_view_id: str,
+        kind: str,
+        position: tuple[float, float],
+    ) -> ViewSnapshot:
+        self._require_identity("view_id", view_id)
+        self._require_rebuild(drawing_id)
+        view = self._adapter.read_view(drawing_id, view_id)
+        if view is None:
+            raise DrawingPostconditionError("view_readback_missing", view_id)
+        if view.dangling:
+            raise DrawingPostconditionError("dangling_view", view_id)
+        if view.view_kind != kind or view.parent_view_id != parent_view_id:
+            raise DrawingPostconditionError(f"{kind}_view_identity_mismatch", view_id)
+        if (
+            view.sheet_name != parent.sheet_name
+            or view.source_model_path != parent.source_model_path
+            or view.source_configuration != parent.source_configuration
+        ):
+            raise DrawingPostconditionError(f"{kind}_view_source_mismatch", view_id)
+        if view.position is None or any(
+            abs(actual - expected) > 1e-9
+            for actual, expected in zip(view.position, position)
+        ):
+            raise DrawingPostconditionError("view_position_readback_mismatch", view_id)
+        return view
+
     def _require_valid_view(self, drawing_id: str, view_id: str, reason: str) -> ViewSnapshot:
         view = self._adapter.read_view(drawing_id, view_id)
         if view is None or view.dangling:
@@ -388,3 +536,20 @@ class DrawingService:
             for value in values
         ):
             raise DrawingRefusal("invalid_view_position")
+
+    @staticmethod
+    def _require_point(label: str, value: tuple[float, float]) -> None:
+        if not isinstance(value, (tuple, list)) or len(value) != 2:
+            raise DrawingRefusal(f"invalid_{label}")
+        if any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not isfinite(float(item))
+            for item in value
+        ):
+            raise DrawingRefusal(f"invalid_{label}")
+
+    @staticmethod
+    def _require_view_label(value: str) -> None:
+        if not isinstance(value, str) or len(value.strip()) != 1 or not value.strip().isalpha():
+            raise DrawingRefusal("invalid_view_label")
