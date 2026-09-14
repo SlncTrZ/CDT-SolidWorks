@@ -46,6 +46,7 @@ class MeasureSnapshot:
     distance_m: float | None
     angle_rad: float | None
     radius_m: float | None
+    diameter_m: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +75,7 @@ class EvaluationAdapter(Protocol):
     ) -> BoundingBox | None: ...
 
     def measure(
-        self, document_id: str, first_ref: str, second_ref: str
+        self, document_id: str, refs: tuple[str, ...]
     ) -> MeasureSnapshot | None: ...
 
     def interferences(
@@ -113,17 +114,33 @@ class EvaluationService:
         return result
 
     def measure(
-        self, document_id: str, first_ref: str, second_ref: str
+        self, document_id: str, first_ref: str, second_ref: str | None = None
+    ) -> MeasureSnapshot:
+        self._require_identity("first_ref", first_ref)
+        refs = (first_ref,) if second_ref is None else (first_ref, second_ref)
+        if second_ref is not None:
+            self._require_identity("second_ref", second_ref)
+        return self.measure_refs(document_id, refs)
+
+    def measure_refs(
+        self, document_id: str, refs: tuple[str, ...]
     ) -> MeasureSnapshot:
         self._require_identity("document_id", document_id)
-        self._require_identity("first_ref", first_ref)
-        self._require_identity("second_ref", second_ref)
-        result = self._adapter.measure(document_id, first_ref, second_ref)
+        if len(refs) not in (1, 2):
+            raise EvaluationRefusal("invalid_measurement_reference_count")
+        for index, reference in enumerate(refs):
+            self._require_identity(f"measurement_ref_{index}", reference)
+        result = self._adapter.measure(document_id, refs)
         if result is None:
             raise EvaluationPostconditionError("measurement_missing")
         values = tuple(
             value
-            for value in (result.distance_m, result.angle_rad, result.radius_m)
+            for value in (
+                result.distance_m,
+                result.angle_rad,
+                result.radius_m,
+                result.diameter_m,
+            )
             if value is not None
         )
         if not values or any(not math.isfinite(value) or value < 0 for value in values):

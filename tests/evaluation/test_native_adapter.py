@@ -22,9 +22,28 @@ class FakeMassProperty:
         return (0.1, 0.01, 0.02, 0.01, 0.2, 0.03, 0.02, 0.03, 0.3)
 
 
+class FakeMeasure:
+    def __init__(self):
+        self.Distance = 0.025
+        self.Angle = 1.5707963267948966
+        self.Radius = -1.0
+        self.Diameter = -1.0
+        self.last_entities = None
+
+    def Calculate(self):
+        self.last_entities = None
+        return True
+
+
 class FakeExtension:
+    def __init__(self):
+        self.measure = FakeMeasure()
+
     def CreateMassProperty2(self):
         return FakeMassProperty()
+
+    def CreateMeasure(self):
+        return self.measure
 
 
 class FakeBody:
@@ -44,12 +63,12 @@ class FakeFeature:
 
 
 class FakeModel:
-    Extension = FakeExtension()
-
     def __init__(self):
+        self.Extension = FakeExtension()
         self.title = "fixture.SLDPRT"
         self.path = r"C:\fixtures\fixture.SLDPRT"
         self.features = FakeFeature("Boss-Extrude1")
+        self.clear_selection_calls = 0
 
     def GetType(self):
         return 1
@@ -67,6 +86,55 @@ class FakeModel:
 
     def FirstFeature(self):
         return self.features
+
+    def ClearSelection2(self, clear_all):
+        self.clear_selection_calls += 1
+        return True
+
+
+class FakeComponent:
+    def __init__(self, name, *, suppressed=False):
+        self.Name2 = name
+        self.suppressed = suppressed
+
+
+class FakeInterference:
+    def __init__(self, first, second, volume):
+        self.Components = (first, second)
+        self.Volume = volume
+
+
+class FakeInterferenceManager:
+    def __init__(self, rows):
+        self.rows = tuple(rows)
+        self.done = False
+        self.TreatCoincidenceAsInterference = True
+        self.IgnoreHiddenBodies = False
+        self.TreatSubAssembliesAsComponents = True
+        self.UseTransform = False
+
+    def GetInterferences(self):
+        return self.rows
+
+    def Done(self):
+        self.done = True
+
+
+class FakeAssemblyModel(FakeModel):
+    def __init__(self, rows=()):
+        super().__init__()
+        self.path = r"C:\\fixtures\\fixture.SLDASM"
+        self.components = (
+            FakeComponent("Plate-1"),
+            FakeComponent("Bolt-1"),
+        )
+        self.InterferenceDetectionManager = FakeInterferenceManager(rows)
+
+    def GetType(self):
+        return 2
+
+    def GetComponents(self, top_level_only):
+        return self.components
 
 
 class FakeApp:
@@ -102,6 +170,22 @@ class FakeApi:
     def bodies(self, model, body_type, visible_only):
         value = model.GetBodies2(body_type, visible_only)
         return tuple(value or ())
+
+    def components(self, model, top_level_only):
+        value = model.GetComponents(top_level_only)
+        return tuple(value or ())
+
+    @staticmethod
+    def component_name(component):
+        return component.Name2
+
+    @staticmethod
+    def component_suppressed(component):
+        return component.suppressed
+
+    @staticmethod
+    def dispatch_array(values):
+        return tuple(values)
 
     def first_feature(self, model):
         return model.FirstFeature()
@@ -151,6 +235,71 @@ class SolidWorksEvaluationAdapterTests(unittest.TestCase):
         result = self.adapter.geometry_sanity(self.model.path, "Default")
         self.assertEqual(1, result.solid_body_count)
         self.assertEqual(1, result.feature_error_count)
+
+    def test_measure_uses_explicit_bounded_selection_and_clears_it(self):
+        selected = []
+        self.adapter._select_measure_reference = (
+            lambda model, reference, append: selected.append((reference, append))
+        )
+        result = self.adapter.measure(
+            self.model.path, ("plane:front", "plane:right")
+        )
+        self.assertAlmostEqual(0.025, result.distance_m)
+        self.assertAlmostEqual(1.5707963267948966, result.angle_rad)
+        self.assertIsNone(result.radius_m)
+        self.assertIsNone(result.diameter_m)
+        self.assertIsNone(self.model.Extension.measure.last_entities)
+        self.assertEqual(
+            [("plane:front", False), ("plane:right", True)], selected
+        )
+        self.assertEqual(2, self.model.clear_selection_calls)
+
+    def test_single_reference_measure_normalizes_radius_from_diameter(self):
+        self.adapter._select_measure_reference = lambda model, reference, append: None
+        self.model.Extension.measure.Distance = -1.0
+        self.model.Extension.measure.Angle = -1.0
+        self.model.Extension.measure.Radius = -1.0
+        self.model.Extension.measure.Diameter = 0.010
+        result = self.adapter.measure(
+            self.model.path, ("sketch:Sketch1:segment:0",)
+        )
+        self.assertAlmostEqual(0.005, result.radius_m)
+        self.assertAlmostEqual(0.010, result.diameter_m)
+
+    def test_single_reference_measure_normalizes_diameter_from_radius(self):
+        self.adapter._select_measure_reference = lambda model, reference, append: None
+        self.model.Extension.measure.Distance = -1.0
+        self.model.Extension.measure.Angle = -1.0
+        self.model.Extension.measure.Radius = 0.005
+        self.model.Extension.measure.Diameter = -1.0
+        result = self.adapter.measure(
+            self.model.path, ("sketch:Sketch1:segment:0",)
+        )
+        self.assertAlmostEqual(0.005, result.radius_m)
+        self.assertAlmostEqual(0.010, result.diameter_m)
+
+    def test_interference_manager_returns_component_pair_and_volume(self):
+        plate = FakeComponent("Plate-1")
+        bolt = FakeComponent("Bolt-1")
+        assembly = FakeAssemblyModel((FakeInterference(plate, bolt, 1e-7),))
+        api = FakeApi(assembly)
+        adapter = SolidWorksEvaluationAdapter(
+            FakeSession(api), path_policy=FakePathPolicy(), default_timeout=5.0
+        )
+        rows = adapter.interferences(assembly.path, "Default")
+        self.assertEqual(1, len(rows))
+        self.assertEqual(("Bolt-1", "Plate-1"), (rows[0].component_a, rows[0].component_b))
+        self.assertAlmostEqual(1e-7, rows[0].volume_m3)
+        self.assertTrue(assembly.InterferenceDetectionManager.done)
+
+    def test_no_interference_is_clean_empty_result(self):
+        assembly = FakeAssemblyModel(())
+        api = FakeApi(assembly)
+        adapter = SolidWorksEvaluationAdapter(
+            FakeSession(api), path_policy=FakePathPolicy(), default_timeout=5.0
+        )
+        self.assertEqual((), adapter.interferences(assembly.path, "Default"))
+        self.assertTrue(assembly.InterferenceDetectionManager.done)
 
     def test_configuration_mismatch_fails_closed(self):
         with self.assertRaisesRegex(EvaluationPostconditionError, "configuration_mismatch"):

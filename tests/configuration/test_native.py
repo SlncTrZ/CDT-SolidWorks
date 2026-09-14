@@ -1,5 +1,6 @@
 import unittest
 
+from cdt_solidworks.configuration.domain import MaterialSnapshot
 from cdt_solidworks.configuration.native import ConfigurationNativeAdapter
 from cdt_solidworks.native.models import NativeCallResult
 
@@ -21,26 +22,53 @@ class FakeDimension:
 
 
 class FakeConfiguration:
-    def __init__(self, name):
+    def __init__(self, name, *, parent=None):
         self.Name = name
+        self.parent = parent
+        self.display_states = ["Display State-1"]
+
+    def IsDerived(self):
+        return self.parent is not None
+
+    def GetParent(self):
+        return self.parent
+
+    def GetDisplayStates(self):
+        return tuple(self.display_states)
+
+    def CreateDisplayState(self, name):
+        self.display_states.append(name)
+        return True
+
+    def RenameDisplayState(self, old_name, new_name):
+        self.display_states[self.display_states.index(old_name)] = new_name
+        return True
+
+    def DeleteDisplayState(self, name):
+        self.display_states.remove(name)
+        return True
 
 
 class FakeConfigurationManager:
     def __init__(self, model):
         self.model = model
-        self.ActiveConfiguration = FakeConfiguration("Default")
+        self.ActiveConfiguration = model.configurations["Default"]
         self.add_calls = []
 
     def AddConfiguration2(self, name, comment, alternate_name, options, parent, description, rebuild):
         self.add_calls.append((name, parent, rebuild))
         self.model.config_names.append(name)
-        self.ActiveConfiguration = FakeConfiguration(name)
-        return FakeConfiguration(name)
+        parent_config = self.model.configurations.get(parent) if parent else None
+        created = FakeConfiguration(name, parent=parent_config)
+        self.model.configurations[name] = created
+        self.ActiveConfiguration = created
+        return created
 
 
 class FakeEquationManager:
     def __init__(self):
         self.items = ['"WIDTH" = 0.01']
+        self.set_calls = []
 
     def GetCount(self):
         return len(self.items)
@@ -66,6 +94,11 @@ class FakeEquationManager:
         self.items.pop(index)
         return True
 
+    def SetEquationAndConfigurationOption(self, index, expression, option, config_names):
+        self.items[index] = expression
+        self.set_calls.append((index, expression, option, config_names))
+        return index
+
     def EvaluateAll(self):
         return -1
 
@@ -73,14 +106,22 @@ class FakeEquationManager:
 class FakeModel:
     def __init__(self):
         self.config_names = ["Default", "Alternate"]
+        self.configurations = {
+            "Default": FakeConfiguration("Default"),
+            "Alternate": FakeConfiguration("Alternate"),
+        }
         self.ConfigurationManager = FakeConfigurationManager(self)
         self.dimension = FakeDimension()
         self.equations = FakeEquationManager()
+        self.materials = {
+            "Default": ("solidworks materials.sldmat", "Plain Carbon Steel"),
+            "Alternate": ("", ""),
+        }
         self.show_configuration_calls = []
 
     def ShowConfiguration2(self, name):
         self.show_configuration_calls.append(name)
-        self.ConfigurationManager.ActiveConfiguration = FakeConfiguration(name)
+        self.ConfigurationManager.ActiveConfiguration = self.configurations[name]
         return True
 
     def GetType(self):
@@ -88,6 +129,16 @@ class FakeModel:
 
     def GetConfigurationNames(self):
         return tuple(self.config_names)
+
+    def GetConfigurationByName(self, name):
+        return self.configurations.get(name)
+
+    def SetMaterialPropertyName2(self, configuration, database, material_name):
+        self.materials[configuration] = (database, material_name)
+
+    def GetMaterialPropertyName2(self, configuration):
+        material_database, material_name = self.materials[configuration]
+        return material_name, material_database
 
     def Parameter(self, name):
         return self.dimension if name == "D1@Sketch1" else None
@@ -177,9 +228,47 @@ class ConfigurationNativeAdapterTests(unittest.TestCase):
         self.assertEqual('"HEIGHT"', identity)
         self.assertEqual('"HEIGHT" = 0.02', self.session.model.equations.items[-1])
 
-    def test_equation_edit_uses_delete_and_insert_at_same_index(self):
+    def test_equation_edit_is_in_place_and_does_not_delete_first(self):
         self.adapter.set_equation(self.document_id, '"WIDTH"', '"WIDTH" = 0.02')
         self.assertEqual(['"WIDTH" = 0.02'], self.session.model.equations.items)
+        self.assertEqual(
+            [(0, '"WIDTH" = 0.02', 2, None)],
+            self.session.model.equations.set_calls,
+        )
+
+    def test_derived_configuration_parent_is_read_back(self):
+        self.adapter.create_configuration(self.document_id, "Machined", "Default")
+        self.assertEqual("Default", self.adapter.read_configuration_parent(self.document_id, "Machined"))
+
+    def test_material_assignment_and_readback_are_configuration_specific(self):
+        self.adapter.set_material(
+            self.document_id, "Alternate", "solidworks materials.sldmat", "Alloy Steel"
+        )
+        self.assertEqual(
+            MaterialSnapshot("solidworks materials.sldmat", "Alloy Steel"),
+            self.adapter.read_material(self.document_id, "Alternate"),
+        )
+        self.assertEqual(
+            MaterialSnapshot("solidworks materials.sldmat", "Plain Carbon Steel"),
+            self.adapter.read_material(self.document_id, "Default"),
+        )
+
+    def test_display_state_lifecycle_uses_configuration_object(self):
+        self.assertEqual(
+            ("Display State-1",),
+            self.adapter.list_display_states(self.document_id, "Default"),
+        )
+        self.adapter.create_display_state(self.document_id, "Default", "Inspection")
+        self.adapter.rename_display_state(
+            self.document_id, "Default", "Inspection", "Review"
+        )
+        self.assertIn(
+            "Review", self.adapter.list_display_states(self.document_id, "Default")
+        )
+        self.adapter.delete_display_state(self.document_id, "Default", "Review")
+        self.assertNotIn(
+            "Review", self.adapter.list_display_states(self.document_id, "Default")
+        )
 
     def test_activate_current_configuration_is_idempotent(self):
         self.adapter.activate_configuration(self.document_id, "Default")

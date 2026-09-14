@@ -37,6 +37,12 @@ class EquationSnapshot:
 
 
 @dataclass(frozen=True)
+class MaterialSnapshot:
+    database: str
+    name: str
+
+
+@dataclass(frozen=True)
 class ConfigurationSnapshot:
     name: str
     dimensions: tuple[tuple[str, float | None], ...]
@@ -50,6 +56,10 @@ class ConfigurationAdapter(Protocol):
     def create_configuration(
         self, document_id: str, name: str, parent: str | None
     ) -> None: ...
+
+    def read_configuration_parent(
+        self, document_id: str, name: str
+    ) -> str | None: ...
 
     def delete_configuration(self, document_id: str, name: str) -> None: ...
 
@@ -131,6 +141,38 @@ class ConfigurationAdapter(Protocol):
         referenced_configuration: str,
     ) -> None: ...
 
+    def read_material(
+        self, document_id: str, configuration: str
+    ) -> MaterialSnapshot | None: ...
+
+    def set_material(
+        self,
+        document_id: str,
+        configuration: str,
+        database: str,
+        material_name: str,
+    ) -> None: ...
+
+    def list_display_states(
+        self, document_id: str, configuration: str
+    ) -> tuple[str, ...]: ...
+
+    def create_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> None: ...
+
+    def rename_display_state(
+        self,
+        document_id: str,
+        configuration: str,
+        old_name: str,
+        new_name: str,
+    ) -> None: ...
+
+    def delete_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> None: ...
+
     def list_equations(self, document_id: str) -> tuple[EquationSnapshot, ...]: ...
 
     def add_equation(self, document_id: str, expression: str) -> str: ...
@@ -176,6 +218,13 @@ class ConfigurationService:
             raise ConfigurationPostconditionError(
                 "configuration_create_readback_missing", name
             )
+        if parent is not None:
+            actual_parent = self._adapter.read_configuration_parent(document_id, name)
+            if actual_parent != parent:
+                raise ConfigurationPostconditionError(
+                    "configuration_parent_readback_mismatch",
+                    f"expected={parent}, actual={actual_parent}",
+                )
 
     def delete(self, document_id: str, name: str) -> None:
         self._require_identity("document_id", document_id)
@@ -365,6 +414,100 @@ class ConfigurationService:
             )
         return actual
 
+    def set_material(
+        self,
+        document_id: str,
+        configuration: str,
+        database: str,
+        material_name: str,
+    ) -> MaterialSnapshot:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("material_database", database)
+        self._require_identity("material_name", material_name)
+        self._adapter.set_material(
+            document_id, configuration, database, material_name
+        )
+        self._require_rebuild(document_id)
+        actual = self._adapter.read_material(document_id, configuration)
+        if (
+            actual is None
+            or actual.name != material_name
+            or self._material_database_key(actual.database)
+            != self._material_database_key(database)
+        ):
+            raise ConfigurationPostconditionError(
+                "material_readback_mismatch",
+                f"expected_database={database!r}, expected_name={material_name!r}, actual={actual!r}",
+            )
+        return actual
+
+    def list_display_states(
+        self, document_id: str, configuration: str
+    ) -> tuple[str, ...]:
+        self._require_configuration_target(document_id, configuration)
+        states = tuple(self._adapter.list_display_states(document_id, configuration))
+        if any(not isinstance(name, str) or not name.strip() for name in states):
+            raise ConfigurationPostconditionError("invalid_display_state_identity")
+        if len(set(states)) != len(states):
+            raise ConfigurationPostconditionError("duplicate_display_state_identity")
+        return states
+
+    def create_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> str:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("display_state_name", name)
+        if name in self.list_display_states(document_id, configuration):
+            raise ConfigurationRefusal("display_state_exists", name)
+        self._adapter.create_display_state(document_id, configuration, name)
+        if name not in self.list_display_states(document_id, configuration):
+            raise ConfigurationPostconditionError(
+                "display_state_create_readback_missing", name
+            )
+        return name
+
+    def rename_display_state(
+        self,
+        document_id: str,
+        configuration: str,
+        old_name: str,
+        new_name: str,
+    ) -> str:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("display_state_name", old_name)
+        self._require_identity("display_state_name", new_name)
+        states = self.list_display_states(document_id, configuration)
+        if old_name not in states:
+            raise ConfigurationRefusal("missing_display_state", old_name)
+        if new_name in states:
+            raise ConfigurationRefusal("display_state_exists", new_name)
+        self._adapter.rename_display_state(
+            document_id, configuration, old_name, new_name
+        )
+        after = self.list_display_states(document_id, configuration)
+        if old_name in after or new_name not in after:
+            raise ConfigurationPostconditionError(
+                "display_state_rename_readback_mismatch",
+                f"old={old_name}, new={new_name}",
+            )
+        return new_name
+
+    def delete_display_state(
+        self, document_id: str, configuration: str, name: str
+    ) -> None:
+        self._require_configuration_target(document_id, configuration)
+        self._require_identity("display_state_name", name)
+        states = self.list_display_states(document_id, configuration)
+        if name not in states:
+            raise ConfigurationRefusal("missing_display_state", name)
+        if len(states) <= 1:
+            raise ConfigurationRefusal("cannot_delete_last_display_state")
+        self._adapter.delete_display_state(document_id, configuration, name)
+        if name in self.list_display_states(document_id, configuration):
+            raise ConfigurationPostconditionError(
+                "display_state_delete_readback_present", name
+            )
+
     def list_equations(self, document_id: str) -> tuple[EquationSnapshot, ...]:
         self._require_identity("document_id", document_id)
         equations = tuple(self._adapter.list_equations(document_id))
@@ -544,6 +687,13 @@ class ConfigurationService:
         if not identity:
             raise ConfigurationRefusal("invalid_equation_identity")
         return identity
+
+    @staticmethod
+    def _material_database_key(value: str) -> str:
+        normalized = str(value).strip().replace("\\", "/").rsplit("/", 1)[-1]
+        if normalized.casefold().endswith(".sldmat"):
+            normalized = normalized[:-7]
+        return " ".join(normalized.split()).casefold()
 
     @staticmethod
     def _require_identity(label: str, value: str) -> None:
