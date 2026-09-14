@@ -447,7 +447,18 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                             "No planar +Z sheet-metal face was intersected by the bounded selection ray.",
                         )
                     selection_manager = self.api._member(model, "SelectionManager")
-                    face = self.api._member(selection_manager, "GetSelectedObject6", 1, -1)
+                    selected_count = int(
+                        self.api._member(selection_manager, "GetSelectedObjectCount2", -1)
+                    )
+                    if selected_count <= 0:
+                        raise NativeRuntimeError(
+                            "cad_selection_failed",
+                            "sheet_metal_add_sketched_bend",
+                            "The bounded Sketched Bend selection list is unexpectedly empty.",
+                        )
+                    face = self.api._member(
+                        selection_manager, "GetSelectedObject6", selected_count, -1
+                    )
                     if face is None:
                         raise NativeRuntimeError(
                             "cad_selection_failed",
