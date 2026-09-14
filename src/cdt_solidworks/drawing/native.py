@@ -523,6 +523,95 @@ class SolidWorksDrawingAdapter:
                 self._annotation_metadata[(source, snapshot.identity)] = snapshot
         return tuple(snapshot.identity for snapshot in snapshots)
 
+    def add_position_gtol(
+        self,
+        drawing_id: str,
+        view_id: str,
+        tolerance_text: str,
+        datum_refs: tuple[str, ...],
+    ) -> str:
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_annotation_view", view_id)
+        sheet_name = metadata[0]
+        datums = tuple(datum_refs) + ("",) * (3 - len(datum_refs))
+
+        def mutate(model: Any) -> tuple[str, AnnotationSnapshot]:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            try:
+                self._api._member(model, "ClearSelection2", True)
+            except Exception:
+                pass
+            gtol = self._api._member(model, "InsertGtol")
+            if gtol is None:
+                raise DrawingPostconditionError("gtol_create_failed", view_id)
+            self._api._member(
+                gtol,
+                "SetFrameSymbols2",
+                1,
+                "<IGTOL-POSI>",
+                False,
+                "",
+                False,
+                "",
+                "",
+                "",
+                "",
+            )
+            values_ok = bool(
+                self._api._member(
+                    gtol,
+                    "SetFrameValues2",
+                    1,
+                    tolerance_text,
+                    "",
+                    datums[0],
+                    datums[1],
+                    datums[2],
+                )
+            )
+            if not values_ok:
+                raise DrawingPostconditionError("gtol_values_apply_failed", view_id)
+            frame_count = int(self._api._member(gtol, "GetFrameCount"))
+            if frame_count < 1:
+                raise DrawingPostconditionError("gtol_frame_readback_missing", view_id)
+            frame = self._api._member(gtol, "GetFrame", 0)
+            if frame is None:
+                raise DrawingPostconditionError("gtol_frame_readback_missing", view_id)
+            symbol_xml = str(self._api._member(frame, "GetSymbolXml") or "")
+            expected_tokens = ("POSI", tolerance_text, *datum_refs)
+            normalized_xml = symbol_xml.upper()
+            if any(token.upper() not in normalized_xml for token in expected_tokens):
+                raise DrawingPostconditionError(
+                    "gtol_semantic_readback_mismatch", symbol_xml
+                )
+            annotation = self._api._member(gtol, "GetAnnotation")
+            base = self._annotation_snapshot(annotation, view_id, "gtol")
+            semantic_text = "|".join(("POSITION", tolerance_text, *datum_refs))
+            snapshot = AnnotationSnapshot(
+                identity=base.identity,
+                view_id=view_id,
+                annotation_kind="gtol",
+                text=semantic_text,
+                dangling=base.dangling,
+            )
+            self._persist(model, "position_gtol_create")
+            return snapshot.identity, snapshot
+
+        annotation_id, snapshot = self._with_drawing(
+            source, stage="drawing_add_position_gtol", reader=mutate, mutation=True
+        )
+        self._annotation_metadata[(drawing_id, annotation_id)] = snapshot
+        if source != drawing_id:
+            self._annotation_metadata[(source, annotation_id)] = snapshot
+        return annotation_id
+
     def read_annotation(
         self, drawing_id: str, annotation_id: str
     ) -> AnnotationSnapshot | None:
