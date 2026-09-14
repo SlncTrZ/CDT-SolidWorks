@@ -26,6 +26,7 @@ from cdt_solidworks.assembly.native import AssemblyNativeAdapter
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.native import AttachPolicy, NativeCallState, SolidWorksSession
 from cdt_solidworks.native.cad_core import CadCoreService
+from cdt_solidworks.native.errors import NativeRuntimeError
 
 
 _STD_TANGENT_RAYS = (
@@ -141,8 +142,13 @@ _SLOT_RAYS = (
 )
 
 
-class EvidenceError(RuntimeError):
-    pass
+class EvidenceError(NativeRuntimeError):
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            "assembly_evidence_failed",
+            "assembly_evidence",
+            message,
+        )
 
 
 def _require(result: Any, stage: str) -> Any:
