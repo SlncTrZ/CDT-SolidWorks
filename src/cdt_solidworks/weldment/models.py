@@ -25,6 +25,13 @@ class CutListItem:
 
 
 @dataclass(frozen=True, slots=True)
+class CutListPropertySpec:
+    cut_list_id: str
+    property_name: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
 class WeldmentState:
     has_weldment: bool
     structural_member_count: int

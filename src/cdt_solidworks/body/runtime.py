@@ -15,8 +15,8 @@ if TYPE_CHECKING:
         MutationReceipt,
     )
     from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
-    from cdt_solidworks.surface.models import SurfaceKnitSpec, ThickenSpec
-    from cdt_solidworks.weldment.models import StructuralMemberSpec, WeldmentState
+    from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
+    from cdt_solidworks.weldment.models import CutListPropertySpec, StructuralMemberSpec, WeldmentState
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,8 @@ class FabricationRuntime(Protocol):
 
     def thicken_surface(self, document: ResolvedDocument, spec: ThickenSpec) -> MutationReceipt: ...
 
+    def offset_surface(self, document: ResolvedDocument, spec: OffsetSurfaceSpec) -> MutationReceipt: ...
+
     def create_base_flange(self, document: ResolvedDocument, spec: BaseFlangeSpec) -> MutationReceipt: ...
 
     def create_edge_flange(self, document: ResolvedDocument, spec: EdgeFlangeSpec) -> MutationReceipt: ...
@@ -85,6 +87,10 @@ class FabricationRuntime(Protocol):
     ) -> MutationReceipt: ...
 
     def get_weldment_state(self, document: ResolvedDocument) -> WeldmentState: ...
+
+    def set_cut_list_property(
+        self, document: ResolvedDocument, spec: CutListPropertySpec
+    ) -> MutationReceipt: ...
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...
 

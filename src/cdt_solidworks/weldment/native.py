@@ -13,6 +13,9 @@ _STRUCTURAL_MEMBER_FEATURE_TYPES = {"WeldMemberFeat"}
 _WELDMENT_ENV_FEATURE_TYPE = "WeldmentFeature"
 _CUT_LIST_TYPE = "CutListFolder"
 _SW_CONNECTED_SEGMENTS_SIMPLE_CUT = 1
+_SW_CUSTOM_INFO_TEXT = 30
+_SW_CUSTOM_PROPERTY_REPLACE_VALUE = 2
+_SW_CUSTOM_PROPERTY_OK = 0
 
 
 class WeldmentNativeAdapter(BodyNativeAdapter):
@@ -178,6 +181,94 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
             mutation=True,
         )
 
+    def set_cut_list_property(
+        self,
+        path: str | Path,
+        *,
+        cut_list_name: str,
+        property_name: str,
+        value: str,
+        timeout: float | None = None,
+    ):
+        try:
+            source = self._validate_part_path(path)
+            cut_name = str(cut_list_name).strip()
+            prop_name = str(property_name).strip()
+            prop_value = str(value).strip()
+            if not cut_name or not prop_name or not prop_value:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "weldment_set_cut_list_property",
+                    "Cut-list identity, property name, and value must not be empty.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "weldment_set_cut_list_property")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                feature = self._feature_by_name(model, cut_name)
+                if feature is None or self.api.feature_type(feature) != _CUT_LIST_TYPE:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "weldment_set_cut_list_property",
+                        "Requested cut-list feature identity is not present.",
+                    )
+                manager = self.api._member(feature, "CustomPropertyManager")
+                if manager is None:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "weldment_set_cut_list_property",
+                        "Cut-list feature has no custom-property manager.",
+                    )
+                before = self._custom_properties(manager)
+                if prop_name in before:
+                    status = int(self.api._member(manager, "Set2", prop_name, prop_value))
+                else:
+                    status = int(
+                        self.api._member(
+                            manager,
+                            "Add3",
+                            prop_name,
+                            _SW_CUSTOM_INFO_TEXT,
+                            prop_value,
+                            _SW_CUSTOM_PROPERTY_REPLACE_VALUE,
+                        )
+                    )
+                if status != _SW_CUSTOM_PROPERTY_OK:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "weldment_set_cut_list_property",
+                        "SOLIDWORKS rejected the cut-list property mutation.",
+                        details={"status": status},
+                    )
+                self._require_clean_rebuild(model, "weldment_set_cut_list_property")
+                after = self._custom_properties(manager)
+                if after.get(prop_name) != prop_value:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "weldment_set_cut_list_property",
+                        "Cut-list property read-back does not match the requested value.",
+                    )
+                self._save(model, "weldment_set_cut_list_property")
+                return {
+                    "path": source,
+                    "cut_list_name": cut_name,
+                    "property_name": prop_name,
+                    "value": prop_value,
+                    "properties": after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="weldment_set_cut_list_property",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
     def _weldment_path_segments(self, sketch: Any) -> tuple[Any, ...]:
         raw_segments = self.api._member(sketch, "GetSketchSegments")
         segments = self._as_tuple(raw_segments)
@@ -244,10 +335,12 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
                             pass
                     quantity = int(self.api._member(folder, "GetBodyCount"))
                     if quantity > 0:
+                        manager = self.api._member(feature, "CustomPropertyManager")
                         cut_items.append(
                             {
                                 "name": self.api.feature_name(feature),
                                 "quantity": quantity,
+                                "properties": self._custom_properties(manager),
                             }
                         )
             feature = self.api.next_feature(feature)
@@ -256,6 +349,19 @@ class WeldmentNativeAdapter(BodyNativeAdapter):
             "structural_member_count": structural_count,
             "cut_list_items": cut_items,
         }
+
+    def _custom_properties(self, manager: Any) -> dict[str, str]:
+        if manager is None:
+            return {}
+        names = self._as_tuple(self.api._member(manager, "GetNames"))
+        properties: dict[str, str] = {}
+        for raw_name in names:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            value = self.api._member(manager, "Get", name)
+            properties[name] = str(value or "")
+        return properties
 
     def _feature_by_name(self, model: Any, expected_name: str) -> Any | None:
         feature = self.api.first_feature(model)

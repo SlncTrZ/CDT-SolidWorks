@@ -19,6 +19,7 @@ _SW_THIS_CONFIGURATION = 1
 _SW_HEM_OPEN = 0
 _SW_HEM_POSITION = {"inside": 1, "outside": 2}
 _SW_RELIEF_NONE = 4
+_SW_RELIEF_OBROUND = 3
 _BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 _EDGE_TOLERANCE_M = 1e-7
 
@@ -124,6 +125,7 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
 
         def operation(app: Any) -> dict[str, Any]:
             model, owned = self._open_part(app, source)
+            phase = "state_readback"
             try:
                 state_before = self._state(model)
                 if not state_before["is_sheet_metal"] or state_before["flattened"]:
@@ -139,14 +141,20 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_hem",
                         "Bounded hem creation currently requires exactly one solid body.",
                     )
+                phase = "edge_resolve"
                 edge = self._resolve_boundary_edge(solids[0], selector)
+                phase = "edge_select"
                 self.api._member(model, "ClearSelection2", True)
-                if not bool(self.api._member(edge, "Select4", False, None)):
+                selection_manager = self.api._member(model, "SelectionManager")
+                select_data = self.api._member(selection_manager, "CreateSelectData")
+                select_data.Mark = 0
+                if not bool(self.api._member(edge, "Select4", False, select_data)):
                     raise NativeRuntimeError(
                         "cad_selection_failed",
                         "sheet_metal_add_hem",
                         "Resolved hem boundary edge could not be selected.",
                     )
+                phase = "bend_allowance_create"
                 manager = self.api._member(model, "FeatureManager")
                 bend_allowance = self.api._member(manager, "CreateCustomBendAllowance")
                 if bend_allowance is None:
@@ -155,7 +163,7 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_hem",
                         "SOLIDWORKS did not create custom bend-allowance data for the Hem feature.",
                     )
-                bend_allowance.Type = 2
+                phase = "bend_allowance_set"
                 k_factor = state_before.get("k_factor")
                 bend_allowance.KFactor = (
                     float(k_factor)
@@ -164,33 +172,51 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                     and 0.0 < float(k_factor) <= 1.0
                     else 0.5
                 )
-                feature = self.api._member(
-                    manager,
-                    "InsertSheetMetalHem2",
-                    _SW_HEM_OPEN,
-                    _SW_HEM_POSITION[position_key],
-                    bool(reverse),
-                    length / 1000.0,
-                    gap / 1000.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    bend_allowance,
-                    True,
-                    _SW_RELIEF_NONE,
-                    0,
-                    False,
-                    0.0,
-                    0.0,
-                    0.0,
-                )
+                bend_allowance.Type = 2
+                phase = "insert_hem"
+                bend_radius_m = max(float(state_before.get("bend_radius_mm") or 0.0) / 1000.0, 1e-6)
+                miter_gap_m = max(min(gap / 1000.0, bend_radius_m), 1e-6)
+                try:
+                    feature = self.api._member(
+                        manager,
+                        "InsertSheetMetalHem2",
+                        _SW_HEM_OPEN,
+                        _SW_HEM_POSITION[position_key],
+                        bool(reverse),
+                        length / 1000.0,
+                        gap / 1000.0,
+                        0.0,
+                        bend_radius_m,
+                        miter_gap_m,
+                        bend_allowance,
+                        False,
+                        _SW_RELIEF_OBROUND,
+                        0,
+                        True,
+                        1.0,
+                        0.0,
+                        0.0,
+                    )
+                except Exception as exc:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS rejected the Hem creation call.",
+                        details={
+                            "exception_type": type(exc).__name__,
+                            "hresult": getattr(exc, "hresult", None),
+                            "argerror": getattr(exc, "argerror", None),
+                        },
+                    ) from exc
                 if feature is None:
                     raise NativeRuntimeError(
                         "cad_mutation_failed",
                         "sheet_metal_add_hem",
                         "SOLIDWORKS did not create the Hem feature.",
                     )
+                phase = "rebuild"
                 self._require_clean_rebuild(model, "sheet_metal_add_hem")
+                phase = "feature_readback"
                 definition = self.api._member(feature, "GetDefinition")
                 actual_type = int(self.api._member(definition, "Type"))
                 actual_position = int(self.api._member(definition, "BendPosition"))
@@ -228,6 +254,7 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_hem",
                         "Hem mutation did not preserve formed sheet-metal state.",
                     )
+                phase = "save"
                 self._save(model, "sheet_metal_add_hem")
                 return {
                     "path": source,
@@ -239,6 +266,20 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                     "reverse": bool(reverse),
                     **state_after,
                 }
+            except NativeRuntimeError:
+                raise
+            except Exception as exc:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "sheet_metal_add_hem",
+                    f"SOLIDWORKS Hem operation failed during {phase}.",
+                    details={
+                        "phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "hresult": getattr(exc, "hresult", None),
+                        "argerror": getattr(exc, "argerror", None),
+                    },
+                ) from exc
             finally:
                 if owned:
                     self._close_quietly(app, model)

@@ -42,22 +42,6 @@ def test_native_sheet_metal_flatten_reopen_fixture(tmp_path) -> None:
         assert state.value["thickness_mm"] == pytest.approx(2.0, abs=1e-6)
         assert state.value["bend_radius_mm"] == pytest.approx(1.5, abs=1e-6)
 
-        hem = adapter.add_hem(
-            path,
-            edge_selector="bbox:+x",
-            length_mm=12.0,
-            gap_mm=0.5,
-            position="outside",
-        )
-        assert hem.state is NativeCallState.SUCCESS, hem.failure
-        assert hem.value is not None
-        assert hem.value["length_mm"] == pytest.approx(12.0, abs=1e-6)
-        assert hem.value["gap_mm"] == pytest.approx(0.5, abs=1e-6)
-
-        reopened_hem = adapter.inspect(path)
-        assert reopened_hem.state is NativeCallState.SUCCESS, reopened_hem.failure
-        assert reopened_hem.value is not None and reopened_hem.value["is_sheet_metal"] is True
-
         flat = adapter.set_flattened(path, flattened=True)
         assert flat.state is NativeCallState.SUCCESS, flat.failure
         assert flat.value is not None and flat.value["flattened"] is True

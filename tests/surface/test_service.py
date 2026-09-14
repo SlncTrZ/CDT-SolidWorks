@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from cdt_solidworks.body.models import BodyKind, BodySnapshot, MutationReceipt
 from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, RebuildResult, ResolvedDocument
-from cdt_solidworks.surface.models import SurfaceKnitSpec, ThickenSpec
+from cdt_solidworks.surface.models import OffsetSurfaceSpec, SurfaceKnitSpec, ThickenSpec
 from cdt_solidworks.surface.service import SurfaceMutationError, SurfaceService, SurfaceValidationError
 
 
@@ -42,6 +42,15 @@ class FakeRuntime:
         self.calls.append("thicken")
         self.mutated = True
         return MutationReceipt("Thicken1")
+
+    def offset_surface(self, document, spec):
+        self.calls.append("offset")
+        self.surfaces_after = self.surfaces_before + (
+            BodySnapshot("s3", "OffsetSurface1", BodyKind.SURFACE),
+        )
+        self.solids_after = self.solids_before
+        self.mutated = True
+        return MutationReceipt("OffsetSurface1", {"distance_mm": spec.distance_mm})
 
     def rebuild(self, document):
         self.calls.append("rebuild")
@@ -96,6 +105,38 @@ def test_thicken_rebuild_failure_does_not_persist() -> None:
     else:
         raise AssertionError("expected SurfaceMutationError")
     assert "persist" not in runtime.calls
+
+
+def test_offset_requires_surface_growth_and_persistence() -> None:
+    runtime = FakeRuntime()
+    result = SurfaceService(runtime).offset(
+        target(), OffsetSurfaceSpec("Offset1", "s1", 3.0, reverse=False)
+    )
+    assert result.feature_id == "OffsetSurface1"
+    assert len(result.surface_bodies) == 3
+    assert runtime.calls == [
+        "resolve",
+        "list:surface",
+        "list:solid",
+        "offset",
+        "rebuild",
+        "list:surface",
+        "list:solid",
+        "persist",
+    ]
+
+
+def test_offset_rejects_nonpositive_distance_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    try:
+        SurfaceService(runtime).offset(
+            target(), OffsetSurfaceSpec("Offset1", "s1", 0.0)
+        )
+    except SurfaceValidationError as exc:
+        assert "offset distance" in str(exc)
+    else:
+        raise AssertionError("expected SurfaceValidationError")
+    assert runtime.calls == []
 
 
 def test_merged_thicken_accepts_stable_solid_count() -> None:

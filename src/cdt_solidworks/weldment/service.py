@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cdt_solidworks.body.runtime import DocumentTarget, FabricationRuntime, ResolvedDocument
 from cdt_solidworks.weldment.models import (
+    CutListPropertySpec,
     StructuralMemberSpec,
     WeldmentMutationResult,
     WeldmentState,
@@ -57,6 +58,29 @@ class WeldmentService:
         self._require_persistence(document)
         return WeldmentMutationResult(receipt.feature_id, after)
 
+    def set_cut_list_property(
+        self, target: DocumentTarget, spec: CutListPropertySpec
+    ) -> WeldmentMutationResult:
+        self._validate_target(target)
+        self._validate_cut_list_property(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_weldment_state(document)
+        item = next((item for item in before.cut_items if item.item_id == spec.cut_list_id), None)
+        if item is None:
+            raise WeldmentValidationError("cut-list identity was not found in the current weldment state")
+        receipt = self._runtime.set_cut_list_property(document, spec)
+        if not receipt.feature_id.strip():
+            raise WeldmentMutationError("cut-list property mutation returned an empty feature identity")
+        self._require_rebuild(document)
+        after = self._runtime.get_weldment_state(document)
+        updated = next((item for item in after.cut_items if item.item_id == spec.cut_list_id), None)
+        if updated is None:
+            raise WeldmentMutationError("cut-list item disappeared after property mutation")
+        if updated.properties.get(spec.property_name) != spec.value:
+            raise WeldmentMutationError("cut-list property read-back does not match requested value")
+        self._require_persistence(document)
+        return WeldmentMutationResult(receipt.feature_id, after)
+
     @staticmethod
     def _validate_target(target: DocumentTarget) -> None:
         if not target.document_id.strip():
@@ -65,6 +89,15 @@ class WeldmentService:
             raise WeldmentValidationError("document revision must be non-negative")
         if target.expected_units != "mm":
             raise WeldmentValidationError("weldment dimensions currently require millimeter units")
+
+    @staticmethod
+    def _validate_cut_list_property(spec: CutListPropertySpec) -> None:
+        if not spec.cut_list_id.strip():
+            raise WeldmentValidationError("cut-list identity must not be empty")
+        if not spec.property_name.strip():
+            raise WeldmentValidationError("cut-list property name must not be empty")
+        if not spec.value.strip():
+            raise WeldmentValidationError("cut-list property value must not be empty")
 
     @staticmethod
     def _validate_structural_member(spec: StructuralMemberSpec) -> None:
