@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from cdt_solidworks.body.models import MutationReceipt
 from cdt_solidworks.body.runtime import DocumentTarget, PersistenceResult, RebuildResult, ResolvedDocument
-from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, SheetMetalState
+from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
 from cdt_solidworks.sheetmetal.service import (
     SheetMetalContextError,
     SheetMetalMutationError,
@@ -31,6 +31,10 @@ class FakeRuntime:
     def create_edge_flange(self, document, spec):
         self.calls.append("edge")
         return MutationReceipt("EdgeFlange1")
+
+    def create_hem(self, document, spec):
+        self.calls.append("hem")
+        return MutationReceipt("Hem1", {"length_mm": spec.length_mm})
 
     def set_flattened(self, document, flattened):
         self.calls.append("flatten")
@@ -88,6 +92,30 @@ def test_edge_flange_requires_existing_sheet_metal_state() -> None:
     else:
         raise AssertionError("expected SheetMetalContextError")
     assert "edge" not in runtime.calls
+
+
+def test_hem_requires_sheet_metal_and_persists() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, "Flat-Pattern1")
+    result = SheetMetalService(runtime).add_hem(
+        target(), HemSpec("Hem1", "bbox:+x", 12.0, 0.5)
+    )
+    assert result.feature_id == "Hem1"
+    assert runtime.calls == ["resolve", "state", "hem", "rebuild", "state", "persist"]
+
+
+def test_hem_rejects_unbounded_edge_identity_before_dispatch() -> None:
+    runtime = FakeRuntime()
+    runtime.state = SheetMetalState(True, 2.0, 1.0, 0.5, False, None)
+    try:
+        SheetMetalService(runtime).add_hem(
+            target(), HemSpec("Hem1", "Edge<123>", 12.0, 0.5)
+        )
+    except SheetMetalValidationError as exc:
+        assert "edge selector" in str(exc)
+    else:
+        raise AssertionError("expected SheetMetalValidationError")
+    assert runtime.calls == []
 
 
 def test_flatten_requires_flat_pattern_identity() -> None:

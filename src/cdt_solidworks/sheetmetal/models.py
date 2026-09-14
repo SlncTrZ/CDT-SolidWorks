@@ -24,6 +24,16 @@ class EdgeFlangeSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class HemSpec:
+    name: str
+    edge_id: str
+    length_mm: float
+    gap_mm: float
+    position: str = "outside"
+    reverse: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SheetMetalState:
     is_sheet_metal: bool
     thickness_mm: float | None

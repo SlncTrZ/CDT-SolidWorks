@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from cdt_solidworks.document.path_policy import DocumentPathPolicy
+from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.sheetmetal.native import SheetMetalNativeAdapter
 
 
@@ -13,6 +15,11 @@ class FakeApi:
 class FakeSession:
     def __init__(self) -> None:
         self.api = FakeApi()
+        self.calls = 0
+
+    def execute(self, *args, **kwargs):
+        self.calls += 1
+        raise AssertionError("validation failure must not dispatch to session")
 
 
 class Feature:
@@ -41,3 +48,65 @@ def test_edge_flange_is_not_claimed_without_persistent_edge_identity() -> None:
     reason = SheetMetalNativeAdapter.unsupported_edge_flange_reason()
     assert "persistent edge-identity" in reason
     assert "not deterministic" in reason
+
+
+def test_hem_rejects_raw_edge_identity_before_dispatch(tmp_path) -> None:
+    source = tmp_path / "part.sldprt"
+    source.write_bytes(b"fixture")
+    session = FakeSession()
+    adapter = SheetMetalNativeAdapter(session, path_policy=DocumentPathPolicy((tmp_path,)))
+
+    result = adapter.add_hem(
+        source,
+        edge_selector="Edge<123>",
+        length_mm=12.0,
+        gap_mm=0.5,
+    )
+
+    assert result.state is NativeCallState.FAILURE
+    assert result.dispatched is False
+    assert result.failure is not None
+    assert result.failure.code == "cad_validation_error"
+    assert session.calls == 0
+
+
+class Vertex:
+    def __init__(self, point):
+        self._point = point
+
+    def GetPoint(self):
+        return self._point
+
+
+class Edge:
+    def __init__(self, start, end):
+        self._start = Vertex(start)
+        self._end = Vertex(end)
+
+    def GetStartVertex(self):
+        return self._start
+
+    def GetEndVertex(self):
+        return self._end
+
+
+class Body:
+    def __init__(self, edges):
+        self._edges = edges
+
+    def GetEdges(self):
+        return self._edges
+
+
+def test_boundary_edge_selector_resolves_top_bbox_edge_deterministically() -> None:
+    edges = (
+        Edge((0.0, 0.0, 0.002), (0.1, 0.0, 0.002)),
+        Edge((0.1, 0.0, 0.002), (0.1, 0.06, 0.002)),
+        Edge((0.1, 0.06, 0.002), (0.0, 0.06, 0.002)),
+        Edge((0.0, 0.06, 0.002), (0.0, 0.0, 0.002)),
+        Edge((0.0, 0.0, 0.0), (0.1, 0.0, 0.0)),
+    )
+    adapter = SheetMetalNativeAdapter(FakeSession(), path_policy=None)
+
+    assert adapter._resolve_boundary_edge(Body(edges), "bbox:+x") is edges[1]
+    assert adapter._resolve_boundary_edge(Body(edges), "bbox:-y") is edges[0]

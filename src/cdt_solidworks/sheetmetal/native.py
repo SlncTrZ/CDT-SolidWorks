@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import uuid
 from typing import Any
@@ -15,6 +16,11 @@ from cdt_solidworks.body.native import BodyNativeAdapter
 _SW_SUPPRESS_FEATURE = 0
 _SW_UNSUPPRESS_FEATURE = 1
 _SW_THIS_CONFIGURATION = 1
+_SW_HEM_OPEN = 0
+_SW_HEM_POSITION = {"inside": 1, "outside": 2}
+_SW_RELIEF_NONE = 4
+_BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
+_EDGE_TOLERANCE_M = 1e-7
 
 
 class SheetMetalNativeAdapter(BodyNativeAdapter):
@@ -69,6 +75,163 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             operation,
             stage="sheet_metal_inspect",
             timeout=self._timeout(timeout),
+        )
+
+    def add_hem(
+        self,
+        path: str | Path,
+        *,
+        edge_selector: str,
+        length_mm: float,
+        gap_mm: float,
+        position: str = "outside",
+        reverse: bool = False,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create an open hem on one bounded top-boundary selector."""
+        try:
+            source = self._validate_part_path(path)
+            selector = str(edge_selector).strip()
+            length = float(length_mm)
+            gap = float(gap_mm)
+            position_key = str(position).strip().lower()
+            if selector not in _BOUNDARY_EDGE_SELECTORS:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem edge selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y.",
+                )
+            if not math.isfinite(length) or length <= 0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem length must be positive and finite.",
+                )
+            if not math.isfinite(gap) or gap <= 0:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem gap must be positive and finite.",
+                )
+            if position_key not in _SW_HEM_POSITION:
+                raise NativeRuntimeError(
+                    "cad_validation_error",
+                    "sheet_metal_add_hem",
+                    "Hem position must be 'inside' or 'outside'.",
+                )
+        except Exception as exc:
+            return self._local_failure(exc, "sheet_metal_add_hem")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model, owned = self._open_part(app, source)
+            try:
+                state_before = self._state(model)
+                if not state_before["is_sheet_metal"] or state_before["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem requires one formed Base Flange sheet-metal body.",
+                    )
+                solids = tuple(self.api.bodies(model, 0, False))
+                if len(solids) != 1:
+                    raise NativeRuntimeError(
+                        "cad_precondition_failed",
+                        "sheet_metal_add_hem",
+                        "Bounded hem creation currently requires exactly one solid body.",
+                    )
+                edge = self._resolve_boundary_edge(solids[0], selector)
+                self.api._member(model, "ClearSelection2", True)
+                if not bool(self.api._member(edge, "Select4", False, None)):
+                    raise NativeRuntimeError(
+                        "cad_selection_failed",
+                        "sheet_metal_add_hem",
+                        "Resolved hem boundary edge could not be selected.",
+                    )
+                manager = self.api._member(model, "FeatureManager")
+                feature = self.api._member(
+                    manager,
+                    "InsertSheetMetalHem2",
+                    _SW_HEM_OPEN,
+                    _SW_HEM_POSITION[position_key],
+                    bool(reverse),
+                    length / 1000.0,
+                    gap / 1000.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    self.api.null_dispatch(),
+                    True,
+                    _SW_RELIEF_NONE,
+                    0,
+                    False,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+                if feature is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_hem",
+                        "SOLIDWORKS did not create the Hem feature.",
+                    )
+                self._require_clean_rebuild(model, "sheet_metal_add_hem")
+                definition = self.api._member(feature, "GetDefinition")
+                actual_type = int(self.api._member(definition, "Type"))
+                actual_position = int(self.api._member(definition, "BendPosition"))
+                actual_length_mm = float(self.api._member(definition, "Length")) * 1000.0
+                actual_gap_mm = float(self.api._member(definition, "GapDistance")) * 1000.0
+                edge_count = int(self.api._member(definition, "GetEdgesCount"))
+                if actual_type != _SW_HEM_OPEN or actual_position != _SW_HEM_POSITION[position_key]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem type/position read-back does not match the request.",
+                    )
+                if edge_count != 1:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem edge-count read-back is not exactly one.",
+                    )
+                if not math.isclose(actual_length_mm, length, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem length read-back does not match the request.",
+                    )
+                if not math.isclose(actual_gap_mm, gap, rel_tol=0.0, abs_tol=1e-6):
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem gap read-back does not match the request.",
+                    )
+                state_after = self._state(model)
+                if not state_after["is_sheet_metal"] or state_after["flattened"]:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_hem",
+                        "Hem mutation did not preserve formed sheet-metal state.",
+                    )
+                self._save(model, "sheet_metal_add_hem")
+                return {
+                    "path": source,
+                    "feature_name": self.api.feature_name(feature),
+                    "edge_selector": selector,
+                    "length_mm": actual_length_mm,
+                    "gap_mm": actual_gap_mm,
+                    "position": position_key,
+                    "reverse": bool(reverse),
+                    **state_after,
+                }
+            finally:
+                if owned:
+                    self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="sheet_metal_add_hem",
+            timeout=self._timeout(timeout),
+            mutation=True,
         )
 
     def set_flattened(
@@ -172,6 +335,71 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
             return value
         except Exception:
             return None
+
+    def _resolve_boundary_edge(self, body: Any, selector: str) -> Any:
+        edges = self._as_tuple(self.api._member(body, "GetEdges"))
+        rows: list[tuple[Any, tuple[float, float, float], tuple[float, float, float]]] = []
+        points: list[tuple[float, float, float]] = []
+        for edge in edges:
+            start_vertex = self.api._member(edge, "GetStartVertex")
+            end_vertex = self.api._member(edge, "GetEndVertex")
+            if start_vertex is None or end_vertex is None:
+                continue
+            start = self._point3(self.api._member(start_vertex, "GetPoint"))
+            end = self._point3(self.api._member(end_vertex, "GetPoint"))
+            rows.append((edge, start, end))
+            points.extend((start, end))
+        if not rows or not points:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Sheet-metal body exposes no bounded linear boundary edges.",
+            )
+        extrema = {
+            "+x": max(point[0] for point in points),
+            "-x": min(point[0] for point in points),
+            "+y": max(point[1] for point in points),
+            "-y": min(point[1] for point in points),
+        }
+        top_z = max(point[2] for point in points)
+        key = selector.removeprefix("bbox:")
+        axis = 0 if key.endswith("x") else 1
+        target = extrema[key]
+        matches = [
+            edge
+            for edge, start, end in rows
+            if abs(start[2] - top_z) <= _EDGE_TOLERANCE_M
+            and abs(end[2] - top_z) <= _EDGE_TOLERANCE_M
+            and abs(start[axis] - target) <= _EDGE_TOLERANCE_M
+            and abs(end[axis] - target) <= _EDGE_TOLERANCE_M
+        ]
+        if len(matches) != 1:
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Boundary selector did not resolve to exactly one top perimeter edge.",
+                details={"selector": selector, "matches": len(matches)},
+            )
+        return matches[0]
+
+    @staticmethod
+    def _point3(value: Any) -> tuple[float, float, float]:
+        raw = tuple(float(item) for item in (value or ()))
+        if len(raw) != 3 or any(not math.isfinite(item) for item in raw):
+            raise NativeRuntimeError(
+                "cad_precondition_failed",
+                "sheet_metal_edge_resolve",
+                "Boundary edge vertex did not return a finite XYZ point.",
+            )
+        return raw  # type: ignore[return-value]
+
+    @staticmethod
+    def _as_tuple(value: Any) -> tuple[Any, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (tuple, list)):
+            return tuple(value)
+        return (value,)
 
     def _feature_of_type(self, model: Any, type_name: str) -> Any | None:
         feature = self.api.first_feature(model)

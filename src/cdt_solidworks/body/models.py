@@ -35,6 +35,22 @@ class CombineSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class MoveCopyBodySpec:
+    name: str
+    body_ids: tuple[str, ...]
+    translation_mm: tuple[float, float, float]
+    copy: bool = False
+    copies: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteKeepBodiesSpec:
+    name: str
+    body_ids: tuple[str, ...]
+    keep: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class MutationReceipt:
     feature_id: str
     parameters: Mapping[str, float | str | bool] = field(default_factory=dict)

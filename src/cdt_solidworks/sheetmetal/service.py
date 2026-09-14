@@ -8,11 +8,13 @@ from cdt_solidworks.body.runtime import DocumentTarget, FabricationRuntime, Reso
 from cdt_solidworks.sheetmetal.models import (
     BaseFlangeSpec,
     EdgeFlangeSpec,
+    HemSpec,
     SheetMetalMutationResult,
     SheetMetalState,
 )
 
 _TOLERANCE_MM = 1e-6
+_BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 
 
 class SheetMetalError(RuntimeError):
@@ -84,6 +86,30 @@ class SheetMetalService:
         self._require_persistence(document)
         return SheetMetalMutationResult(receipt.feature_id, after)
 
+    def add_hem(self, target: DocumentTarget, spec: HemSpec) -> SheetMetalMutationResult:
+        self._validate_target(target)
+        self._validate_hem(spec)
+        document = self._resolve_part(target)
+        before = self._runtime.get_sheet_metal_state(document)
+        if not before.is_sheet_metal:
+            raise SheetMetalContextError("hem requires an existing sheet-metal body")
+        if before.flattened:
+            raise SheetMetalContextError("hem requires the formed sheet-metal state")
+        receipt = self._runtime.create_hem(document, spec)
+        if not receipt.feature_id.strip():
+            raise SheetMetalMutationError("hem returned an empty feature identity")
+        readback_length = receipt.parameters.get("length_mm")
+        if readback_length is not None:
+            self._require_close(float(readback_length), spec.length_mm, "hem length")
+        self._require_rebuild(document)
+        after = self._runtime.get_sheet_metal_state(document)
+        if not after.is_sheet_metal or after.flattened:
+            raise SheetMetalMutationError("hem read-back lost formed sheet-metal state")
+        if before.thickness_mm is not None:
+            self._require_close(after.thickness_mm, before.thickness_mm, "thickness")
+        self._require_persistence(document)
+        return SheetMetalMutationResult(receipt.feature_id, after)
+
     def set_flattened(
         self, target: DocumentTarget, flattened: bool
     ) -> SheetMetalMutationResult:
@@ -131,6 +157,19 @@ class SheetMetalService:
             raise SheetMetalValidationError("edge flange angle must be finite and in the range (0, 180)")
         if spec.bend_radius_mm is not None:
             SheetMetalService._positive(spec.bend_radius_mm, "edge flange bend radius")
+
+    @staticmethod
+    def _validate_hem(spec: HemSpec) -> None:
+        if not spec.name.strip():
+            raise SheetMetalValidationError("hem name must not be empty")
+        if spec.edge_id not in _BOUNDARY_EDGE_SELECTORS:
+            raise SheetMetalValidationError(
+                "hem edge selector must be one of bbox:+x, bbox:-x, bbox:+y, bbox:-y"
+            )
+        SheetMetalService._positive(spec.length_mm, "hem length")
+        SheetMetalService._positive(spec.gap_mm, "hem gap")
+        if spec.position not in {"inside", "outside"}:
+            raise SheetMetalValidationError("hem position must be 'inside' or 'outside'")
 
     @staticmethod
     def _positive(value: float, label: str) -> None:

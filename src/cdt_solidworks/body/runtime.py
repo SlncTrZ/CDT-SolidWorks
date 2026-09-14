@@ -6,8 +6,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from cdt_solidworks.body.models import BodyKind, BodySnapshot, CombineSpec, MutationReceipt
-    from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, SheetMetalState
+    from cdt_solidworks.body.models import (
+        BodyKind,
+        BodySnapshot,
+        CombineSpec,
+        DeleteKeepBodiesSpec,
+        MoveCopyBodySpec,
+        MutationReceipt,
+    )
+    from cdt_solidworks.sheetmetal.models import BaseFlangeSpec, EdgeFlangeSpec, HemSpec, SheetMetalState
     from cdt_solidworks.surface.models import SurfaceKnitSpec, ThickenSpec
     from cdt_solidworks.weldment.models import StructuralMemberSpec, WeldmentState
 
@@ -53,6 +60,12 @@ class FabricationRuntime(Protocol):
 
     def combine_bodies(self, document: ResolvedDocument, spec: CombineSpec) -> MutationReceipt: ...
 
+    def move_copy_bodies(self, document: ResolvedDocument, spec: MoveCopyBodySpec) -> MutationReceipt: ...
+
+    def delete_keep_bodies(
+        self, document: ResolvedDocument, spec: DeleteKeepBodiesSpec
+    ) -> MutationReceipt: ...
+
     def knit_surfaces(self, document: ResolvedDocument, spec: SurfaceKnitSpec) -> MutationReceipt: ...
 
     def thicken_surface(self, document: ResolvedDocument, spec: ThickenSpec) -> MutationReceipt: ...
@@ -60,6 +73,8 @@ class FabricationRuntime(Protocol):
     def create_base_flange(self, document: ResolvedDocument, spec: BaseFlangeSpec) -> MutationReceipt: ...
 
     def create_edge_flange(self, document: ResolvedDocument, spec: EdgeFlangeSpec) -> MutationReceipt: ...
+
+    def create_hem(self, document: ResolvedDocument, spec: HemSpec) -> MutationReceipt: ...
 
     def set_flattened(self, document: ResolvedDocument, flattened: bool) -> MutationReceipt: ...
 
