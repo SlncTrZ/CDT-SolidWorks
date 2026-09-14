@@ -96,18 +96,6 @@ class BreadthAdapter:
         )
         return (annotation_id,)
 
-    def add_position_gtol(self, drawing_id, view_id, tolerance_text, datum_refs):
-        annotation_id = "gtol-1"
-        text = "|".join(("POSITION", tolerance_text, *datum_refs))
-        self.annotations[annotation_id] = AnnotationSnapshot(
-            identity=annotation_id,
-            view_id=view_id,
-            annotation_kind="gtol",
-            text=text,
-            dangling=False,
-        )
-        return annotation_id
-
     def read_annotation(self, drawing_id, annotation_id):
         return self.annotations.get(annotation_id)
 
@@ -173,20 +161,6 @@ class DrawingR3BreadthTests(unittest.TestCase):
         result = self.service.add_note("drawing", "base", "CHECK TORQUE")
         self.assertEqual("note", result.annotation_kind)
         self.assertEqual("CHECK TORQUE", result.text)
-
-    def test_position_gtol_requires_semantic_readback(self):
-        result = self.service.add_position_gtol(
-            "drawing", "base", "0.20", ("A", "B")
-        )
-        self.assertEqual("gtol", result.annotation_kind)
-        self.assertEqual("POSITION|0.20|A|B", result.text)
-        self.assertFalse(result.dangling)
-
-    def test_position_gtol_rejects_more_than_three_datums_before_dispatch(self):
-        with self.assertRaisesRegex(Exception, "invalid_gtol_datums"):
-            self.service.add_position_gtol(
-                "drawing", "base", "0.20", ("A", "B", "C", "D")
-            )
 
     def test_import_model_annotations_requires_at_least_one_verified_annotation(self):
         result = self.service.import_model_annotations("drawing", "base")

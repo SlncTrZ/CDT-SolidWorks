@@ -121,14 +121,6 @@ class DrawingAdapter(Protocol):
 
     def import_model_annotations(self, drawing_id: str, view_id: str) -> tuple[str, ...]: ...
 
-    def add_position_gtol(
-        self,
-        drawing_id: str,
-        view_id: str,
-        tolerance_text: str,
-        datum_refs: tuple[str, ...],
-    ) -> str: ...
-
     def read_annotation(
         self, drawing_id: str, annotation_id: str
     ) -> AnnotationSnapshot | None: ...
@@ -343,32 +335,6 @@ class DrawingService:
             snapshots.append(annotation)
         return tuple(snapshots)
 
-    def add_position_gtol(
-        self,
-        drawing_id: str,
-        view_id: str,
-        tolerance_text: str,
-        datum_refs: tuple[str, ...] = (),
-    ) -> AnnotationSnapshot:
-        self._require_identity("drawing_id", drawing_id)
-        self._require_identity("view_id", view_id)
-        tolerance = self._validate_gtol_tolerance(tolerance_text)
-        datums = self._validate_gtol_datums(datum_refs)
-        self._require_valid_view(drawing_id, view_id, "invalid_annotation_view")
-        annotation_id = self._adapter.add_position_gtol(
-            drawing_id, view_id, tolerance, datums
-        )
-        self._require_identity("annotation_id", annotation_id)
-        self._require_rebuild(drawing_id)
-        annotation = self._adapter.read_annotation(drawing_id, annotation_id)
-        if annotation is None:
-            raise DrawingPostconditionError("annotation_readback_missing", annotation_id)
-        self._validate_annotation(annotation, view_id)
-        expected_text = "|".join(("POSITION", tolerance, *datums))
-        if annotation.annotation_kind != "gtol" or annotation.text != expected_text:
-            raise DrawingPostconditionError("gtol_readback_mismatch", annotation_id)
-        return annotation
-
     def add_dimension(
         self, drawing_id: str, view_id: str, source_ref: str
     ) -> DimensionSnapshot:
@@ -520,30 +486,3 @@ class DrawingService:
     def _require_view_label(value: str) -> None:
         if not isinstance(value, str) or len(value.strip()) != 1 or not value.strip().isalpha():
             raise DrawingRefusal("invalid_view_label")
-
-    @staticmethod
-    def _validate_gtol_tolerance(value: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise DrawingRefusal("invalid_gtol_tolerance")
-        text = value.strip()
-        try:
-            numeric = float(text)
-        except ValueError as exc:
-            raise DrawingRefusal("invalid_gtol_tolerance") from exc
-        if not isfinite(numeric) or numeric <= 0.0:
-            raise DrawingRefusal("invalid_gtol_tolerance")
-        return text
-
-    @staticmethod
-    def _validate_gtol_datums(values: tuple[str, ...]) -> tuple[str, ...]:
-        if not isinstance(values, (tuple, list)) or len(values) > 3:
-            raise DrawingRefusal("invalid_gtol_datums")
-        normalized: list[str] = []
-        for value in values:
-            if not isinstance(value, str):
-                raise DrawingRefusal("invalid_gtol_datums")
-            datum = value.strip().upper()
-            if len(datum) != 1 or not datum.isalpha() or datum in normalized:
-                raise DrawingRefusal("invalid_gtol_datums")
-            normalized.append(datum)
-        return tuple(normalized)

@@ -53,39 +53,6 @@ class FakeNote:
         return self.annotation
 
 
-class FakeGtolFrame:
-    def __init__(self, owner):
-        self.owner = owner
-
-    def GetSymbolXml(self):
-        datums = "".join(self.owner.datums)
-        return f"<gtol symbol='POSI' tol='{self.owner.tolerance}'>{datums}</gtol>"
-
-
-class FakeGtol:
-    def __init__(self):
-        self.tolerance = ""
-        self.datums = ()
-        self.annotation = FakeAnnotation("GTOL1", 5, "GTOL1")
-
-    def SetFrameSymbols2(self, *args):
-        return args[0] == 1 and args[1] == "<IGTOL-POSI>"
-
-    def SetFrameValues2(self, frame, tol1, tol2, datum1, datum2, datum3):
-        self.tolerance = tol1
-        self.datums = tuple(item for item in (datum1, datum2, datum3) if item)
-        return frame == 1
-
-    def GetFrameCount(self):
-        return 1
-
-    def GetFrame(self, index):
-        return FakeGtolFrame(self) if index == 0 else None
-
-    def GetAnnotation(self):
-        return self.annotation
-
-
 class FakeFeature:
     Name = "BOM1"
 
@@ -231,9 +198,6 @@ class FakeDrawing:
     def InsertModelAnnotations4(self, *args):
         return (FakeAnnotation("D1@Sketch1", 4, "25.00"),)
 
-    def InsertGtol(self):
-        return FakeGtol()
-
     def GetFirstView(self):
         sheet = FakeView("SheetFormat", "")
         current = sheet
@@ -314,9 +278,6 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
             self.path, projected.identity
         )
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
-        gtol = self.service.add_position_gtol(
-            self.path, self.base.identity, "0.20", ("A", "B")
-        )
 
         section = self.service.create_section_view(
             self.path, self.base.identity, (0.0, -0.04), (0.0, 0.04), 0.23, 0.10, "A"
@@ -326,8 +287,6 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.assertEqual((0.23, 0.10), section.position)
         self.assertEqual("note", note.annotation_kind)
         self.assertEqual("display_dimension", annotations[0].annotation_kind)
-        self.assertEqual("gtol", gtol.annotation_kind)
-        self.assertEqual("POSITION|0.20|A|B", gtol.text)
         self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0])
 
 
