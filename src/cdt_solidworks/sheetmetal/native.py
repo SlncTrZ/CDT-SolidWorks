@@ -20,10 +20,10 @@ _SW_HEM_OPEN = 0
 _SW_HEM_POSITION = {"inside": 1, "outside": 2}
 _SW_RELIEF_NONE = 4
 _SW_RELIEF_OBROUND = 3
+_SW_FM_EDGE_FLANGE = 37
+_SW_FLANGE_OFFSET_BLIND = 1
 _SW_FLANGE_POSITION_MATERIAL_INSIDE = 1
 _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP = 2
-_SW_EDGE_FLANGE_USE_DEFAULT_RADIUS = 1
-_SW_EDGE_FLANGE_USE_DEFAULT_RELIEF = 128
 _BOUNDARY_EDGE_SELECTORS = frozenset({"bbox:+x", "bbox:-x", "bbox:+y", "bbox:-y"})
 _EDGE_TOLERANCE_M = 1e-7
 
@@ -188,8 +188,40 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                     raise NativeRuntimeError(
                         "cad_postcondition_failed",
                         "sheet_metal_add_edge_flange",
-                        "Bounded Edge Flange profile must contain exactly one projected edge segment.",
+                        "Bounded Edge Flange profile must begin with exactly one projected edge segment.",
                         details={"segments": len(segments)},
+                    )
+                profile_edge = segments[0]
+                start_point = self.api._member(profile_edge, "GetStartPoint2")
+                end_point = self.api._member(profile_edge, "GetEndPoint2")
+                x1 = float(self.api._member(start_point, "X"))
+                y1 = float(self.api._member(start_point, "Y"))
+                x2 = float(self.api._member(end_point, "X"))
+                y2 = float(self.api._member(end_point, "Y"))
+                dx = x2 - x1
+                dy = y2 - y1
+                edge_length = math.hypot(dx, dy)
+                if not math.isfinite(edge_length) or edge_length <= _EDGE_TOLERANCE_M:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "sheet_metal_add_edge_flange",
+                        "Projected Edge Flange profile edge is degenerate.",
+                    )
+                profile_depth = length / 1000.0
+                nx = -dy / edge_length
+                ny = dx / edge_length
+                p3 = (x2 + nx * profile_depth, y2 + ny * profile_depth)
+                p4 = (x1 + nx * profile_depth, y1 + ny * profile_depth)
+                created_profile = (
+                    self.api._member(sketch_manager, "CreateLine", x2, y2, 0.0, p3[0], p3[1], 0.0),
+                    self.api._member(sketch_manager, "CreateLine", p3[0], p3[1], 0.0, p4[0], p4[1], 0.0),
+                    self.api._member(sketch_manager, "CreateLine", p4[0], p4[1], 0.0, x1, y1, 0.0),
+                )
+                if any(segment is None for segment in created_profile):
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create the bounded Edge Flange profile geometry.",
                     )
                 self.api._member(model, "InsertSketch2", True)
 
@@ -203,28 +235,32 @@ class SheetMetalNativeAdapter(BodyNativeAdapter):
                         "sheet_metal_add_edge_flange",
                         "Edge Flange requires a positive parent or explicit bend radius.",
                     )
-                options = _SW_EDGE_FLANGE_USE_DEFAULT_RELIEF
-                radius_m = effective_radius_mm / 1000.0
-                if radius is None:
-                    options |= _SW_EDGE_FLANGE_USE_DEFAULT_RADIUS
-                    radius_m = 0.0
-                feature = self.api._member(
-                    manager,
-                    "InsertSheetMetalEdgeFlange2",
-                    (edge,),
-                    (sketch,),
-                    options,
-                    angle_rad,
-                    radius_m,
-                    _SW_FLANGE_POSITION_MATERIAL_INSIDE,
-                    length / 1000.0,
-                    _SW_RELIEF_NONE,
-                    0.0,
-                    0.0,
-                    0.0,
-                    _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP,
-                    self.api.null_dispatch(),
-                )
+                definition = self.api._member(manager, "CreateDefinition", _SW_FM_EDGE_FLANGE)
+                if definition is None:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS did not create Edge Flange feature data.",
+                    )
+                add_edges = self.api._member(definition, "AddEdges", (edge,), (sketch,))
+                if add_edges is False:
+                    raise NativeRuntimeError(
+                        "cad_mutation_failed",
+                        "sheet_metal_add_edge_flange",
+                        "SOLIDWORKS rejected the Edge Flange edge/profile binding.",
+                    )
+                definition.UseDefaultBendRadius = radius is None
+                if radius is not None:
+                    definition.BendRadius = effective_radius_mm / 1000.0
+                definition.BendAngle = angle_rad
+                definition.OffsetType = _SW_FLANGE_OFFSET_BLIND
+                definition.OffsetDistance = length / 1000.0
+                definition.OffsetDimType = _SW_FLANGE_DIM_INNER_VIRTUAL_SHARP
+                definition.PositionType = _SW_FLANGE_POSITION_MATERIAL_INSIDE
+                definition.UsePositionOffset = False
+                definition.UseDefaultBendAllowance = True
+                definition.UseDefaultBendRelief = True
+                feature = self.api._member(manager, "CreateFeature", definition)
                 if feature is None:
                     raise NativeRuntimeError(
                         "cad_mutation_failed",
