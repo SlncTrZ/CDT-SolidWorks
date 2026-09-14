@@ -121,6 +121,10 @@ class DrawingAdapter(Protocol):
 
     def import_model_annotations(self, drawing_id: str, view_id: str) -> tuple[str, ...]: ...
 
+    def auto_insert_center_marks(
+        self, drawing_id: str, view_id: str
+    ) -> tuple[str, ...]: ...
+
     def read_annotation(
         self, drawing_id: str, annotation_id: str
     ) -> AnnotationSnapshot | None: ...
@@ -332,6 +336,34 @@ class DrawingService:
             if annotation is None:
                 raise DrawingPostconditionError("annotation_readback_missing", annotation_id)
             self._validate_annotation(annotation, view_id)
+            snapshots.append(annotation)
+        return tuple(snapshots)
+
+    def auto_insert_center_marks(
+        self, drawing_id: str, view_id: str
+    ) -> tuple[AnnotationSnapshot, ...]:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("view_id", view_id)
+        self._require_valid_view(drawing_id, view_id, "invalid_annotation_view")
+        annotation_ids = self._adapter.auto_insert_center_marks(drawing_id, view_id)
+        if not annotation_ids:
+            raise DrawingPostconditionError("center_marks_readback_empty", view_id)
+        self._require_rebuild(drawing_id)
+        seen: set[str] = set()
+        snapshots: list[AnnotationSnapshot] = []
+        for annotation_id in annotation_ids:
+            self._require_identity("annotation_id", annotation_id)
+            if annotation_id in seen:
+                raise DrawingPostconditionError("duplicate_annotation_identity", annotation_id)
+            seen.add(annotation_id)
+            annotation = self._adapter.read_annotation(drawing_id, annotation_id)
+            if annotation is None:
+                raise DrawingPostconditionError("annotation_readback_missing", annotation_id)
+            self._validate_annotation(annotation, view_id)
+            if annotation.annotation_kind != "center_mark":
+                raise DrawingPostconditionError(
+                    "center_mark_kind_readback_mismatch", annotation_id
+                )
             snapshots.append(annotation)
         return tuple(snapshots)
 

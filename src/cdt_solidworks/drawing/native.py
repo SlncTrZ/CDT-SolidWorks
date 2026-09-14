@@ -523,6 +523,69 @@ class SolidWorksDrawingAdapter:
                 self._annotation_metadata[(source, snapshot.identity)] = snapshot
         return tuple(snapshot.identity for snapshot in snapshots)
 
+    def auto_insert_center_marks(
+        self, drawing_id: str, view_id: str
+    ) -> tuple[str, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_annotation_view", view_id)
+        sheet_name = metadata[0]
+
+        def mutate(model: Any) -> tuple[AnnotationSnapshot, ...]:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            view = self._api._member(model, "ActiveDrawingView")
+            if view is None:
+                raise DrawingPostconditionError("active_view_readback_missing", view_id)
+            before = {
+                snapshot.identity
+                for snapshot in self._center_mark_snapshots(view, view_id)
+            }
+            inserted = bool(
+                self._api._member(
+                    view,
+                    "AutoInsertCenterMarks2",
+                    7,
+                    11,
+                    True,
+                    True,
+                    True,
+                    0.0,
+                    0.0,
+                    True,
+                    True,
+                    0.0,
+                )
+            )
+            if not inserted:
+                raise DrawingPostconditionError("center_mark_create_failed", view_id)
+            snapshots = tuple(
+                snapshot
+                for snapshot in self._center_mark_snapshots(view, view_id)
+                if snapshot.identity not in before
+            )
+            if not snapshots:
+                raise DrawingPostconditionError("center_marks_readback_empty", view_id)
+            self._persist(model, "center_marks_create")
+            return snapshots
+
+        snapshots = self._with_drawing(
+            source,
+            stage="drawing_auto_insert_center_marks",
+            reader=mutate,
+            mutation=True,
+        )
+        for snapshot in snapshots:
+            self._annotation_metadata[(drawing_id, snapshot.identity)] = snapshot
+            if source != drawing_id:
+                self._annotation_metadata[(source, snapshot.identity)] = snapshot
+        return tuple(snapshot.identity for snapshot in snapshots)
+
     def read_annotation(
         self, drawing_id: str, annotation_id: str
     ) -> AnnotationSnapshot | None:
@@ -769,6 +832,23 @@ class SolidWorksDrawingAdapter:
         except Exception:
             return False
         return any(int(value) == 0 for value in values)
+
+    def _center_mark_snapshots(
+        self, view: Any, view_id: str
+    ) -> tuple[AnnotationSnapshot, ...]:
+        snapshots: list[AnnotationSnapshot] = []
+        center_mark = self._api._member(view, "GetFirstCenterMark")
+        seen = 0
+        while center_mark is not None:
+            if seen >= 100_000:
+                raise DrawingPostconditionError("center_mark_traversal_limit", view_id)
+            annotation = self._api._member(center_mark, "GetAnnotation")
+            snapshots.append(
+                self._annotation_snapshot(annotation, view_id, "center_mark")
+            )
+            center_mark = self._api._member(center_mark, "GetNext")
+            seen += 1
+        return tuple(snapshots)
 
     def _table_identity(self, table: Any) -> str:
         for getter in ("GetFeature", "GetAnnotation"):

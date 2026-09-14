@@ -77,6 +77,18 @@ class FakeSection:
         return self.label
 
 
+class FakeCenterMark:
+    def __init__(self, name):
+        self.annotation = FakeAnnotation(name, 0, name)
+        self._next = None
+
+    def GetAnnotation(self):
+        return self.annotation
+
+    def GetNext(self):
+        return self._next
+
+
 class FakeSketchSegment:
     def __init__(self, drawing, kind):
         self.drawing = drawing
@@ -104,6 +116,7 @@ class FakeView:
         self.ScaleDecimal = 1.0
         self._next = None
         self._specific = specific
+        self._center_marks = []
 
     def GetNextView(self):
         return self._next
@@ -116,6 +129,16 @@ class FakeView:
 
     def GetSection(self):
         return self._specific if isinstance(self._specific, FakeSection) else None
+
+    def AutoInsertCenterMarks2(self, *args):
+        first = FakeCenterMark("DetailItem1")
+        second = FakeCenterMark("DetailItem2")
+        first._next = second
+        self._center_marks = [first, second]
+        return True
+
+    def GetFirstCenterMark(self):
+        return self._center_marks[0] if self._center_marks else None
 
 
 class FakeExtension:
@@ -158,6 +181,10 @@ class FakeDrawing:
     def ActivateView(self, name):
         self.selected_view = next((view for view in self.views if view.Name == name), None)
         return self.selected_view is not None
+
+    @property
+    def ActiveDrawingView(self):
+        return self.selected_view
 
     def ClearSelection2(self, _all):
         self.selected_view = None
@@ -278,6 +305,9 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
             self.path, projected.identity
         )
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        center_marks = self.service.auto_insert_center_marks(
+            self.path, self.base.identity
+        )
 
         section = self.service.create_section_view(
             self.path, self.base.identity, (0.0, -0.04), (0.0, 0.04), 0.23, 0.10, "A"
@@ -287,6 +317,8 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.assertEqual((0.23, 0.10), section.position)
         self.assertEqual("note", note.annotation_kind)
         self.assertEqual("display_dimension", annotations[0].annotation_kind)
+        self.assertEqual(2, len(center_marks))
+        self.assertTrue(all(item.annotation_kind == "center_mark" for item in center_marks))
         self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0])
 
 

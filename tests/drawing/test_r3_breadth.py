@@ -96,6 +96,18 @@ class BreadthAdapter:
         )
         return (annotation_id,)
 
+    def auto_insert_center_marks(self, drawing_id, view_id):
+        ids = ("center-1", "center-2")
+        for annotation_id in ids:
+            self.annotations[annotation_id] = AnnotationSnapshot(
+                identity=annotation_id,
+                view_id=view_id,
+                annotation_kind="center_mark",
+                text=annotation_id,
+                dangling=False,
+            )
+        return ids
+
     def read_annotation(self, drawing_id, annotation_id):
         return self.annotations.get(annotation_id)
 
@@ -161,6 +173,13 @@ class DrawingR3BreadthTests(unittest.TestCase):
         result = self.service.add_note("drawing", "base", "CHECK TORQUE")
         self.assertEqual("note", result.annotation_kind)
         self.assertEqual("CHECK TORQUE", result.text)
+
+    def test_auto_center_marks_require_unique_non_dangling_readback(self):
+        result = self.service.auto_insert_center_marks("drawing", "base")
+        self.assertEqual(2, len(result))
+        self.assertEqual(("center-1", "center-2"), tuple(item.identity for item in result))
+        self.assertTrue(all(item.annotation_kind == "center_mark" for item in result))
+        self.assertTrue(all(not item.dangling for item in result))
 
     def test_import_model_annotations_requires_at_least_one_verified_annotation(self):
         result = self.service.import_model_annotations("drawing", "base")
