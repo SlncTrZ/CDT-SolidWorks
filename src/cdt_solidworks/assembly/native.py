@@ -355,29 +355,37 @@ class AssemblyNativeAdapter:
         self, assembly_id: str, pattern_id: str
     ) -> ComponentPatternSnapshot:
         def operation(app: Any) -> ComponentPatternSnapshot:
-            assembly = self._assembly(app, assembly_id)
-            feature = self._pattern_feature(assembly, pattern_id)
-            data = self.api._member(feature, "GetDefinition")
-            if data is None:
-                raise _AssemblyNativeError(
-                    "component_pattern_definition_missing", pattern_id
+            try:
+                assembly = self._assembly(app, assembly_id)
+                feature = self._pattern_feature(assembly, pattern_id)
+                data = self.api._member(feature, "GetDefinition")
+                if data is None:
+                    raise _AssemblyNativeError(
+                        "component_pattern_definition_missing", pattern_id
+                    )
+                raw_seeds = self.api._member(data, "SeedComponentArray")
+                if raw_seeds is None:
+                    seeds = ()
+                elif isinstance(raw_seeds, (tuple, list)):
+                    seeds = tuple(raw_seeds)
+                else:
+                    seeds = (raw_seeds,)
+                seed_ids = tuple(self.api.component_name(seed) for seed in seeds)
+                axis = self.api._member(data, "D1Axis")
+                return ComponentPatternSnapshot(
+                    identity=self.api.feature_name(feature),
+                    seed_component_ids=seed_ids,
+                    spacing_m=float(self.api._member(data, "D1Spacing")),
+                    total_instances=int(self.api._member(data, "D1TotalInstances")),
+                    direction_resolved=axis is not None,
                 )
-            raw_seeds = self.api._member(data, "SeedComponentArray")
-            if raw_seeds is None:
-                seeds = ()
-            elif isinstance(raw_seeds, (tuple, list)):
-                seeds = tuple(raw_seeds)
-            else:
-                seeds = (raw_seeds,)
-            seed_ids = tuple(self.api.component_name(seed) for seed in seeds)
-            axis = self.api._member(data, "D1Axis")
-            return ComponentPatternSnapshot(
-                identity=self.api.feature_name(feature),
-                seed_component_ids=seed_ids,
-                spacing_m=float(self.api._member(data, "D1Spacing")),
-                total_instances=int(self.api._member(data, "D1TotalInstances")),
-                direction_resolved=axis is not None,
-            )
+            except _AssemblyNativeError:
+                raise
+            except Exception as exc:
+                raise _AssemblyNativeError(
+                    "component_pattern_read_failed",
+                    f"{type(exc).__name__}: {exc}",
+                ) from exc
 
         return self._run("assembly_component_pattern_read", False, operation)
 
