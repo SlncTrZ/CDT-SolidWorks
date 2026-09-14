@@ -1,0 +1,128 @@
+"""Wire-level request validation for provider-owned MCP tools."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from mcp.server.context import HandlerResult, ServerRequestContext
+from mcp.shared.exceptions import MCPError
+from mcp_types import INVALID_PARAMS
+
+
+_TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
+    "help": frozenset(),
+    "system_status": frozenset(),
+    "system_capabilities": frozenset(),
+    "application_probe": frozenset({"version"}),
+    "application_connect": frozenset({"policy", "version", "visible"}),
+    "application_disconnect": frozenset(),
+    "document_open": frozenset({"path", "expected_type", "configuration", "read_only"}),
+    "document_info": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_save": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_save_as": frozenset({"target_path", "session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_close": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_reopen": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_list_features": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_list_bodies": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp", "visible_only"}),
+    "document_list_components": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp", "top_level_only"}),
+    "document_rebuild": frozenset({"session_id", "path", "title", "document_type", "configuration", "update_stamp"}),
+    "document_reconcile": frozenset({"call_id", "path", "expected_type", "should_be_open"}),
+    "sketch_create_geometry": frozenset({"path", "expected_revision", "name", "plane", "entities"}),
+    "sketch_get": frozenset({"path", "expected_revision", "sketch_id"}),
+    "part_cut_extrude": frozenset({"path", "expected_revision", "sketch_id", "name", "through_all", "depth_mm"}),
+    "part_cut_reconcile": frozenset({"call_id", "path", "name", "through_all", "depth_mm"}),
+    "part_simple_hole": frozenset({"path", "expected_revision", "name", "diameter_mm", "face_ref", "center_mm", "through_all", "depth_mm"}),
+    "part_simple_hole_reconcile": frozenset({"call_id", "path", "name", "diameter_mm", "face_ref", "center_mm", "through_all", "depth_mm"}),
+    "part_revolve": frozenset({"path", "expected_revision", "sketch_id", "name", "axis_ref", "angle_deg"}),
+    "part_revolve_cut": frozenset({"path", "expected_revision", "sketch_id", "name", "axis_ref", "angle_deg"}),
+    "part_revolve_reconcile": frozenset({"call_id", "path", "name", "axis_ref", "angle_deg", "is_cut"}),
+    "body_inspect": frozenset({"path"}),
+    "body_combine": frozenset({"path", "operation", "body_names", "main_body_name"}),
+    "surface_thicken": frozenset({"path", "surface_body_name", "thickness_mm", "side", "merge"}),
+    "sheet_metal_inspect": frozenset({"path"}),
+    "sheet_metal_set_flattened": frozenset({"path", "flattened"}),
+    "weldment_inspect": frozenset({"path"}),
+    "weldment_create_structural_member": frozenset({
+        "path", "sketch_feature_name", "profile_path", "profile_configuration",
+        "apply_corner_treatment", "corner_treatment_type"
+    }),
+    "sketch_create_rectangle": frozenset({"output_path", "width_mm", "height_mm", "plane", "center_x_mm", "center_y_mm"}),
+    "part_create_rect_extrude": frozenset({"output_path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm"}),
+    "part_add_rect_extrude": frozenset({"path", "width_mm", "height_mm", "depth_mm", "plane", "center_x_mm", "center_y_mm", "merge"}),
+    "part_combine_all_bodies": frozenset({"path"}),
+    "part_split_by_plane": frozenset({"path", "plane"}),
+    "sheet_metal_create_base_flange": frozenset({"output_path", "width_mm", "height_mm", "thickness_mm", "bend_radius_mm"}),
+    "surface_create_extrude": frozenset({"output_path", "line_length_mm", "depth_mm", "plane"}),
+    "assembly_create": frozenset({"output_path", "component_paths", "placements_mm"}),
+    "assembly_add_coincident_plane_mate": frozenset({"path", "component_name", "component_plane", "assembly_plane"}),
+    "assembly_components_list": frozenset({"path", "recursive"}),
+    "assembly_component_set_fixed": frozenset({"path", "component_id", "fixed"}),
+    "assembly_component_set_load_state": frozenset({"path", "component_id", "state"}),
+    "assembly_component_set_configuration": frozenset({"path", "component_id", "configuration"}),
+    "assembly_mate_create": frozenset({"path", "kind", "selection_refs", "value", "alignment"}),
+    "assembly_mates_list": frozenset({"path"}),
+    "assembly_coincident_mate_set_suppressed": frozenset({"path", "mate_id", "suppressed"}),
+    "assembly_distance_mate_set_value": frozenset({"path", "mate_id", "value"}),
+    "configuration_list": frozenset({"path"}),
+    "configuration_create": frozenset({"path", "name", "parent"}),
+    "configuration_rename": frozenset({"path", "old_name", "new_name"}),
+    "configuration_delete": frozenset({"path", "name"}),
+    "configuration_activate": frozenset({"path", "name"}),
+    "configuration_set_dimension": frozenset({"path", "configuration", "dimension_name", "value"}),
+    "configuration_set_property": frozenset({"path", "property_name", "value", "configuration"}),
+    "configuration_delete_property": frozenset({"path", "property_name", "configuration"}),
+    "configuration_set_feature_suppressed": frozenset({"path", "configuration", "feature_id", "suppressed"}),
+    "configuration_equations_list": frozenset({"path"}),
+    "configuration_equation_add": frozenset({"path", "expression"}),
+    "configuration_equation_set": frozenset({"path", "identity", "expression"}),
+    "configuration_equation_delete": frozenset({"path", "identity"}),
+    "drawing_create": frozenset({"output_path"}),
+    "drawing_sheet_create": frozenset({"path", "sheet_name"}),
+    "drawing_front_view_create": frozenset({"path", "sheet_name", "source_part_path"}),
+    "export_document": frozenset({"source_path", "target_path", "format", "source_configuration"}),
+    "evaluation_mass_properties": frozenset({"path", "configuration"}),
+    "evaluation_bounding_box": frozenset({"path", "configuration"}),
+    "evaluation_geometry_sanity": frozenset({"path", "configuration"}),
+}
+
+
+
+async def strict_platform_tool_inputs(
+    ctx: ServerRequestContext[Any, Any],
+    call_next: Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
+) -> HandlerResult:
+    """Reject unknown arguments for the current provider-owned MCP tool surface.
+
+    MCP SDK argument models are permissive toward unknown keys by default. This
+    pre-validation middleware makes the provider contract fail loud instead of
+    silently discarding client mistakes.
+    """
+
+    if ctx.method != "tools/call":
+        return await call_next(ctx)
+
+    params = ctx.params
+    if not isinstance(params, dict):
+        return await call_next(ctx)
+
+    tool_name = params.get("name")
+    arguments = params.get("arguments")
+    allowed = _TOOL_ARGUMENTS.get(str(tool_name))
+    if allowed is not None:
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise MCPError(
+                code=INVALID_PARAMS,
+                message="Invalid params: arguments must be an object.",
+            )
+        unexpected_keys = sorted(str(key) for key in arguments if str(key) not in allowed)
+        if unexpected_keys:
+            unexpected = ", ".join(unexpected_keys)
+            raise MCPError(
+                code=INVALID_PARAMS,
+                message=f"Invalid params: unexpected field(s): {unexpected}",
+            )
+
+    return await call_next(ctx)
