@@ -44,6 +44,7 @@ from cdt_solidworks.native.models import NativeCallResult, NativeCallState, Nati
 T = TypeVar("T")
 _CALL_ID_PATTERN = re.compile(r"(?:^|\s)call_id=([^;\s]+)")
 _PART_EXTENSIONS = frozenset({".sldprt"})
+_ASSEMBLY_EXTENSIONS = frozenset({".sldasm"})
 _DRAWING_EXTENSIONS = frozenset({".slddrw"})
 _GEOMETRY_EXPORTS = {
     "step": ExportFormat.STEP,
@@ -617,20 +618,45 @@ class IntegratedEvaluationService:
             lambda target: self.service.require_clean_geometry(target, configuration),
         )
 
+    def measure(
+        self,
+        path: str,
+        first_ref: str,
+        second_ref: str | None = None,
+    ) -> NativeCallResult[Any]:
+        return self._evaluate(
+            "evaluation_measure",
+            path,
+            lambda target: self.service.measure(target, first_ref, second_ref),
+            extensions=_PART_EXTENSIONS,
+        )
+
+    def interferences(
+        self, path: str, configuration: str | None = None
+    ) -> NativeCallResult[Any]:
+        return self._evaluate(
+            "evaluation_interferences",
+            path,
+            lambda target: self.service.interferences(target, configuration),
+            extensions=_ASSEMBLY_EXTENSIONS,
+        )
+
     def _evaluate(
         self,
         stage: str,
         path: str,
         operation: Callable[[str], T],
+        *,
+        extensions: frozenset[str] = _PART_EXTENSIONS,
     ) -> NativeCallResult[T]:
         call_id = uuid.uuid4().hex
         try:
             target = self.path_policy.validate_open(path)
-            if Path(target).suffix.lower() not in _PART_EXTENSIONS:
+            if Path(target).suffix.lower() not in extensions:
                 raise NativeRuntimeError(
                     "document_type_mismatch",
                     stage,
-                    "Public evaluation is native-accepted for part documents only.",
+                    "The requested evaluation operation is not native-accepted for this document type.",
                 )
         except Exception as exc:
             return NativeCallResult.failed(

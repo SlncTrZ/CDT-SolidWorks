@@ -151,8 +151,13 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.assembly.components"].implemented is True
     assert states["solidworks.assembly.component_state"].available is True
     assert states["solidworks.assembly.component_configuration"].available is True
+    assert states["solidworks.assembly.component_lifecycle"].available is True
+    assert states["solidworks.assembly.component_pattern"].available is True
     assert states["solidworks.assembly.coincident_mate"].implemented is True
     assert states["solidworks.assembly.common_mates"].available is True
+    assert states["solidworks.assembly.advanced_common_mates"].available is True
+    assert states["solidworks.assembly.mate_suppression"].available is True
+    assert states["solidworks.assembly.mate_value"].available is True
     assert states["solidworks.assembly.coincident_mate_suppression"].available is True
     assert states["solidworks.assembly.distance_mate_value"].available is True
     assert states["solidworks.assembly.mates"].implemented is False
@@ -161,6 +166,8 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.configuration.dimension"].available is True
     assert states["solidworks.configuration.properties"].available is True
     assert states["solidworks.configuration.feature_suppression"].available is True
+    assert states["solidworks.configuration.material"].available is True
+    assert states["solidworks.configuration.display_states"].available is True
     assert states["solidworks.configuration.equations"].available is True
     assert states["solidworks.configurations"].implemented is False
     assert states["solidworks.configurations"].reason == "partial_native_support"
@@ -182,6 +189,8 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.evaluation.mass_properties"].available is True
     assert states["solidworks.evaluation.bounding_box"].available is True
     assert states["solidworks.evaluation.geometry_sanity"].available is True
+    assert states["solidworks.evaluation.measurement"].available is True
+    assert states["solidworks.evaluation.interference"].available is True
     assert states["solidworks.evaluation"].implemented is False
     assert states["solidworks.evaluation"].reason == "partial_native_support"
     assert states["solidworks.mbd"].implemented is False
@@ -259,19 +268,25 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "assembly_create", "assembly_add_coincident_plane_mate",
         "assembly_components_list", "assembly_component_set_fixed",
         "assembly_component_set_load_state", "assembly_component_set_configuration",
+        "assembly_component_delete", "assembly_component_replace",
+        "assembly_component_set_transform", "assembly_component_pattern_create",
         "assembly_mate_create", "assembly_mates_list",
+        "assembly_mate_set_suppressed", "assembly_mate_set_value",
         "assembly_coincident_mate_set_suppressed", "assembly_distance_mate_set_value",
         "configuration_list", "configuration_create", "configuration_rename",
         "configuration_delete", "configuration_activate",
         "configuration_set_dimension", "configuration_set_property",
         "configuration_delete_property", "configuration_set_feature_suppressed",
-        "configuration_equations_list", "configuration_equation_add",
+        "configuration_set_material", "configuration_display_states_list",
+        "configuration_display_state_create", "configuration_display_state_rename",
+        "configuration_display_state_delete", "configuration_equations_list", "configuration_equation_add",
         "configuration_equation_set", "configuration_equation_delete",
         "drawing_create", "drawing_sheet_create", "drawing_front_view_create",
         "drawing_standard_view_create", "drawing_projected_view_create",
         "drawing_section_view_create", "drawing_note_add", "drawing_center_marks_auto_insert",
         "export_document", "import_document", "evaluation_mass_properties",
         "evaluation_bounding_box", "evaluation_geometry_sanity",
+        "evaluation_measure", "evaluation_interferences",
     } <= names
     assert names <= set(_TOOL_ARGUMENTS)
 

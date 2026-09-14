@@ -10,7 +10,13 @@ from cdt_solidworks.drawing.domain import (
     SheetSnapshot,
     ViewSnapshot,
 )
-from cdt_solidworks.evaluation.domain import BoundingBox, GeometrySanity, MassProperties
+from cdt_solidworks.evaluation.domain import (
+    BoundingBox,
+    GeometrySanity,
+    InterferenceSnapshot,
+    MassProperties,
+    MeasureSnapshot,
+)
 from cdt_solidworks.export.domain import (
     ArtifactInspection,
     ExportFormat,
@@ -118,6 +124,14 @@ class _EvaluationDomain:
     def require_clean_geometry(self, path: str, configuration: str | None = None):
         self.calls.append(("sanity", path, configuration))
         return GeometrySanity(1, 0, 0, 0)
+
+    def measure(self, path: str, first_ref: str, second_ref: str | None = None):
+        self.calls.append(("measure", path, first_ref, second_ref))
+        return MeasureSnapshot(0.1 if second_ref else None, 1.57 if second_ref else None, 0.005 if second_ref is None else None, 0.01 if second_ref is None else None)
+
+    def interferences(self, path: str, configuration: str | None = None):
+        self.calls.append(("interferences", path, configuration))
+        return (InterferenceSnapshot("A|B|0", "A-1", "B-1", 1e-6),)
 
 
 def _files(tmp_path: Path):
@@ -250,9 +264,17 @@ def test_evaluation_wrapper_is_read_only_part_surface(tmp_path: Path) -> None:
     assert service.mass_properties(str(part), "Default").state is NativeCallState.SUCCESS
     assert service.bounding_box(str(part), "Default").state is NativeCallState.SUCCESS
     assert service.geometry_sanity(str(part), "Default").state is NativeCallState.SUCCESS
+    assert service.measure(str(part), "Sketch1:segment:0", "Sketch1:segment:1").state is NativeCallState.SUCCESS
+    assert service.measure(str(part), "Sketch2:segment:0").state is NativeCallState.SUCCESS
 
     before = len(domain.calls)
     refused = service.mass_properties(str(assembly))
     assert refused.state is NativeCallState.FAILURE
     assert refused.dispatched is False
     assert len(domain.calls) == before
+
+    interference = service.interferences(str(assembly), "Default")
+    assert interference.state is NativeCallState.SUCCESS
+    wrong_interference_type = service.interferences(str(part))
+    assert wrong_interference_type.state is NativeCallState.FAILURE
+    assert wrong_interference_type.dispatched is False

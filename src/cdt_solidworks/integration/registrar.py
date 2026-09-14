@@ -833,27 +833,74 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         def assembly_component_set_configuration(path: str, component_id: str, configuration: str) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_component_configuration(path, component_id, configuration))
 
-        @server.tool(name="assembly_mate_create", description="Create one native-accepted common mate: coincident, parallel, perpendicular, distance, or angle, using explicit bounded selection references.")
+        @server.tool(name="assembly_component_delete", description="Delete one explicitly identified top-level component, rebuild, and verify it is absent.")
+        def assembly_component_delete(path: str, component_id: str) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.delete_component(path, component_id))
+
+        @server.tool(name="assembly_component_replace", description="Replace one explicitly identified top-level component with an allowed SOLIDWORKS part or assembly and verify source/configuration read-back.")
+        def assembly_component_replace(
+            path: str,
+            component_id: str,
+            source_path: str,
+            configuration: str | None = None,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.replace_component(path, component_id, source_path, configuration))
+
+        @server.tool(name="assembly_component_set_transform", description="Set one component 4x4 native transform represented by exactly 16 finite system-unit values and verify read-back.")
+        def assembly_component_set_transform(path: str, component_id: str, transform: list[float]) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_component_transform(path, component_id, transform))
+
+        @server.tool(name="assembly_component_pattern_create", description="Create a bounded one-direction linear component pattern from explicit seed component identities and a stable direction reference.")
+        def assembly_component_pattern_create(
+            path: str,
+            seed_component_ids: list[str],
+            direction_ref: str,
+            spacing_m: float,
+            total_instances: int,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.create_linear_component_pattern(
+                path,
+                seed_component_ids=seed_component_ids,
+                direction_ref=direction_ref,
+                spacing_m=spacing_m,
+                total_instances=total_instances,
+            ))
+
+        @server.tool(name="assembly_mate_create", description="Create one native-accepted bounded mate: coincident, concentric, distance, angle, parallel, perpendicular, tangent, lock, width, or slot.")
         def assembly_mate_create(
             path: str,
-            kind: Literal["coincident", "parallel", "perpendicular", "distance", "angle"],
+            kind: Literal["coincident", "concentric", "distance", "angle", "parallel", "perpendicular", "tangent", "lock", "width", "slot"],
             selection_refs: list[str],
             value: float | None = None,
             alignment: Literal["aligned", "anti_aligned", "closest"] | None = None,
+            constraint: Literal["centered", "free"] | None = None,
         ) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.create_mate(
-                path, kind=kind, selection_refs=selection_refs, value=value, alignment=alignment
+                path,
+                kind=kind,
+                selection_refs=selection_refs,
+                value=value,
+                alignment=alignment,
+                constraint=constraint,
             ))
 
-        @server.tool(name="assembly_mates_list", description="List native assembly mates with stable feature identity and bounded mate-family classification.")
+        @server.tool(name="assembly_mates_list", description="List native assembly mates with stable feature identity, solved/suppressed/dangling status, and bounded mate-family classification.")
         def assembly_mates_list(path: str) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.list_mates(path))
 
-        @server.tool(name="assembly_coincident_mate_set_suppressed", description="Suppress or unsuppress one mate only when read-back identifies it as a native-accepted coincident mate.")
+        @server.tool(name="assembly_mate_set_suppressed", description="Suppress or unsuppress one native-accepted mate using stable mate identity and solved-state read-back.")
+        def assembly_mate_set_suppressed(path: str, mate_id: str, suppressed: bool) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_mate_suppressed(path, mate_id, suppressed))
+
+        @server.tool(name="assembly_mate_set_value", description="Edit one native-accepted distance or angle mate value in system units and verify solved read-back.")
+        def assembly_mate_set_value(path: str, mate_id: str, value: float) -> dict[str, Any]:
+            return _result_payload(runtime.assembly_service.set_mate_value(path, mate_id, value))
+
+        @server.tool(name="assembly_coincident_mate_set_suppressed", description="Compatibility tool: suppress or unsuppress one read-back-verified coincident mate.")
         def assembly_coincident_mate_set_suppressed(path: str, mate_id: str, suppressed: bool) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_coincident_mate_suppressed(path, mate_id, suppressed))
 
-        @server.tool(name="assembly_distance_mate_set_value", description="Edit one native-accepted distance mate value in system units and verify solved read-back.")
+        @server.tool(name="assembly_distance_mate_set_value", description="Compatibility tool: edit one read-back-verified distance mate value in system units.")
         def assembly_distance_mate_set_value(path: str, mate_id: str, value: float) -> dict[str, Any]:
             return _result_payload(runtime.assembly_service.set_distance_mate_value(path, mate_id, value))
 
@@ -899,6 +946,30 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             path: str, configuration: str, feature_id: str, suppressed: bool
         ) -> dict[str, Any]:
             return _result_payload(runtime.configuration_service.set_feature_suppressed(path, configuration, feature_id, suppressed))
+
+        @server.tool(name="configuration_set_material", description="Assign one explicit material from a named or path-addressed SOLIDWORKS material database to one configuration and verify read-back.")
+        def configuration_set_material(
+            path: str, configuration: str, database: str, material_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.set_material(path, configuration, database, material_name))
+
+        @server.tool(name="configuration_display_states_list", description="List stable display-state identities for one explicit configuration.")
+        def configuration_display_states_list(path: str, configuration: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.list_display_states(path, configuration))
+
+        @server.tool(name="configuration_display_state_create", description="Create one display state in one explicit configuration and verify presence.")
+        def configuration_display_state_create(path: str, configuration: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.create_display_state(path, configuration, name))
+
+        @server.tool(name="configuration_display_state_rename", description="Rename one existing display state in one explicit configuration and verify identity read-back.")
+        def configuration_display_state_rename(
+            path: str, configuration: str, old_name: str, new_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.rename_display_state(path, configuration, old_name, new_name))
+
+        @server.tool(name="configuration_display_state_delete", description="Delete one non-last display state from one explicit configuration and verify absence.")
+        def configuration_display_state_delete(path: str, configuration: str, name: str) -> dict[str, Any]:
+            return _result_payload(runtime.configuration_service.delete_display_state(path, configuration, name))
 
         @server.tool(name="configuration_equations_list", description="List bounded equation/global-variable identities, canonical expressions, values, and disabled state.")
         def configuration_equations_list(path: str) -> dict[str, Any]:
@@ -1106,6 +1177,32 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.evaluation_service.geometry_sanity(path, configuration)
+            )
+
+        @server.tool(
+            name="evaluation_measure",
+            description=(
+                "Measure one or two bounded stable references in a native part and return validated distance, angle, radius, and/or diameter in SOLIDWORKS system units."
+            ),
+        )
+        def evaluation_measure(
+            path: str, first_ref: str, second_ref: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.measure(path, first_ref, second_ref)
+            )
+
+        @server.tool(
+            name="evaluation_interferences",
+            description=(
+                "Detect native assembly interference pairs using explicit assembly path/configuration identity and return validated overlap volume where present."
+            ),
+        )
+        def evaluation_interferences(
+            path: str, configuration: str | None = None
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.evaluation_service.interferences(path, configuration)
             )
 
     if runtime.cad_service is None:
