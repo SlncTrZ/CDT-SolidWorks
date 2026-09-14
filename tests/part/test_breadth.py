@@ -18,6 +18,8 @@ from cdt_solidworks.part.models import (  # noqa: E402
     FeatureSnapshot,
     FilletSpec,
     HoleSpec,
+    HoleWizardSize,
+    HoleWizardSpec,
     LinearPatternSpec,
     LoftSpec,
     MirrorSpec,
@@ -83,6 +85,23 @@ class BreadthPartRuntime:
         if spec.depth_mm is not None:
             params["depth_mm"] = spec.depth_mm
         return self._create("create_hole", spec, FeatureKind.HOLE, params)
+
+    def create_hole_wizard(self, document: ResolvedDocument, spec: HoleWizardSpec) -> MutationReceipt:
+        return self._create(
+            "create_hole_wizard",
+            spec,
+            FeatureKind.HOLE,
+            {
+                "wizard_standard": "ANSI Metric",
+                "wizard_fastener": "Flat Head Screw - ANSI B18.6.7M",
+                "wizard_size": spec.size.value,
+                "face_ref": spec.face_ref,
+                "center_count": 1,
+                "center_x_mm": spec.center_mm[0],
+                "center_y_mm": spec.center_mm[1],
+                "through_all": True,
+            },
+        )
 
     def create_fillet(self, document: ResolvedDocument, spec: FilletSpec) -> MutationReceipt:
         return self._create(
@@ -218,6 +237,24 @@ class BreadthPartRuntime:
         self.calls.append("list_bodies")
         return self.bodies
 
+    def rename_feature(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        new_name: str,
+    ) -> MutationReceipt:
+        self.calls.append("rename_feature")
+        if self.current_feature is None:
+            self.current_feature = FeatureSnapshot(feature_id, feature_id, FeatureKind.FILLET, {})
+        self.current_feature = FeatureSnapshot(
+            new_name,
+            new_name,
+            self.current_feature.kind,
+            self.current_feature.parameters,
+            suppressed=self.current_feature.suppressed,
+        )
+        return MutationReceipt(new_name)
+
     def set_feature_suppressed(
         self,
         document: ResolvedDocument,
@@ -233,6 +270,27 @@ class BreadthPartRuntime:
             self.current_feature.kind,
             self.current_feature.parameters,
             suppressed=suppressed,
+        )
+        return MutationReceipt(feature_id)
+
+    def set_feature_parameter(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        parameter: str,
+        value: float,
+    ) -> MutationReceipt:
+        self.calls.append("set_feature_parameter")
+        if self.current_feature is None:
+            self.current_feature = FeatureSnapshot(feature_id, feature_id, FeatureKind.FILLET, {"radius_mm": 2.0})
+        params = dict(self.current_feature.parameters)
+        params[parameter] = value
+        self.current_feature = FeatureSnapshot(
+            self.current_feature.feature_id,
+            self.current_feature.name,
+            self.current_feature.kind,
+            params,
+            suppressed=self.current_feature.suppressed,
         )
         return MutationReceipt(feature_id)
 
@@ -270,6 +328,45 @@ class PartBreadthTests(unittest.TestCase):
             postconditions=self.post,
         )
         self.assertEqual(FeatureKind.HOLE, result.feature.kind)
+
+    def test_hole_wizard_uses_typed_size_and_common_mutation_gate(self) -> None:
+        result = self.service.hole_wizard(
+            self.target,
+            HoleWizardSpec("CSK_M4", HoleWizardSize.M4, center_mm=(10.0, 5.0)),
+            postconditions=self.post,
+        )
+
+        self.assertEqual(FeatureKind.HOLE, result.feature.kind)
+        self.assertEqual("M4", result.feature.parameters["wizard_size"])
+        self.assertEqual(
+            ["resolve_document", "create_hole_wizard", "rebuild", "get_feature", "list_bodies"],
+            self.runtime.calls,
+        )
+
+    def test_hole_wizard_rejects_mismatched_native_center_readback(self) -> None:
+        original = self.runtime.create_hole_wizard
+
+        def mismatched_center(document: ResolvedDocument, spec: HoleWizardSpec) -> MutationReceipt:
+            receipt = original(document, spec)
+            assert self.runtime.current_feature is not None
+            params = dict(self.runtime.current_feature.parameters)
+            params["center_x_mm"] = spec.center_mm[0] + 1.0
+            self.runtime.current_feature = FeatureSnapshot(
+                self.runtime.current_feature.feature_id,
+                self.runtime.current_feature.name,
+                self.runtime.current_feature.kind,
+                params,
+            )
+            return receipt
+
+        self.runtime.create_hole_wizard = mismatched_center  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(PartMutationError, "center_x_mm"):
+            self.service.hole_wizard(
+                self.target,
+                HoleWizardSpec("CSK_M4", HoleWizardSize.M4, center_mm=(10.0, 5.0)),
+                postconditions=self.post,
+            )
 
     def test_fillet_chamfer_shell_have_strict_ranges(self) -> None:
         with self.assertRaisesRegex(PartValidationError, "fillet radius"):
@@ -440,6 +537,37 @@ class PartBreadthTests(unittest.TestCase):
                     ["resolve_document", dispatch_name, "rebuild", "get_feature", "list_bodies"],
                     self.runtime.calls,
                 )
+
+    def test_feature_rename_requires_rebuild_and_readback(self) -> None:
+        self.runtime.current_feature = FeatureSnapshot("Fillet1", "Fillet1", FeatureKind.FILLET, {"radius_mm": 2.0})
+
+        snapshot = self.service.rename_feature(self.target, "Fillet1", "EdgeRound")
+
+        self.assertEqual("EdgeRound", snapshot.feature_id)
+        self.assertEqual("EdgeRound", snapshot.name)
+        self.assertEqual(
+            ["resolve_document", "rename_feature", "rebuild", "get_feature"],
+            self.runtime.calls,
+        )
+
+    def test_selected_feature_parameter_edit_requires_rebuild_and_readback(self) -> None:
+        self.runtime.current_feature = FeatureSnapshot("Fillet1", "Fillet1", FeatureKind.FILLET, {"radius_mm": 2.0})
+
+        snapshot = self.service.set_feature_parameter(self.target, "Fillet1", "radius_mm", 3.5)
+
+        self.assertEqual(3.5, snapshot.parameters["radius_mm"])
+        self.assertEqual(
+            ["resolve_document", "set_feature_parameter", "rebuild", "get_feature"],
+            self.runtime.calls,
+        )
+
+        self.runtime.calls.clear()
+        with self.assertRaisesRegex(PartValidationError, "radius_mm"):
+            self.service.set_feature_parameter(self.target, "Fillet1", "radius_mm", 0.0)
+        self.assertEqual([], self.runtime.calls)
+
+        with self.assertRaisesRegex(PartValidationError, "unsupported"):
+            self.service.set_feature_parameter(self.target, "Fillet1", "arbitrary", 1.0)
 
     def test_suppress_unsuppress_requires_rebuild_and_readback(self) -> None:
         self.runtime.current_feature = FeatureSnapshot("Fillet1", "Fillet1", FeatureKind.FILLET, {"radius_mm": 2.0})

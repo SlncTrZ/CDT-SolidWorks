@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         FeatureSnapshot,
         FilletSpec,
         HoleSpec,
+        HoleWizardSpec,
         LinearPatternSpec,
         LoftSpec,
         MirrorSpec,
@@ -152,6 +153,12 @@ class PartSketchRuntime(Protocol):
         spec: HoleSpec,
     ) -> MutationReceipt: ...
 
+    def create_hole_wizard(
+        self,
+        document: ResolvedDocument,
+        spec: HoleWizardSpec,
+    ) -> MutationReceipt: ...
+
     def create_fillet(
         self,
         document: ResolvedDocument,
@@ -230,11 +237,26 @@ class PartSketchRuntime(Protocol):
         spec: ReferencePointSpec,
     ) -> MutationReceipt: ...
 
+    def rename_feature(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        new_name: str,
+    ) -> MutationReceipt: ...
+
     def set_feature_suppressed(
         self,
         document: ResolvedDocument,
         feature_id: str,
         suppressed: bool,
+    ) -> MutationReceipt: ...
+
+    def set_feature_parameter(
+        self,
+        document: ResolvedDocument,
+        feature_id: str,
+        parameter: str,
+        value: float,
     ) -> MutationReceipt: ...
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult: ...

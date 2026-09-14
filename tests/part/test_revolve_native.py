@@ -106,6 +106,10 @@ class FakeRevolveFeature:
     def GetDefinition(self):
         return self.definition
 
+    def IsSuppressed2(self, config_opt, config_names):
+        assert config_opt == 1
+        return (False,)
+
 
 class FakeFeatureManager:
     def __init__(self, model):

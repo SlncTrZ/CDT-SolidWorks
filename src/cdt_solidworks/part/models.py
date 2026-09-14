@@ -74,6 +74,22 @@ class HoleSpec:
     depth_mm: float | None = None
 
 
+class HoleWizardSize(str, Enum):
+    M2 = "M2"
+    M3 = "M3"
+    M4 = "M4"
+    M5 = "M5"
+    M6 = "M6"
+
+
+@dataclass(frozen=True, slots=True)
+class HoleWizardSpec:
+    name: str
+    size: HoleWizardSize
+    face_ref: str = "bbox:+z"
+    center_mm: tuple[float, float] = (0.0, 0.0)
+
+
 @dataclass(frozen=True, slots=True)
 class FilletSpec:
     name: str

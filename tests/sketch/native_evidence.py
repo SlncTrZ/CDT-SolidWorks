@@ -25,18 +25,23 @@ from cdt_solidworks.native.rebuild import rebuild_document
 from cdt_solidworks.native.session import AttachPolicy, SolidWorksSession
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult
 from cdt_solidworks.sketch.models import (
+    AngularDimension,
     Arc,
     ArcDirection,
     CenterLine,
     Circle,
+    DistanceDimension,
+    HorizontalConstraint,
     Ellipse,
     LineSegment,
     PlaneKind,
     Point2D,
+    RadiusDimension,
     SketchDefinition,
     SketchPlane,
     SketchPoint,
     Spline,
+    VerticalConstraint,
 )
 from cdt_solidworks.sketch.native import NativeSketchBinding, SketchNativeRuntime
 from cdt_solidworks.sketch.service import SketchService
@@ -225,10 +230,26 @@ def run(output: Path) -> dict[str, Any]:
                     construction=True,
                 ),
             ),
+            constraints=(
+                HorizontalConstraint(0),
+                VerticalConstraint(1),
+            ),
+            dimensions=(
+                DistanceDimension("baseline", 0, 60.0),
+                RadiusDimension("mount_radius", 2, 5.0),
+                AngularDimension("orthogonal", 0, 1, 90.0),
+            ),
         )
         snapshot = service.create(target, definition)
         if snapshot.entity_count != len(definition.entities):
             raise RuntimeError("lane adapter read-back entity count mismatch")
+        if snapshot.constraint_count != len(definition.constraints):
+            raise RuntimeError("lane adapter relation read-back count mismatch")
+        expected_dimensions = {item.name: item.value_for_readback for item in definition.dimensions}
+        if dict(snapshot.dimension_values) != expected_dimensions:
+            raise RuntimeError(
+                f"lane adapter dimension read-back mismatch: {dict(snapshot.dimension_values)!r}"
+            )
 
         def save_and_close(app: Any) -> None:
             nonlocal opened_title
@@ -329,6 +350,26 @@ def run(output: Path) -> dict[str, Any]:
                 f"expected={len(definition.entities)} actual={persisted.entity_count} "
                 f"ids={persisted.entity_ids!r} reopen_point_types={reopen.get('user_point_types')!r}"
             )
+        if persisted.constraint_count != len(definition.constraints):
+            raise RuntimeError(
+                f"persisted relation count mismatch: {persisted.constraint_count}"
+            )
+        for name, expected in expected_dimensions.items():
+            actual = persisted.dimension_values.get(name)
+            if actual is None or abs(actual - expected) > 1e-6:
+                raise RuntimeError(
+                    f"persisted dimension {name!r} mismatch: expected={expected} actual={actual}"
+                )
+
+        updated_baseline = SketchService(fresh_runtime).set_dimension_value(
+            DocumentTarget(str(output), expected_revision=int(reopen["revision"]), expected_units="mm"),
+            "AgentA_Breadth",
+            "baseline",
+            55.0,
+            unit="mm",
+        )
+        if abs(updated_baseline.value - 55.0) > 1e-6:
+            raise RuntimeError("persisted dimension edit/read-back mismatch")
 
         return {
             "host": "Slnc_TrZ",
@@ -338,6 +379,8 @@ def run(output: Path) -> dict[str, Any]:
             "artifact_sha256": _sha256(output),
             "sketch_id": snapshot.sketch_id,
             "adapter_entity_count": snapshot.entity_count,
+            "adapter_relation_count": snapshot.constraint_count,
+            "adapter_dimensions": dict(snapshot.dimension_values),
             "definition_state": snapshot.definition_state.value,
             "reopen": reopen,
             "fresh_runtime_readback": {
@@ -345,6 +388,25 @@ def run(output: Path) -> dict[str, Any]:
                 "entity_count": persisted.entity_count,
                 "entity_ids": list(persisted.entity_ids),
                 "definition_state": persisted.definition_state.value,
+                "relation_count": persisted.constraint_count,
+                "relations": [
+                    {
+                        "id": item.relation_id,
+                        "type": item.relation_type,
+                        "entity_ids": list(item.entity_ids),
+                    }
+                    for item in persisted.relations
+                ],
+                "dimensions": [
+                    {
+                        "name": item.name,
+                        "value": item.value,
+                        "unit": item.unit,
+                        "driving": item.driving,
+                    }
+                    for item in persisted.dimensions
+                ],
+                "updated_baseline_mm": updated_baseline.value,
             },
             "verdict": "NATIVE_PASS",
         }
