@@ -179,6 +179,8 @@ class FakeModel:
         self.sketch = FakeSketch()
         self.selected: list[Any] = []
         self.SketchManager = FakeSketchManager(self.sketch, self._select)
+        self.Extension = self
+        self.specific_dimension_types: list[int] = []
         self.feature = FakeFeature(self.sketch)
 
     def _select(self, entity: Any, append: bool) -> None:
@@ -197,22 +199,41 @@ class FakeModel:
         )
         return display
 
-    def AddDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
-        return self._add_dimension(2 if len(self.selected) == 2 else 1)
-
-    def AddRadialDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
-        return self._add_dimension(3)
-
-    def AddDiameterDimension2(self, x: float, y: float, z: float) -> FakeDisplayDimension:
-        return self._add_dimension(15)
+    def AddSpecificDimension(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        dimension_type: int,
+        error: Any,
+    ) -> FakeDisplayDimension:
+        self.specific_dimension_types.append(dimension_type)
+        error.value = 0
+        relation_type = {3: 2, 5: 3, 6: 15, 11: 1, 12: 1}[dimension_type]
+        return self._add_dimension(relation_type)
 
     def FeatureByName(self, name: str) -> FakeFeature | None:
         return self.feature if name == self.feature.Name else None
 
 
+class FakeApp:
+    def __init__(self) -> None:
+        self.input_dim_value_on_create = True
+        self.preference_writes: list[tuple[int, bool]] = []
+
+    def GetUserPreferenceToggle(self, preference: int) -> bool:
+        return self.input_dim_value_on_create
+
+    def SetUserPreferenceToggle(self, preference: int, value: bool) -> bool:
+        self.input_dim_value_on_create = bool(value)
+        self.preference_writes.append((preference, bool(value)))
+        return True
+
+
 class SketchNativeRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.model = FakeModel()
+        self.app = FakeApp()
         self.plane_calls: list[SketchPlane] = []
 
         def executor(
@@ -221,7 +242,7 @@ class SketchNativeRuntimeTests(unittest.TestCase):
             stage: str,
             mutation: bool,
         ) -> T:
-            return operation(object())
+            return operation(self.app)
 
         def resolver(app: Any, target: DocumentTarget) -> NativeSketchBinding:
             return NativeSketchBinding(
@@ -321,6 +342,24 @@ class SketchNativeRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(("parallel",), tuple(item.relation_type for item in remaining))
 
+    def test_native_relation_failure_is_normalized_and_exits_sketch_edit_mode(self) -> None:
+        def reject_relation(entities: tuple[Any, ...], relation_type: int) -> FakeRelation:
+            raise RuntimeError("simulated COM relation rejection")
+
+        self.model.sketch.RelationManager.AddRelation = reject_relation  # type: ignore[method-assign]
+        definition = SketchDefinition(
+            name="BadRelation",
+            plane=SketchPlane(PlaneKind.FRONT),
+            entities=(LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 3.0)),),
+            constraints=(HorizontalConstraint(0),),
+        )
+        document = self.runtime.resolve_document(self.target)
+
+        with self.assertRaisesRegex(NativeSketchUnsupportedError, "duplicate or incompatible"):
+            self.runtime.create_sketch(document, definition)
+
+        self.assertIsNone(self.model.SketchManager.ActiveSketch)
+
     def test_native_dimensions_create_query_and_edit_in_system_units(self) -> None:
         definition = SketchDefinition(
             name="Dimensions",
@@ -346,6 +385,9 @@ class SketchNativeRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(("mm", "mm", "mm", "deg"), tuple(item.unit for item in snapshot.dimensions))
         self.assertEqual((True, True, False, True), tuple(item.driving for item in snapshot.dimensions))
+        self.assertEqual([11, 5, 6, 3], self.model.specific_dimension_types)
+        self.assertTrue(self.app.input_dim_value_on_create)
+        self.assertEqual([(10, False), (10, True)], self.app.preference_writes)
 
         updated = SketchService(self.runtime).set_dimension_value(
             self.target,
@@ -366,6 +408,20 @@ class SketchNativeRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(45.0, angle.value)
         self.assertAlmostEqual(0.7853981633974483, self._dimension("angle").value)
+
+    def test_native_linear_dimension_rejects_diagonal_line_before_com_dimension_dispatch(self) -> None:
+        definition = SketchDefinition(
+            name="DiagonalDimension",
+            plane=SketchPlane(PlaneKind.FRONT),
+            entities=(LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 5.0)),),
+            dimensions=(DistanceDimension("diagonal", 0, 11.18),),
+        )
+        document = self.runtime.resolve_document(self.target)
+
+        with self.assertRaisesRegex(NativeSketchUnsupportedError, "horizontal or vertical"):
+            self.runtime.create_sketch(document, definition)
+
+        self.assertEqual([], self.model.specific_dimension_types)
 
     def _dimension(self, name: str) -> FakeDimension:
         for relation in self.model.sketch.RelationManager.relations:

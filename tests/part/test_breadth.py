@@ -97,6 +97,8 @@ class BreadthPartRuntime:
                 "wizard_size": spec.size.value,
                 "face_ref": spec.face_ref,
                 "center_count": 1,
+                "center_x_mm": spec.center_mm[0],
+                "center_y_mm": spec.center_mm[1],
                 "through_all": True,
             },
         )
@@ -319,6 +321,31 @@ class PartBreadthTests(unittest.TestCase):
             ["resolve_document", "create_hole_wizard", "rebuild", "get_feature", "list_bodies"],
             self.runtime.calls,
         )
+
+    def test_hole_wizard_rejects_mismatched_native_center_readback(self) -> None:
+        original = self.runtime.create_hole_wizard
+
+        def mismatched_center(document: ResolvedDocument, spec: HoleWizardSpec) -> MutationReceipt:
+            receipt = original(document, spec)
+            assert self.runtime.current_feature is not None
+            params = dict(self.runtime.current_feature.parameters)
+            params["center_x_mm"] = spec.center_mm[0] + 1.0
+            self.runtime.current_feature = FeatureSnapshot(
+                self.runtime.current_feature.feature_id,
+                self.runtime.current_feature.name,
+                self.runtime.current_feature.kind,
+                params,
+            )
+            return receipt
+
+        self.runtime.create_hole_wizard = mismatched_center  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(PartMutationError, "center_x_mm"):
+            self.service.hole_wizard(
+                self.target,
+                HoleWizardSpec("CSK_M4", HoleWizardSize.M4, center_mm=(10.0, 5.0)),
+                postconditions=self.post,
+            )
 
     def test_fillet_chamfer_shell_have_strict_ranges(self) -> None:
         with self.assertRaisesRegex(PartValidationError, "fillet radius"):

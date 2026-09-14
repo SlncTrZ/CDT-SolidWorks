@@ -48,6 +48,14 @@ from cdt_solidworks.sketch.models import (
 
 T = TypeVar("T")
 
+_SW_DIMENSION_ANGULAR = 3
+_SW_DIMENSION_RADIAL = 5
+_SW_DIMENSION_DIAMETER = 6
+_SW_DIMENSION_HORIZONTAL_LINEAR = 11
+_SW_DIMENSION_VERTICAL_LINEAR = 12
+_SW_INPUT_DIM_VALUE_ON_CREATE = 10
+_SW_ADD_SPECIFIC_DIMENSION_SUCCESS = 0
+
 _RELATION_LABELS = {
     4: "horizontal",
     5: "vertical",
@@ -168,8 +176,26 @@ class SketchNativeRuntime:
                 for constraint in definition.constraints:
                     entity_indexes, relation_type = self._constraint_spec(constraint)
                     relation_entities = tuple(native_entities[index] for index in entity_indexes)
-                    relation = self._member(relation_manager, "AddRelation", relation_entities, relation_type)
+                    try:
+                        relation = self._member(
+                            relation_manager,
+                            "AddRelation",
+                            self._dispatch_array(relation_entities),
+                            relation_type,
+                        )
+                    except Exception as exc:
+                        try:
+                            self._member(manager, "InsertSketch", True)
+                        except Exception:
+                            pass
+                        raise NativeSketchUnsupportedError(
+                            f"SOLIDWORKS rejected {type(constraint).__name__}; relation may be duplicate or incompatible"
+                        ) from exc
                     if relation is None:
+                        try:
+                            self._member(manager, "InsertSketch", True)
+                        except Exception:
+                            pass
                         raise NativeSketchUnsupportedError(
                             f"SOLIDWORKS rejected {type(constraint).__name__}; relation may be duplicate or incompatible"
                         )
@@ -177,8 +203,26 @@ class SketchNativeRuntime:
                 manager.AddToDB = previous_add_to_db
                 manager.DisplayWhenAdded = previous_display
 
-            for index, dimension in enumerate(definition.dimensions):
-                self._create_dimension(model, native_entities, definition, dimension, index)
+            if definition.dimensions:
+                previous_input_dimension = bool(
+                    self._member(app, "GetUserPreferenceToggle", _SW_INPUT_DIM_VALUE_ON_CREATE)
+                )
+                self._member(
+                    app,
+                    "SetUserPreferenceToggle",
+                    _SW_INPUT_DIM_VALUE_ON_CREATE,
+                    False,
+                )
+                try:
+                    for index, dimension in enumerate(definition.dimensions):
+                        self._create_dimension(model, native_entities, definition, dimension, index)
+                finally:
+                    self._member(
+                        app,
+                        "SetUserPreferenceToggle",
+                        _SW_INPUT_DIM_VALUE_ON_CREATE,
+                        previous_input_dimension,
+                    )
 
             self._member(manager, "InsertSketch", True)
             feature = self._resolve_sketch_feature(model, active_sketch, definition.name)
@@ -310,7 +354,7 @@ class SketchNativeRuntime:
                         f"dimension {name!r} requires unit {expected_unit!r}, not {unit!r}"
                     )
                 system_value = math.radians(value) if unit == "deg" else value / 1000.0
-                status = int(self._member(dimension, "SetSystemValue3", system_value, 1, None))
+                status = int(self._member(dimension, "SetSystemValue3", system_value, 1, ""))
                 if status != 0:
                     raise NativeSketchUnsupportedError(
                         f"SOLIDWORKS rejected dimension update for {name!r} with status {status}"
@@ -356,19 +400,33 @@ class SketchNativeRuntime:
         self._member(model, "ClearSelection2", True)
         if isinstance(dimension, AngularDimension):
             indexes = (dimension.first_entity_index, dimension.second_entity_index)
-            method = "AddDimension2"
+            dimension_type = _SW_DIMENSION_ANGULAR
             system_value = math.radians(float(dimension.value_deg))
         elif isinstance(dimension, RadiusDimension):
             indexes = (dimension.entity_index,)
-            method = "AddRadialDimension2"
+            dimension_type = _SW_DIMENSION_RADIAL
             system_value = float(dimension.value_mm) / 1000.0
         elif isinstance(dimension, DiameterDimension):
             indexes = (dimension.entity_index,)
-            method = "AddDiameterDimension2"
+            dimension_type = _SW_DIMENSION_DIAMETER
             system_value = float(dimension.value_mm) / 1000.0
         elif isinstance(dimension, DistanceDimension):
             indexes = (dimension.entity_index,)
-            method = "AddDimension2"
+            target = definition.entities[dimension.entity_index]
+            if not isinstance(target, (LineSegment, CenterLine)):
+                raise NativeSketchUnsupportedError(
+                    "native linear dimensions currently require a line or centerline target"
+                )
+            dx = float(target.end.x_mm) - float(target.start.x_mm)
+            dy = float(target.end.y_mm) - float(target.start.y_mm)
+            if math.isclose(dy, 0.0, rel_tol=0.0, abs_tol=1e-9):
+                dimension_type = _SW_DIMENSION_HORIZONTAL_LINEAR
+            elif math.isclose(dx, 0.0, rel_tol=0.0, abs_tol=1e-9):
+                dimension_type = _SW_DIMENSION_VERTICAL_LINEAR
+            else:
+                raise NativeSketchUnsupportedError(
+                    "native linear dimensions currently require a horizontal or vertical line"
+                )
             system_value = float(dimension.value_mm) / 1000.0
         else:
             raise NativeSketchUnsupportedError(
@@ -377,7 +435,12 @@ class SketchNativeRuntime:
 
         for selection_index, entity_index in enumerate(indexes):
             selected = bool(
-                self._member(native_entities[entity_index], "Select4", selection_index > 0, None)
+                self._member(
+                    native_entities[entity_index],
+                    "Select4",
+                    selection_index > 0,
+                    self._null_dispatch(),
+                )
             )
             if not selected:
                 raise NativeSketchUnsupportedError(
@@ -385,23 +448,59 @@ class SketchNativeRuntime:
                 )
 
         x_m, y_m = self._dimension_location(definition, index)
-        display = self._member(model, method, x_m, y_m, 0.0)
-        if display is None:
-            raise NativeSketchUnsupportedError(
-                f"SOLIDWORKS did not create dimension {dimension.name!r}"
+        extension = self._member(model, "Extension")
+        error = self._byref_int()
+        try:
+            display = self._member(
+                extension,
+                "AddSpecificDimension",
+                x_m,
+                y_m,
+                0.0,
+                dimension_type,
+                error,
             )
-        native_dimension = self._member(display, "GetDimension2", 0)
+        except Exception as exc:
+            raise NativeSketchUnsupportedError(
+                f"native dimension {dimension.name!r} failed during AddSpecificDimension: {exc}"
+            ) from exc
+        error_code = int(getattr(error, "value", 0))
+        if display is None or error_code != _SW_ADD_SPECIFIC_DIMENSION_SUCCESS:
+            raise NativeSketchUnsupportedError(
+                f"SOLIDWORKS did not create dimension {dimension.name!r}; AddSpecificDimension status={error_code}"
+            )
+        try:
+            native_dimension = self._member(display, "GetDimension2", 0)
+        except Exception as exc:
+            raise NativeSketchUnsupportedError(
+                f"native dimension {dimension.name!r} failed during GetDimension2"
+            ) from exc
         if native_dimension is None:
             raise NativeSketchUnsupportedError(
                 f"created dimension {dimension.name!r} has no native dimension object"
             )
-        native_dimension.Name = dimension.name
-        status = int(self._member(native_dimension, "SetSystemValue3", system_value, 1, None))
+        try:
+            native_dimension.Name = dimension.name
+        except Exception as exc:
+            raise NativeSketchUnsupportedError(
+                f"native dimension {dimension.name!r} failed while setting its deterministic name"
+            ) from exc
+        try:
+            status = int(self._member(native_dimension, "SetSystemValue3", system_value, 1, ""))
+        except Exception as exc:
+            raise NativeSketchUnsupportedError(
+                f"native dimension {dimension.name!r} failed during SetSystemValue3"
+            ) from exc
         if status != 0:
             raise NativeSketchUnsupportedError(
                 f"SOLIDWORKS rejected initial value for dimension {dimension.name!r} with status {status}"
             )
-        native_dimension.DrivenState = 2 if dimension.driving else 1
+        try:
+            native_dimension.DrivenState = 2 if dimension.driving else 1
+        except Exception as exc:
+            raise NativeSketchUnsupportedError(
+                f"native dimension {dimension.name!r} failed while setting driving/driven state"
+            ) from exc
         self._member(model, "ClearSelection2", True)
 
     @staticmethod
@@ -442,7 +541,7 @@ class SketchNativeRuntime:
             name = str(self._member(dimension, "Name") or "").strip()
             if not name:
                 raise NativeSketchUnsupportedError("native sketch dimension returned an empty name")
-            raw_value = self._member(dimension, "GetSystemValue3", 1, None)
+            raw_value = self._member(dimension, "GetSystemValue3", 1, "")
             values = self._as_tuple(raw_value)
             if not values:
                 raise NativeSketchUnsupportedError(f"dimension {name!r} returned no system value")
@@ -731,6 +830,40 @@ class SketchNativeRuntime:
             segment.ConstructionGeometry = bool(entity.construction)
             return segment
         raise NativeSketchUnsupportedError(f"unsupported native sketch entity: {type(entity).__name__}")
+
+    @staticmethod
+    def _byref_int() -> Any:
+        """Return a BYREF I4 for COM out parameters, with a unit-test fallback."""
+        try:
+            import pythoncom  # type: ignore[import-not-found]
+            from win32com.client import VARIANT  # type: ignore[import-not-found]
+        except ImportError:
+            class _IntRef:
+                value = 0
+
+            return _IntRef()
+        return VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+
+    @staticmethod
+    def _null_dispatch() -> Any:
+        """Return a typed null IDispatch for late-bound COM optional objects."""
+        try:
+            import pythoncom  # type: ignore[import-not-found]
+            from win32com.client import VARIANT  # type: ignore[import-not-found]
+        except ImportError:
+            return None
+        return VARIANT(pythoncom.VT_DISPATCH, None)
+
+    @staticmethod
+    def _dispatch_array(values: tuple[Any, ...]) -> Any:
+        """Marshal sketch entities as SAFEARRAY(IDispatch) on native Windows."""
+        try:
+            import pythoncom  # type: ignore[import-not-found]
+            from win32com.client import VARIANT  # type: ignore[import-not-found]
+        except ImportError:
+            # Non-Windows unit doubles accept the logical tuple directly.
+            return tuple(values)
+        return VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, tuple(values))
 
     @staticmethod
     def _double_array(values: list[float]) -> Any:

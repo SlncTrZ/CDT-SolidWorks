@@ -221,6 +221,8 @@ class PartService:
                 "wizard_size": spec.size.value,
                 "face_ref": spec.face_ref,
                 "center_count": 1,
+                "center_x_mm": float(spec.center_mm[0]),
+                "center_y_mm": float(spec.center_mm[1]),
                 "through_all": True,
             },
             postconditions=postconditions,
