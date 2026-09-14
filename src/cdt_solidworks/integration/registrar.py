@@ -264,6 +264,8 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             name: str,
             entities: list[dict[str, Any]],
             plane: Literal["front", "top", "right"] = "front",
+            constraints: list[dict[str, Any]] | None = None,
+            dimensions: list[dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.sketch_service.create_geometry(
@@ -272,6 +274,8 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     name=name,
                     plane=plane,
                     entities=entities,
+                    constraints=constraints,
+                    dimensions=dimensions,
                 )
             )
 
@@ -285,6 +289,59 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             return _result_payload(
                 runtime.sketch_service.get(
                     path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
+        @server.tool(
+            name="sketch_relations_list",
+            description="List native-accepted sketch relations for one explicit sketch identity.",
+        )
+        def sketch_relations_list(path: str, expected_revision: int, sketch_id: str) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.list_relations(
+                    path=path, expected_revision=expected_revision, sketch_id=sketch_id
+                )
+            )
+
+        @server.tool(
+            name="sketch_relation_delete",
+            description="Delete one explicit native sketch relation and verify sketch state after mutation.",
+        )
+        def sketch_relation_delete(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            relation_id: str,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.delete_relation(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    relation_id=relation_id,
+                )
+            )
+
+        @server.tool(
+            name="sketch_dimension_set",
+            description="Set one evidence-backed sketch dimension value using explicit millimeter or degree units.",
+        )
+        def sketch_dimension_set(
+            path: str,
+            expected_revision: int,
+            sketch_id: str,
+            name: str,
+            value: float,
+            unit: Literal["mm", "deg"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.sketch_service.set_dimension(
+                    path=path,
+                    expected_revision=expected_revision,
+                    sketch_id=sketch_id,
+                    name=name,
+                    value=value,
+                    unit=unit,
                 )
             )
 
@@ -451,6 +508,227 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     is_cut=is_cut,
                 )
             )
+
+        @server.tool(
+            name="part_hole_wizard",
+            description="Create one native ANSI Metric countersink Hole Wizard feature in the evidence-backed M2-M6 subset on bbox:+z.",
+        )
+        def part_hole_wizard(
+            path: str,
+            expected_revision: int,
+            name: str,
+            size: Literal["M2", "M4", "M6"],
+            center_mm: list[float],
+            face_ref: Literal["bbox:+z"] = "bbox:+z",
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.part_feature_service.hole_wizard(
+                    path=path,
+                    expected_revision=expected_revision,
+                    name=name,
+                    size=size,
+                    face_ref=face_ref,
+                    center_mm=center_mm,
+                )
+            )
+
+        @server.tool(name="part_fillet", description="Create an evidence-backed constant-radius fillet from bounded bbox edge references.")
+        def part_fillet(
+            path: str,
+            expected_revision: int,
+            name: str,
+            edge_refs: list[str],
+            radius_mm: float,
+            tangent_propagation: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.fillet(
+                path=path, expected_revision=expected_revision, name=name,
+                edge_refs=edge_refs, radius_mm=radius_mm,
+                tangent_propagation=tangent_propagation,
+            ))
+
+        @server.tool(name="part_chamfer", description="Create an evidence-backed distance-angle chamfer from bounded bbox edge references.")
+        def part_chamfer(
+            path: str,
+            expected_revision: int,
+            name: str,
+            edge_refs: list[str],
+            distance_mm: float,
+            angle_deg: float = 45.0,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.chamfer(
+                path=path, expected_revision=expected_revision, name=name,
+                edge_refs=edge_refs, distance_mm=distance_mm, angle_deg=angle_deg,
+            ))
+
+        @server.tool(name="part_shell", description="Create an evidence-backed shell using bounded outer-face references.")
+        def part_shell(
+            path: str,
+            expected_revision: int,
+            name: str,
+            face_refs: list[str],
+            thickness_mm: float,
+            outward: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.shell(
+                path=path, expected_revision=expected_revision, name=name,
+                face_refs=face_refs, thickness_mm=thickness_mm, outward=outward,
+            ))
+
+        @server.tool(name="part_draft", description="Create an evidence-backed neutral-plane draft using bounded face and plane context.")
+        def part_draft(
+            path: str,
+            expected_revision: int,
+            name: str,
+            face_refs: list[str],
+            neutral_plane_ref: Literal["bbox:+z"],
+            angle_deg: float,
+            reverse_direction: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.draft(
+                path=path, expected_revision=expected_revision, name=name,
+                face_refs=face_refs, neutral_plane_ref=neutral_plane_ref,
+                angle_deg=angle_deg, reverse_direction=reverse_direction,
+            ))
+
+        @server.tool(name="part_rib", description="Create an evidence-backed rib from one explicit sketch profile.")
+        def part_rib(
+            path: str,
+            expected_revision: int,
+            name: str,
+            sketch_id: str,
+            thickness_mm: float,
+            both_sides: Literal[True] = True,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.rib(
+                path=path, expected_revision=expected_revision, name=name,
+                sketch_id=sketch_id, thickness_mm=thickness_mm, both_sides=both_sides,
+            ))
+
+        @server.tool(name="part_linear_pattern", description="Create an evidence-backed linear feature pattern along one bounded bbox edge direction.")
+        def part_linear_pattern(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            direction_ref: Literal["bbox:edge:+y:+z"],
+            count: int,
+            spacing_mm: float,
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.linear_pattern(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, direction_ref=direction_ref,
+                count=count, spacing_mm=spacing_mm, geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_circular_pattern", description="Create an evidence-backed circular feature pattern around one promoted reference-axis feature.")
+        def part_circular_pattern(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            axis_ref: str,
+            count: int,
+            angle_deg: float = 360.0,
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.circular_pattern(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, axis_ref=axis_ref, count=count,
+                angle_deg=angle_deg, geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_mirror", description="Mirror promoted feature seeds about one standard reference plane.")
+        def part_mirror(
+            path: str,
+            expected_revision: int,
+            name: str,
+            seed_feature_ids: list[str],
+            mirror_ref: Literal["plane:right"],
+            geometry_pattern: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.mirror(
+                path=path, expected_revision=expected_revision, name=name,
+                seed_feature_ids=seed_feature_ids, mirror_ref=mirror_ref,
+                geometry_pattern=geometry_pattern,
+            ))
+
+        @server.tool(name="part_reference_plane", description="Create one offset reference plane from a standard Front/Top/Right datum plane.")
+        def part_reference_plane(
+            path: str,
+            expected_revision: int,
+            name: str,
+            reference: Literal["plane:front"],
+            offset_mm: float = 0.0,
+            reverse_direction: Literal[False] = False,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_plane(
+                path=path, expected_revision=expected_revision, name=name,
+                reference=reference, offset_mm=offset_mm,
+                reverse_direction=reverse_direction,
+            ))
+
+        @server.tool(name="part_reference_axis", description="Create one reference axis from two distinct standard reference planes.")
+        def part_reference_axis(
+            path: str,
+            expected_revision: int,
+            name: str,
+            first_ref: Literal["plane:top"],
+            second_ref: Literal["plane:right"],
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_axis(
+                path=path, expected_revision=expected_revision, name=name,
+                first_ref=first_ref, second_ref=second_ref,
+            ))
+
+        @server.tool(name="part_reference_point", description="Create one reference point at the center of a bounded planar bbox face.")
+        def part_reference_point(
+            path: str,
+            expected_revision: int,
+            name: str,
+            reference: Literal["bbox:+z"],
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.reference_point(
+                path=path, expected_revision=expected_revision, name=name, reference=reference,
+            ))
+
+        @server.tool(name="part_feature_get", description="Read one evidence-promoted parametric feature by explicit feature identity.")
+        def part_feature_get(path: str, expected_revision: int, feature_id: str) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.get_feature(
+                path=path, expected_revision=expected_revision, feature_id=feature_id,
+            ))
+
+        @server.tool(name="part_feature_rename", description="Rename one evidence-promoted feature and verify identity read-back.")
+        def part_feature_rename(
+            path: str, expected_revision: int, feature_id: str, new_name: str
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.rename_feature(
+                path=path, expected_revision=expected_revision,
+                feature_id=feature_id, new_name=new_name,
+            ))
+
+        @server.tool(name="part_feature_set_suppressed", description="Suppress or unsuppress one evidence-promoted feature with rebuild/read-back verification.")
+        def part_feature_set_suppressed(
+            path: str, expected_revision: int, feature_id: str, suppressed: bool
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.set_feature_suppressed(
+                path=path, expected_revision=expected_revision,
+                feature_id=feature_id, suppressed=suppressed,
+            ))
+
+        @server.tool(name="part_feature_set_parameter", description="Edit only the native-accepted constant-fillet radius_mm parameter; arbitrary feature definitions are not exposed.")
+        def part_feature_set_parameter(
+            path: str,
+            expected_revision: int,
+            feature_id: str,
+            parameter: Literal["radius_mm"],
+            value: float,
+        ) -> dict[str, Any]:
+            return _result_payload(runtime.part_feature_service.set_feature_parameter(
+                path=path, expected_revision=expected_revision, feature_id=feature_id,
+                parameter=parameter, value=value,
+            ))
 
         @server.tool(
             name="part_cut_reconcile",

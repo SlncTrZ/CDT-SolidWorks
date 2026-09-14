@@ -13,18 +13,34 @@ from cdt_solidworks.native.models import NativeCallResult, NativeCallState, Nati
 from cdt_solidworks.native.rebuild import rebuild_document
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult as PartRebuildResult
 from cdt_solidworks.sketch.models import (
+    AngularDimension,
     Arc,
     ArcDirection,
     CenterLine,
     Circle,
+    CoincidentConstraint,
+    ConcentricConstraint,
+    DiameterDimension,
+    DistanceDimension,
     Ellipse,
+    EqualConstraint,
+    FixConstraint,
+    HorizontalConstraint,
     LineSegment,
+    MidpointConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
     PlaneKind,
     Point2D,
+    RadiusDimension,
     SketchDefinition,
     SketchPlane,
     SketchPoint,
     Spline,
+    SymmetricConstraint,
+    TangentConstraint,
+    UnfixConstraint,
+    VerticalConstraint,
 )
 from cdt_solidworks.sketch.native import NativeSketchBinding, SketchNativeRuntime
 from cdt_solidworks.sketch.service import (
@@ -54,6 +70,8 @@ _LENGTH_UNITS = {
     10: "uin",
 }
 _MAX_ENTITIES = 256
+_MAX_CONSTRAINTS = 256
+_MAX_DIMENSIONS = 256
 _MAX_FEATURES = 100_000
 
 
@@ -68,24 +86,30 @@ class IntegratedSketchService:
 
     def __init__(
         self,
-        session: Any,
+        session: Any | None = None,
         *,
         path_policy: DocumentPathPolicy,
+        service: Any | None = None,
         default_timeout: float = 60.0,
     ) -> None:
         self.session = session
-        self.api = session.api
+        self.api = None if session is None else session.api
         self.path_policy = path_policy
         self.default_timeout = default_timeout
-        self.runtime = SketchNativeRuntime(
-            executor=self._execute,
-            binding_resolver=self._resolve_binding,
-            plane_selector=self._select_plane,
-            sketch_feature_resolver=self._resolve_created_sketch_feature,
-            member=self.api._member,
-            rebuild_verifier=self._verify_rebuild,
-        )
-        self.service = SketchService(self.runtime)
+        self.runtime = None
+        if service is None:
+            if session is None:
+                raise ValueError("session is required when sketch service is not injected")
+            self.runtime = SketchNativeRuntime(
+                executor=self._execute,
+                binding_resolver=self._resolve_binding,
+                plane_selector=self._select_plane,
+                sketch_feature_resolver=self._resolve_created_sketch_feature,
+                member=self.api._member,
+                rebuild_verifier=self._verify_rebuild,
+            )
+            service = SketchService(self.runtime)
+        self.service = service
 
     def create_geometry(
         self,
@@ -95,11 +119,19 @@ class IntegratedSketchService:
         name: str,
         plane: str,
         entities: Sequence[Mapping[str, Any]],
+        constraints: Sequence[Mapping[str, Any]] | None = None,
+        dimensions: Sequence[Mapping[str, Any]] | None = None,
     ) -> NativeCallResult[Any]:
         call_id = uuid.uuid4().hex
         try:
             target = self._target(path, expected_revision)
-            definition = self._definition(name=name, plane=plane, entities=entities)
+            definition = self._definition(
+                name=name,
+                plane=plane,
+                entities=entities,
+                constraints=constraints,
+                dimensions=dimensions,
+            )
             value = self.service.create(target, definition)
             return NativeCallResult.success(value, call_id=call_id, dispatched=True)
         except _NativeResultInterrupt as exc:
@@ -107,6 +139,79 @@ class IntegratedSketchService:
         except Exception as exc:
             return NativeCallResult.failed(
                 self._semantic_failure(exc, "sketch_create_geometry"),
+                call_id=call_id,
+                dispatched=isinstance(exc, SketchMutationError),
+            )
+
+    def list_relations(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            target = self._target(path, expected_revision)
+            value = self.service.list_relations(target, sketch_id)
+            return NativeCallResult.success(value, call_id=call_id, dispatched=False)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_relations_list"),
+                call_id=call_id,
+                dispatched=False,
+            )
+
+    def delete_relation(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        relation_id: str,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            target = self._target(path, expected_revision)
+            value = self.service.delete_relation(target, sketch_id, relation_id)
+            return NativeCallResult.success(value, call_id=call_id, dispatched=True)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_relation_delete"),
+                call_id=call_id,
+                dispatched=isinstance(exc, SketchMutationError),
+            )
+
+    def set_dimension(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        value: float,
+        unit: str,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            target = self._target(path, expected_revision)
+            result = self.service.set_dimension_value(
+                target,
+                sketch_id,
+                name,
+                value,
+                unit=unit,
+            )
+            return NativeCallResult.success(result, call_id=call_id, dispatched=True)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_dimension_set"),
                 call_id=call_id,
                 dispatched=isinstance(exc, SketchMutationError),
             )
@@ -150,6 +255,8 @@ class IntegratedSketchService:
         name: str,
         plane: str,
         entities: Sequence[Mapping[str, Any]],
+        constraints: Sequence[Mapping[str, Any]] | None,
+        dimensions: Sequence[Mapping[str, Any]] | None,
     ) -> SketchDefinition:
         if isinstance(entities, (str, bytes)) or not isinstance(entities, Sequence):
             raise SketchValidationError("entities must be an array of geometry objects")
@@ -166,12 +273,127 @@ class IntegratedSketchService:
             raise SketchValidationError("plane must be front, top, or right") from exc
         if plane_kind not in _STANDARD_PLANE_INDEX:
             raise SketchValidationError("plane must be front, top, or right")
+        constraint_items = () if constraints is None else constraints
+        dimension_items = () if dimensions is None else dimensions
+        if isinstance(constraint_items, (str, bytes)) or not isinstance(constraint_items, Sequence):
+            raise SketchValidationError("constraints must be an array of relation objects")
+        if isinstance(dimension_items, (str, bytes)) or not isinstance(dimension_items, Sequence):
+            raise SketchValidationError("dimensions must be an array of dimension objects")
+        if len(constraint_items) > _MAX_CONSTRAINTS:
+            raise SketchValidationError(f"sketch supports at most {_MAX_CONSTRAINTS} constraints per call")
+        if len(dimension_items) > _MAX_DIMENSIONS:
+            raise SketchValidationError(f"sketch supports at most {_MAX_DIMENSIONS} dimensions per call")
         parsed = tuple(self._entity(item) for item in entities)
+        parsed_constraints = tuple(self._constraint(item) for item in constraint_items)
+        parsed_dimensions = tuple(self._dimension(item) for item in dimension_items)
         return SketchDefinition(
             name=name,
             plane=SketchPlane(plane_kind),
             entities=parsed,
+            constraints=parsed_constraints,
+            dimensions=parsed_dimensions,
         )
+
+    def _constraint(self, raw: Mapping[str, Any]) -> Any:
+        if not isinstance(raw, Mapping):
+            raise SketchValidationError("each sketch constraint must be an object")
+        kind = str(raw.get("type", "")).strip().lower()
+        single = {
+            "horizontal": HorizontalConstraint,
+            "vertical": VerticalConstraint,
+            "fix": FixConstraint,
+            "unfix": UnfixConstraint,
+        }
+        if kind in single:
+            self._strict_keys(raw, {"type", "entity_index"}, {"type", "entity_index"})
+            return single[kind](self._index(raw["entity_index"], "entity_index"))
+        pair = {
+            "coincident": CoincidentConstraint,
+            "concentric": ConcentricConstraint,
+            "tangent": TangentConstraint,
+            "parallel": ParallelConstraint,
+            "perpendicular": PerpendicularConstraint,
+            "equal": EqualConstraint,
+        }
+        if kind in pair:
+            allowed = {"type", "first_entity_index", "second_entity_index"}
+            self._strict_keys(raw, allowed, allowed)
+            return pair[kind](
+                self._index(raw["first_entity_index"], "first_entity_index"),
+                self._index(raw["second_entity_index"], "second_entity_index"),
+            )
+        if kind == "midpoint":
+            allowed = {"type", "point_entity_index", "target_entity_index"}
+            self._strict_keys(raw, allowed, allowed)
+            return MidpointConstraint(
+                self._index(raw["point_entity_index"], "point_entity_index"),
+                self._index(raw["target_entity_index"], "target_entity_index"),
+            )
+        if kind == "symmetric":
+            allowed = {
+                "type",
+                "first_entity_index",
+                "second_entity_index",
+                "symmetry_entity_index",
+            }
+            self._strict_keys(raw, allowed, allowed)
+            return SymmetricConstraint(
+                self._index(raw["first_entity_index"], "first_entity_index"),
+                self._index(raw["second_entity_index"], "second_entity_index"),
+                self._index(raw["symmetry_entity_index"], "symmetry_entity_index"),
+            )
+        raise SketchValidationError(
+            "constraint type must be horizontal, vertical, coincident, concentric, tangent, parallel, perpendicular, equal, midpoint, symmetric, fix, or unfix"
+        )
+
+    def _dimension(self, raw: Mapping[str, Any]) -> Any:
+        if not isinstance(raw, Mapping):
+            raise SketchValidationError("each sketch dimension must be an object")
+        kind = str(raw.get("type", "")).strip().lower()
+        if not isinstance(raw.get("name"), str) or not str(raw["name"]).strip():
+            raise SketchValidationError("dimension name must be a non-empty string")
+        name = str(raw["name"]).strip()
+        driving = self._bool(raw.get("driving", True), "driving")
+        if kind in {"distance", "diameter", "radius"}:
+            allowed = {"type", "name", "entity_index", "value_mm", "driving"}
+            required = {"type", "name", "entity_index", "value_mm"}
+            self._strict_keys(raw, allowed, required)
+            cls = {
+                "distance": DistanceDimension,
+                "diameter": DiameterDimension,
+                "radius": RadiusDimension,
+            }[kind]
+            return cls(
+                name,
+                self._index(raw["entity_index"], "entity_index"),
+                self._number(raw["value_mm"], "value_mm"),
+                driving=driving,
+            )
+        if kind == "angular":
+            allowed = {
+                "type",
+                "name",
+                "first_entity_index",
+                "second_entity_index",
+                "value_deg",
+                "driving",
+            }
+            required = {
+                "type",
+                "name",
+                "first_entity_index",
+                "second_entity_index",
+                "value_deg",
+            }
+            self._strict_keys(raw, allowed, required)
+            return AngularDimension(
+                name,
+                self._index(raw["first_entity_index"], "first_entity_index"),
+                self._index(raw["second_entity_index"], "second_entity_index"),
+                self._number(raw["value_deg"], "value_deg"),
+                driving=driving,
+            )
+        raise SketchValidationError("dimension type must be distance, diameter, radius, or angular")
 
     def _entity(self, raw: Mapping[str, Any]) -> Any:
         if not isinstance(raw, Mapping):
@@ -257,6 +479,12 @@ class IntegratedSketchService:
         if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence) or len(raw) != 2:
             raise SketchValidationError("point coordinates must be [x_mm, y_mm]")
         return Point2D(self._number(raw[0], "x_mm"), self._number(raw[1], "y_mm"))
+
+    @staticmethod
+    def _index(raw: Any, label: str) -> int:
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise SketchValidationError(f"{label} must be a non-negative integer")
+        return raw
 
     @staticmethod
     def _number(raw: Any, label: str) -> float:

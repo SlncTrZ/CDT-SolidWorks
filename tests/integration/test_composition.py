@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from cdt_solidworks.integration.registrar import register_runtime_tools
 from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
 from cdt_solidworks.integration.server import build_integrated_server
 from cdt_solidworks.native.models import ApplicationProbe, NativeCallResult
@@ -116,11 +117,20 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.sketch.rectangle"].available is True
     assert states["solidworks.sketch.geometry"].implemented is True
     assert states["solidworks.sketch.geometry"].available is True
+    assert states["solidworks.sketch.relations"].available is True
+    assert states["solidworks.sketch.dimensions"].available is True
     assert states["solidworks.part.cut_extrude"].implemented is True
     assert states["solidworks.part.cut_extrude"].available is True
     assert states["solidworks.part.simple_hole"].available is True
     assert states["solidworks.part.revolve"].available is True
     assert states["solidworks.part.revolve_cut"].available is True
+    for capability in (
+        "hole_wizard", "fillet", "chamfer", "shell", "draft", "rib",
+        "linear_pattern", "circular_pattern", "mirror", "reference_plane",
+        "reference_axis", "reference_point", "feature_query", "feature_rename",
+        "feature_suppression", "fillet_radius_edit",
+    ):
+        assert states[f"solidworks.part.{capability}"].available is True
     assert states["solidworks.part.combine"].implemented is True
     assert states["solidworks.sheet_metal.base_flange"].implemented is True
     assert states["solidworks.surface.extrude"].implemented is True
@@ -218,9 +228,15 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "document_close", "document_reopen", "document_list_features",
         "document_list_bodies", "document_list_components", "document_rebuild",
         "document_reconcile", "sketch_create_geometry", "sketch_get",
+        "sketch_relations_list", "sketch_relation_delete", "sketch_dimension_set",
         "part_cut_extrude", "part_cut_reconcile",
         "part_simple_hole", "part_simple_hole_reconcile",
         "part_revolve", "part_revolve_cut", "part_revolve_reconcile",
+        "part_hole_wizard", "part_fillet", "part_chamfer", "part_shell",
+        "part_draft", "part_rib", "part_linear_pattern", "part_circular_pattern",
+        "part_mirror", "part_reference_plane", "part_reference_axis",
+        "part_reference_point", "part_feature_get", "part_feature_rename",
+        "part_feature_set_suppressed", "part_feature_set_parameter",
         "body_inspect", "body_combine", "surface_thicken",
         "sheet_metal_inspect", "sheet_metal_set_flattened",
         "weldment_inspect", "weldment_create_structural_member",
@@ -256,3 +272,84 @@ def test_runtime_context_exposes_license_probe_as_unimplemented() -> None:
     assert states["solidworks.license"].implemented is False
     assert states["solidworks.license"].available is False
     assert states["solidworks.license"].reason == "license_probe_not_integrated"
+
+
+class _CapturingServer:
+    def __init__(self) -> None:
+        self.tools: dict[str, object] = {}
+
+    def tool(self, *, name: str, description: str):
+        def register(func):
+            self.tools[name] = func
+            return func
+        return register
+
+
+class _PublicSketchService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def create_geometry(self, **kwargs):
+        self.calls.append(("create_geometry", kwargs))
+        return NativeCallResult.success({"ok": True}, call_id="sketch-public")
+
+
+class _PublicPartService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def hole_wizard(self, **kwargs):
+        self.calls.append(("hole_wizard", kwargs))
+        return NativeCallResult.success({"ok": True}, call_id="hole-public")
+
+    def set_feature_parameter(self, **kwargs):
+        self.calls.append(("set_feature_parameter", kwargs))
+        return NativeCallResult.success({"ok": True}, call_id="feature-public")
+
+
+def test_agent_a_public_registrar_forwards_strict_promoted_arguments(tmp_path: Path) -> None:
+    sketch = _PublicSketchService()
+    part = _PublicPartService()
+    runtime = IntegratedProviderRuntime(
+        allowed_roots=(tmp_path,),
+        session=_FakeSession(_success_probe(registered=True, running=True)),
+        document_service=_FakeDocumentService(),
+        cad_service=None,
+        sketch_service=sketch,
+        part_feature_service=part,
+    )
+    server = _CapturingServer()
+    register_runtime_tools(server, runtime)
+
+    sketch_result = server.tools["sketch_create_geometry"](
+        path=str(tmp_path / "part.SLDPRT"),
+        expected_revision=2,
+        name="Sketch1",
+        entities=[{"type": "line", "start_mm": [0, 0], "end_mm": [10, 0]}],
+        plane="front",
+        constraints=[{"type": "horizontal", "entity_index": 0}],
+        dimensions=[{"type": "distance", "name": "D1", "entity_index": 0, "value_mm": 10.0}],
+    )
+    hole_result = server.tools["part_hole_wizard"](
+        path=str(tmp_path / "part.SLDPRT"),
+        expected_revision=3,
+        name="HW1",
+        size="M4",
+        center_mm=[0.0, 0.0],
+        face_ref="bbox:+z",
+    )
+    feature_result = server.tools["part_feature_set_parameter"](
+        path=str(tmp_path / "part.SLDPRT"),
+        expected_revision=4,
+        feature_id="Fillet1",
+        parameter="radius_mm",
+        value=4.0,
+    )
+
+    assert sketch_result["state"] == "success"
+    assert hole_result["state"] == "success"
+    assert feature_result["state"] == "success"
+    assert sketch.calls[0][1]["constraints"][0]["type"] == "horizontal"
+    assert sketch.calls[0][1]["dimensions"][0]["name"] == "D1"
+    assert part.calls[0][1]["size"] == "M4"
+    assert part.calls[1][1]["parameter"] == "radius_mm"

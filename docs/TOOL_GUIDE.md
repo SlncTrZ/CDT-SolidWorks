@@ -1,6 +1,6 @@
 # CDT-SolidWorks Tool Guide
 
-> Status: bounded Mechanical 90 A–D provider surface callable and native-verified on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-13
+> Status: bounded Mechanical 90 provider surface through M95-R3 Agent A public integration; native-verified subsets on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-14
 
 ## Current callable surface
 
@@ -10,8 +10,11 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 
 | Tool | Current native scope |
 | --- | --- |
-| `sketch_create_geometry` | Bounded explicit sketch geometry in an opened part: line, centerline, circle, arc, ellipse, point, cubic spline |
-| `sketch_get` | Read back one explicit native sketch by stable sketch identity |
+| `sketch_create_geometry` | Bounded explicit sketch geometry in an opened part: line, centerline, circle, arc, ellipse, point, cubic spline; may include the native-passed relation and dimension subsets below |
+| `sketch_get` | Read back one explicit native sketch by stable sketch identity, including definition state, relations and dimensions |
+| `sketch_relations_list` | List native-passed sketch relations using persisted relation identity |
+| `sketch_relation_delete` | Delete one explicit sketch relation with rebuild/read-back verification |
+| `sketch_dimension_set` | Edit one explicit native-passed sketch dimension in `mm` or `deg` with rebuild/read-back verification |
 | `sketch_create_rectangle` | New part, Front/Top/Right plane, rectangular 2D sketch |
 | `part_create_rect_extrude` | New rectangular solid boss |
 | `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
@@ -22,6 +25,18 @@ The provider exposes platform identity/status/capabilities, application lifecycl
 | `part_revolve` | Native solid Revolve from a Front/Top/Right sketch with exactly one construction centerline; `axis_ref=profile_centerline`; angle `(0, 360]` degrees |
 | `part_revolve_cut` | Native Revolve Cut with the same bounded profile-centerline/angle contract |
 | `part_revolve_reconcile` | Reconcile uncertain boss/cut Revolve by call ID; verifies type, centerline axis, angle, rebuild and solid body before clearing quarantine |
+| `part_hole_wizard` | ANSI Metric countersink / Flat Head Screw ANSI B18.6.7M, native-passed sizes `M2`, `M4`, `M6`, one center, through-all, one solid body, `face_ref=bbox:+z` only |
+| `part_fillet` | Constant-radius fillet on the native-passed `bbox:edge:+x:+z` selector; tangent propagation remains disabled |
+| `part_chamfer` | Distance-angle chamfer on the native-passed `bbox:edge:-x:+z` selector |
+| `part_shell` | Shell using the native-passed `bbox:+z` face removal selector, inward only |
+| `part_draft` | Neutral-plane draft for `face_refs=[bbox:+x]`, `neutral_plane_ref=bbox:+z`, non-reversed direction |
+| `part_rib` | Rib from one explicit sketch profile with native-passed `both_sides=true` contract |
+| `part_linear_pattern` | Feature linear pattern with explicit seed identities, `direction_ref=bbox:edge:+y:+z`, `geometry_pattern=false` |
+| `part_circular_pattern` | Feature circular pattern around an explicitly promoted reference-axis feature, `geometry_pattern=false` |
+| `part_mirror` | Feature mirror about `plane:right`, `geometry_pattern=false` |
+| `part_reference_plane` / `part_reference_axis` / `part_reference_point` | Native-passed reference combinations: offset from `plane:front`; axis from `plane:top` + `plane:right`; point from `bbox:+z` |
+| `part_feature_get` / `part_feature_rename` / `part_feature_set_suppressed` | Explicit feature query/rename/suppress/unsuppress with identity and rebuild/read-back gates |
+| `part_feature_set_parameter` | Whitelist-only feature edit; currently only constant-fillet `radius_mm`, never an arbitrary feature-definition surface |
 | `part_combine_all_bodies` | Boolean Add of all current solid bodies |
 | `part_split_by_plane` | Split using Front/Top/Right standard plane |
 | `sheet_metal_create_base_flange` | Base flange with thickness/bend-radius read-back |
@@ -60,9 +75,9 @@ Paths are constrained to configured allowed roots. Create operations refuse to o
 
 ## Verification status
 
-The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes part creation, blind/through-all Cut Extrude with save/reopen and volume read-back, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly creation, component state/configuration persistence, Coincident/Parallel/Perpendicular/Distance/Angle mate creation, Distance mate editing, configuration lifecycle, configuration-specific dimensions/properties/feature suppression, equation/global-variable CRUD, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
+The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes sketch relation/definition-state/dimension workflows, Hole Wizard M2/M4/M6, Fillet/Chamfer/Shell, Draft/Rib, Linear/Circular Pattern/Mirror, bounded reference geometry, feature query/rename/suppression/fillet-radius edit, part creation, blind/through-all Cut Extrude with save/reopen and volume read-back, Revolve/Revolve Cut, Simple Hole, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly/configuration workflows, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
 
-Capability promotion is granular. Full parametric-part and full assembly-mate families are not claimed yet: Cut Extrude is promoted, while Revolve and the remaining parametric feature families plus additional mate families remain outside the promoted provider surface. Broad `solidworks.configurations` also remains partial: the accepted lifecycle/dimension/property/feature-suppression/equation slices are callable, while wider configuration/design-table behavior is not claimed.
+Capability promotion remains granular. `solidworks.part.parametric` intentionally remains partial even though the evidence-backed Agent A feature groups above are now individually callable and advertised. Sweep, Loft/Boundary and broader arbitrary topology/feature-definition editing remain unavailable. Full assembly-mate, configuration, drawing, evaluation and MBD families also remain partial; no broad capability is promoted merely because a neighboring subset exists.
 
 ## Lane D accepted boundary
 

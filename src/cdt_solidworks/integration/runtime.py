@@ -246,6 +246,17 @@ class IntegratedProviderRuntime:
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.sketch.{name}",
+                    implemented=sketch_implemented,
+                    available=sketch_available,
+                    reason=sketch_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("relations", "dimensions")
+            ),
             CapabilityState(
                 name="solidworks.sketch.rectangle",
                 implemented=cad_implemented,
@@ -293,6 +304,34 @@ class IntegratedProviderRuntime:
                 reason=part_feature_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.part.{name}",
+                    implemented=part_feature_implemented,
+                    available=part_feature_available,
+                    reason=part_feature_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in (
+                    "hole_wizard",
+                    "fillet",
+                    "chamfer",
+                    "shell",
+                    "draft",
+                    "rib",
+                    "linear_pattern",
+                    "circular_pattern",
+                    "mirror",
+                    "reference_plane",
+                    "reference_axis",
+                    "reference_point",
+                    "feature_query",
+                    "feature_rename",
+                    "feature_suppression",
+                    "fillet_radius_edit",
+                )
             ),
             CapabilityState(
                 name="solidworks.part.multibody",
