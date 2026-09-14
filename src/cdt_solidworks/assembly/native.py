@@ -216,7 +216,7 @@ class AssemblyNativeAdapter:
             component = self._component(assembly, component_id)
             self._select_component(assembly, component)
             try:
-                result = self.api._member(assembly, "DeleteSelections")
+                result = self.api._member(assembly, "DeleteSelections", 0)
             finally:
                 self.api._member(assembly, "ClearSelection2", True)
             if result is False:

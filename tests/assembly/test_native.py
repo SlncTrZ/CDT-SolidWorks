@@ -65,6 +65,7 @@ class FakeModel:
         self.SelectionManager = FakeSelectionManager()
         self.fixed_calls = 0
         self.unfixed_calls = 0
+        self.delete_options = None
 
     def ClearSelection2(self, clear_all):
         return True
@@ -76,6 +77,10 @@ class FakeModel:
     def UnfixComponent(self):
         self.unfixed_calls += 1
         self.component._fixed = False
+
+    def DeleteSelections(self, options):
+        self.delete_options = options
+        return True
 
     def GetType(self):
         return 2
@@ -223,6 +228,10 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.adapter.set_component_fixed(self.assembly_id, "Bracket-1", True)
         self.assertIsNotNone(self.session.model.component.last_select_data)
         self.assertEqual(1, self.session.model.fixed_calls)
+
+    def test_component_delete_uses_explicit_zero_delete_options(self):
+        self.adapter.delete_component(self.assembly_id, "Bracket-1")
+        self.assertEqual(0, self.session.model.delete_options)
 
     def test_component_suppression_maps_to_native_enum_and_checks_status(self):
         self.adapter.set_component_load_state(
