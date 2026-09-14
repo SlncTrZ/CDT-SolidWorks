@@ -148,7 +148,7 @@ class SolidWorksExporterTests(unittest.TestCase):
         self.assertIn("step_242_requires_pmi_publish_path", result.errors)
         self.assertEqual([], self.session.calls)
 
-    def test_single_sheet_pdf_requires_export_data_binding(self):
+    def test_single_sheet_pdf_fails_closed_when_export_data_is_unavailable(self):
         drawing = FakeModel(
             path=r"C:\fixtures\drawing.SLDDRW",
             title="drawing.SLDDRW",
@@ -165,7 +165,9 @@ class SolidWorksExporterTests(unittest.TestCase):
             )
         )
         self.assertFalse(result.completed)
-        self.assertIn("single_sheet_pdf_requires_export_data", result.errors)
+        self.assertTrue(
+            any(error.startswith("pdf_export_data_unavailable") for error in result.errors)
+        )
 
 
 class FileArtifactInspectorTests(unittest.TestCase):

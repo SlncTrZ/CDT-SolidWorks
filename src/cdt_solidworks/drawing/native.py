@@ -9,6 +9,7 @@ from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.native.rebuild import rebuild_document
 
 from .domain import (
+    AnnotationSnapshot,
     BomSnapshot,
     DimensionSnapshot,
     DrawingPostconditionError,
@@ -49,6 +50,7 @@ class SolidWorksDrawingAdapter:
         path_policy: DrawingPathPolicy,
         default_timeout: float = 60.0,
         max_features: int = 100_000,
+        bom_template_path: str | None = None,
     ) -> None:
         self._session = session
         self._api = session.api
@@ -56,7 +58,14 @@ class SolidWorksDrawingAdapter:
         self._default_timeout = float(default_timeout)
         self._max_features = int(max_features)
         self._templates: dict[str, str | None] = {}
-        self._view_metadata: dict[tuple[str, str], tuple[str, str, str, str | None]] = {}
+        self._bom_template_path = bom_template_path
+        self._view_metadata: dict[
+            tuple[str, str], tuple[str, str, str, str | None, str | None]
+        ] = {}
+        self._annotation_metadata: dict[
+            tuple[str, str], AnnotationSnapshot
+        ] = {}
+        self._bom_metadata: dict[tuple[str, str], BomSnapshot] = {}
 
     def create_drawing(self, drawing_id: str, template_path: str | None) -> None:
         target = self._path_policy.validate_save(drawing_id)
@@ -214,6 +223,7 @@ class SolidWorksDrawingAdapter:
             view_kind,
             source_model_path,
             source_configuration,
+            None,
         )
         if drawing_path != drawing_id:
             self._view_metadata[(drawing_path, view_id)] = (
@@ -221,7 +231,160 @@ class SolidWorksDrawingAdapter:
                 view_kind,
                 source_model_path,
                 source_configuration,
+                None,
             )
+        return view_id
+
+    def create_projected_view(
+        self, drawing_id: str, parent_view_id: str, x: float, y: float
+    ) -> str:
+        drawing_path = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, parent_view_id),
+            self._view_metadata.get((drawing_path, parent_view_id)),
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        sheet_name, _, source_model_path, source_configuration, _ = metadata
+
+        def mutate(model: Any) -> str:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            parent = self._find_view(model, parent_view_id)
+            if parent is None:
+                raise DrawingRefusal("invalid_parent_view", parent_view_id)
+            try:
+                self._api._member(model, "ClearSelection2", True)
+            except Exception:
+                pass
+            extension = self._api._member(model, "Extension")
+            callout = self._api.null_dispatch()
+            selected = bool(
+                self._api._member(
+                    extension,
+                    "SelectByID2",
+                    parent_view_id,
+                    "DRAWINGVIEW",
+                    0.0,
+                    0.0,
+                    0.0,
+                    False,
+                    0,
+                    callout,
+                    0,
+                )
+            )
+            if not selected:
+                raise DrawingPostconditionError("parent_view_selection_failed", parent_view_id)
+            view = self._api._member(
+                model, "CreateUnfoldedViewAt3", float(x), float(y), 0.0, False
+            )
+            if view is None:
+                raise DrawingPostconditionError("projected_view_create_failed", parent_view_id)
+            view_id = str(self._api._member(view, "Name") or "")
+            if not view_id:
+                raise DrawingPostconditionError("view_identity_missing")
+            self._persist(model, "projected_view_create")
+            return view_id
+
+        view_id = self._with_drawing(
+            drawing_path,
+            stage="drawing_create_projected_view",
+            reader=mutate,
+            mutation=True,
+        )
+        entry = (
+            sheet_name,
+            "projected",
+            source_model_path,
+            source_configuration,
+            parent_view_id,
+        )
+        self._view_metadata[(drawing_id, view_id)] = entry
+        if drawing_path != drawing_id:
+            self._view_metadata[(drawing_path, view_id)] = entry
+        return view_id
+
+    def create_section_view(
+        self,
+        drawing_id: str,
+        parent_view_id: str,
+        line_start: tuple[float, float],
+        line_end: tuple[float, float],
+        x: float,
+        y: float,
+        label: str,
+    ) -> str:
+        drawing_path = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, parent_view_id),
+            self._view_metadata.get((drawing_path, parent_view_id)),
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_parent_view", parent_view_id)
+        sheet_name, _, source_model_path, source_configuration, _ = metadata
+
+        def mutate(model: Any) -> str:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", parent_view_id)):
+                raise DrawingPostconditionError("view_activation_failed", parent_view_id)
+            sketch_manager = self._api._member(model, "SketchManager")
+            line = self._api._member(
+                sketch_manager,
+                "CreateLine",
+                float(line_start[0]),
+                float(line_start[1]),
+                0.0,
+                float(line_end[0]),
+                float(line_end[1]),
+                0.0,
+            )
+            if line is None:
+                raise DrawingPostconditionError("section_line_create_failed", parent_view_id)
+            if not bool(self._api._member(line, "Select4", False, self._api.null_dispatch())):
+                raise DrawingPostconditionError("section_line_selection_failed", parent_view_id)
+            view = self._api._member(
+                model,
+                "CreateSectionViewAt5",
+                float(x),
+                float(y),
+                0.0,
+                label,
+                0,
+                self._api.null_dispatch(),
+                0.0,
+            )
+            if view is None:
+                raise DrawingPostconditionError("section_view_create_failed", parent_view_id)
+            section = self._api._member(view, "GetSection")
+            if section is None:
+                raise DrawingPostconditionError("section_view_readback_missing", parent_view_id)
+            actual_label = str(self._api._member(section, "GetLabel") or "")
+            if actual_label and actual_label.casefold() != label.casefold():
+                raise DrawingPostconditionError("section_label_readback_mismatch", actual_label)
+            view_id = str(self._api._member(view, "Name") or "")
+            if not view_id:
+                raise DrawingPostconditionError("view_identity_missing")
+            self._persist(model, "section_view_create")
+            return view_id
+
+        view_id = self._with_drawing(
+            drawing_path,
+            stage="drawing_create_section_view",
+            reader=mutate,
+            mutation=True,
+        )
+        entry = (
+            sheet_name,
+            "section",
+            source_model_path,
+            source_configuration,
+            parent_view_id,
+        )
+        self._view_metadata[(drawing_id, view_id)] = entry
+        if drawing_path != drawing_id:
+            self._view_metadata[(drawing_path, view_id)] = entry
         return view_id
 
     def read_view(self, drawing_id: str, view_id: str) -> ViewSnapshot | None:
@@ -229,7 +392,13 @@ class SolidWorksDrawingAdapter:
         metadata = self._view_metadata.get((drawing_id, view_id), self._view_metadata.get((source, view_id)))
         if metadata is None:
             return None
-        sheet_name, view_kind, requested_model_path, requested_configuration = metadata
+        (
+            sheet_name,
+            view_kind,
+            requested_model_path,
+            requested_configuration,
+            parent_view_id,
+        ) = metadata
 
         def read(model: Any) -> ViewSnapshot | None:
             if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
@@ -252,6 +421,9 @@ class SolidWorksDrawingAdapter:
                     raise DrawingPostconditionError(
                         "view_configuration_readback_mismatch", actual_configuration
                     )
+            position = self._view_position(view)
+            scale_decimal = self._float_member(view, "ScaleDecimal")
+            display_style = self._int_member(view, "GetDisplayMode2")
             return ViewSnapshot(
                 identity=view_id,
                 sheet_name=sheet_name,
@@ -259,9 +431,169 @@ class SolidWorksDrawingAdapter:
                 source_model_path=requested_model_path,
                 source_configuration=requested_configuration,
                 dangling=dangling,
+                position=position,
+                scale_decimal=scale_decimal,
+                display_style=display_style,
+                parent_view_id=parent_view_id,
             )
 
         return self._with_drawing(source, stage="drawing_read_view", reader=read)
+
+    def add_note(self, drawing_id: str, view_id: str, text: str) -> str:
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_annotation_view", view_id)
+        sheet_name = metadata[0]
+
+        def mutate(model: Any) -> tuple[str, AnnotationSnapshot]:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            note = self._api._member(model, "InsertNote", text)
+            if note is None:
+                raise DrawingPostconditionError("note_create_failed", view_id)
+            annotation = self._api._member(note, "GetAnnotation")
+            snapshot = self._annotation_snapshot(annotation, view_id, "note")
+            if snapshot.text != text:
+                raise DrawingPostconditionError(
+                    "annotation_text_readback_mismatch", snapshot.identity
+                )
+            self._persist(model, "note_create")
+            return snapshot.identity, snapshot
+
+        annotation_id, snapshot = self._with_drawing(
+            source, stage="drawing_add_note", reader=mutate, mutation=True
+        )
+        self._annotation_metadata[(drawing_id, annotation_id)] = snapshot
+        if source != drawing_id:
+            self._annotation_metadata[(source, annotation_id)] = snapshot
+        return annotation_id
+
+    def import_model_annotations(self, drawing_id: str, view_id: str) -> tuple[str, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_annotation_view", view_id)
+        sheet_name = metadata[0]
+
+        def mutate(model: Any) -> tuple[AnnotationSnapshot, ...]:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            value = self._api._member(
+                model,
+                "InsertModelAnnotations4",
+                0,
+                32768,
+                False,
+                True,
+                False,
+                False,
+                False,
+                False,
+            )
+            annotations = self._as_tuple(value)
+            if not annotations:
+                raise DrawingPostconditionError(
+                    "model_annotations_readback_empty", view_id
+                )
+            snapshots = tuple(
+                self._annotation_snapshot(annotation, view_id, None)
+                for annotation in annotations
+            )
+            self._persist(model, "model_annotations_import")
+            return snapshots
+
+        snapshots = self._with_drawing(
+            source,
+            stage="drawing_import_model_annotations",
+            reader=mutate,
+            mutation=True,
+        )
+        for snapshot in snapshots:
+            self._annotation_metadata[(drawing_id, snapshot.identity)] = snapshot
+            if source != drawing_id:
+                self._annotation_metadata[(source, snapshot.identity)] = snapshot
+        return tuple(snapshot.identity for snapshot in snapshots)
+
+    def auto_insert_center_marks(
+        self, drawing_id: str, view_id: str
+    ) -> tuple[str, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
+        )
+        if metadata is None:
+            raise DrawingRefusal("invalid_annotation_view", view_id)
+        sheet_name = metadata[0]
+
+        def mutate(model: Any) -> tuple[AnnotationSnapshot, ...]:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            view = self._api._member(model, "ActiveDrawingView")
+            if view is None:
+                raise DrawingPostconditionError("active_view_readback_missing", view_id)
+            before = {
+                snapshot.identity
+                for snapshot in self._center_mark_snapshots(view, view_id)
+            }
+            inserted = bool(
+                self._api._member(
+                    view,
+                    "AutoInsertCenterMarks2",
+                    7,
+                    11,
+                    True,
+                    True,
+                    True,
+                    0.0,
+                    0.0,
+                    True,
+                    True,
+                    0.0,
+                )
+            )
+            if not inserted:
+                raise DrawingPostconditionError("center_mark_create_failed", view_id)
+            snapshots = tuple(
+                snapshot
+                for snapshot in self._center_mark_snapshots(view, view_id)
+                if snapshot.identity not in before
+            )
+            if not snapshots:
+                raise DrawingPostconditionError("center_marks_readback_empty", view_id)
+            self._persist(model, "center_marks_create")
+            return snapshots
+
+        snapshots = self._with_drawing(
+            source,
+            stage="drawing_auto_insert_center_marks",
+            reader=mutate,
+            mutation=True,
+        )
+        for snapshot in snapshots:
+            self._annotation_metadata[(drawing_id, snapshot.identity)] = snapshot
+            if source != drawing_id:
+                self._annotation_metadata[(source, snapshot.identity)] = snapshot
+        return tuple(snapshot.identity for snapshot in snapshots)
+
+    def read_annotation(
+        self, drawing_id: str, annotation_id: str
+    ) -> AnnotationSnapshot | None:
+        source = self._path_policy.validate_open(drawing_id)
+        return self._annotation_metadata.get(
+            (drawing_id, annotation_id),
+            self._annotation_metadata.get((source, annotation_id)),
+        )
 
     def add_dimension(self, drawing_id: str, view_id: str, source_ref: str) -> str:
         raise DrawingRefusal(
@@ -275,18 +607,79 @@ class SolidWorksDrawingAdapter:
         return None
 
     def supports_bom(self, drawing_id: str) -> bool:
-        return False
+        if self._bom_template_path is None:
+            return False
+        try:
+            template = self._path_policy.validate_open(self._bom_template_path)
+        except Exception:
+            return False
+        return PureWindowsPath(template).suffix.casefold() == ".sldbomtbt"
 
     def create_bom(
         self, drawing_id: str, view_id: str, source_configuration: str | None
     ) -> str:
-        raise DrawingRefusal(
-            "unsupported_capability",
-            "solidworks.drawing.bom_requires_template_and_table_identity_binding",
+        if not self.supports_bom(drawing_id):
+            raise DrawingRefusal("unsupported_capability", "solidworks.drawing.bom")
+        source = self._path_policy.validate_open(drawing_id)
+        template = self._path_policy.validate_open(str(self._bom_template_path))
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
         )
+        if metadata is None:
+            raise DrawingRefusal("invalid_bom_view", view_id)
+        sheet_name = metadata[0]
+
+        def mutate(model: Any) -> BomSnapshot:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            view = self._find_view(model, view_id)
+            if view is None:
+                raise DrawingRefusal("invalid_bom_view", view_id)
+            table = self._api._member(
+                view,
+                "InsertBomTable5",
+                False,
+                0.02,
+                0.02,
+                0,
+                1,
+                source_configuration or "",
+                template,
+                False,
+                0,
+                False,
+                False,
+            )
+            if table is None:
+                raise DrawingPostconditionError("bom_create_failed", view_id)
+            bom_id = self._table_identity(table)
+            rows = self._table_rows(table)
+            if not rows or not rows[0]:
+                raise DrawingPostconditionError("bom_empty_readback", bom_id)
+            snapshot = BomSnapshot(
+                identity=bom_id,
+                view_id=view_id,
+                source_configuration=source_configuration,
+                row_count=len(rows),
+                column_count=len(rows[0]),
+                rows=rows,
+            )
+            self._persist(model, "bom_create")
+            return snapshot
+
+        snapshot = self._with_drawing(
+            source, stage="drawing_create_bom", reader=mutate, mutation=True
+        )
+        self._bom_metadata[(drawing_id, snapshot.identity)] = snapshot
+        if source != drawing_id:
+            self._bom_metadata[(source, snapshot.identity)] = snapshot
+        return snapshot.identity
 
     def read_bom(self, drawing_id: str, bom_id: str) -> BomSnapshot | None:
-        return None
+        source = self._path_policy.validate_open(drawing_id)
+        return self._bom_metadata.get(
+            (drawing_id, bom_id), self._bom_metadata.get((source, bom_id))
+        )
 
     def rebuild_drawing(self, drawing_id: str) -> RebuildReport:
         source = self._path_policy.validate_open(drawing_id)
@@ -357,14 +750,20 @@ class SolidWorksDrawingAdapter:
         if result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH:
             detail = result.state.value
             if result.failure is not None:
-                detail = f"{result.failure.code}@{result.failure.stage}"
+                detail = (
+                    f"{result.failure.code}@{result.failure.stage}: "
+                    f"{result.failure.message}"
+                )
             raise DrawingPostconditionError(
                 "native_state_uncertain", f"call_id={result.call_id}; {detail}"
             )
         if result.state is not NativeCallState.SUCCESS:
             detail = result.state.value
             if result.failure is not None:
-                detail = f"{result.failure.code}@{result.failure.stage}"
+                detail = (
+                    f"{result.failure.code}@{result.failure.stage}: "
+                    f"{result.failure.message}"
+                )
             raise DrawingPostconditionError("native_drawing_failed", detail)
         return result.value
 
@@ -377,6 +776,150 @@ class SolidWorksDrawingAdapter:
             raise DrawingPostconditionError(
                 "drawing_save_failed", f"errors={errors}, warnings={warnings}"
             )
+
+    def _annotation_snapshot(
+        self, annotation: Any, view_id: str, forced_kind: str | None
+    ) -> AnnotationSnapshot:
+        if annotation is None:
+            raise DrawingPostconditionError("annotation_readback_missing")
+        identity = str(self._api._member(annotation, "GetName") or "")
+        if not identity:
+            raise DrawingPostconditionError("annotation_identity_missing")
+        try:
+            annotation_type = int(self._api._member(annotation, "GetType"))
+        except Exception:
+            annotation_type = -1
+        kind = forced_kind or {
+            2: "datum",
+            4: "display_dimension",
+            5: "gtol",
+            6: "note",
+            7: "surface_finish",
+            8: "weld_symbol",
+            19: "pmi",
+        }.get(annotation_type, "other")
+        text = self._annotation_text(annotation, identity)
+        dangling = self._annotation_dangling(annotation)
+        return AnnotationSnapshot(
+            identity=identity,
+            view_id=view_id,
+            annotation_kind=kind,
+            text=text,
+            dangling=dangling,
+        )
+
+    def _annotation_text(self, annotation: Any, fallback: str) -> str:
+        try:
+            specific = self._api._member(annotation, "GetSpecificAnnotation")
+        except Exception:
+            specific = None
+        if specific is not None:
+            for name in ("GetText", "GetText2"):
+                try:
+                    value = self._api._member(specific, name)
+                except Exception:
+                    continue
+                text = str(value or "").strip()
+                if text:
+                    return text
+        return fallback.strip()
+
+    def _annotation_dangling(self, annotation: Any) -> bool:
+        try:
+            values = self._as_tuple(
+                self._api._member(annotation, "GetAttachedEntityTypes")
+            )
+        except Exception:
+            return False
+        return any(int(value) == 0 for value in values)
+
+    def _center_mark_snapshots(
+        self, view: Any, view_id: str
+    ) -> tuple[AnnotationSnapshot, ...]:
+        snapshots: list[AnnotationSnapshot] = []
+        center_mark = self._api._member(view, "GetFirstCenterMark")
+        seen = 0
+        while center_mark is not None:
+            if seen >= 100_000:
+                raise DrawingPostconditionError("center_mark_traversal_limit", view_id)
+            annotation = self._api._member(center_mark, "GetAnnotation")
+            snapshots.append(
+                self._annotation_snapshot(annotation, view_id, "center_mark")
+            )
+            center_mark = self._api._member(center_mark, "GetNext")
+            seen += 1
+        return tuple(snapshots)
+
+    def _table_identity(self, table: Any) -> str:
+        for getter in ("GetFeature", "GetAnnotation"):
+            try:
+                owner = self._api._member(table, getter)
+                if owner is None:
+                    continue
+                for name in ("Name", "GetName"):
+                    try:
+                        value = str(self._api._member(owner, name) or "")
+                    except Exception:
+                        continue
+                    if value:
+                        return value
+            except Exception:
+                continue
+        raise DrawingPostconditionError("bom_identity_missing")
+
+    def _table_rows(self, table: Any) -> tuple[tuple[str, ...], ...]:
+        row_count = self._int_member(table, "RowCount") or 0
+        column_count = self._int_member(table, "ColumnCount") or 0
+        if row_count < 1 or column_count < 1:
+            return ()
+        rows: list[tuple[str, ...]] = []
+        for row_index in range(row_count):
+            row: list[str] = []
+            for column_index in range(column_count):
+                text = ""
+                for name, args in (
+                    ("DisplayedText2", (row_index, column_index, False)),
+                    ("Text2", (row_index, column_index, False)),
+                    ("Text", (row_index, column_index)),
+                ):
+                    try:
+                        value = self._api._member(table, name, *args)
+                    except Exception:
+                        continue
+                    text = str(value or "")
+                    break
+                row.append(text)
+            rows.append(tuple(row))
+        return tuple(rows)
+
+    def _view_position(self, view: Any) -> tuple[float, float] | None:
+        try:
+            value = self._api._member(view, "Position")
+        except Exception:
+            return None
+        if isinstance(value, (tuple, list)) and len(value) >= 2:
+            return float(value[0]), float(value[1])
+        return None
+
+    def _float_member(self, obj: Any, name: str) -> float | None:
+        try:
+            return float(self._api._member(obj, name))
+        except Exception:
+            return None
+
+    def _int_member(self, obj: Any, name: str) -> int | None:
+        try:
+            return int(self._api._member(obj, name))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _as_tuple(value: Any) -> tuple[Any, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (tuple, list)):
+            return tuple(value)
+        return (value,)
 
     def _find_view(self, model: Any, view_id: str) -> Any | None:
         view = self._api._member(model, "GetFirstView")

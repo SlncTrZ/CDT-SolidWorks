@@ -75,7 +75,13 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `drawing_create` — create one new native drawing under the configured path policy.
 - `drawing_sheet_create` — add and rebuild one explicit drawing sheet.
 - `drawing_front_view_create` — create the native-accepted Front view from one native part source.
-- `export_document` — export only accepted source/format pairs: part → STEP/IGES/Parasolid/STL/3MF, drawing → PDF/DXF/DWG.
+- `drawing_standard_view_create` — create bounded Front/Top/Right/Isometric views.
+- `drawing_projected_view_create` — create a projected view from one explicit parent view.
+- `drawing_section_view_create` — create a bounded section view from an explicit parent view and section line.
+- `drawing_note_add` — add a non-dangling note to one explicit view.
+- `drawing_center_marks_auto_insert` — auto-insert and read back persisted center-mark identities.
+- `export_document` — export only accepted source/format pairs: part → STEP/IGES/Parasolid/STL/3MF, drawing → PDF/DXF/DWG; PDF may target one explicit sheet.
+- `import_document` — import STEP/IGES/Parasolid into a new native `.SLDPRT` with geometry read-back.
 - `evaluation_mass_properties` — read validated part mass/volume/area, center of mass, and inertia.
 - `evaluation_bounding_box` — read a validated approximate part bounding box.
 - `evaluation_geometry_sanity` — read body/error sanity and fail when native feature errors exist.
@@ -116,6 +122,11 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.configuration.equations`
 - `solidworks.drawing.lifecycle`
 - `solidworks.drawing.front_view`
+- `solidworks.drawing.standard_views`
+- `solidworks.drawing.projected_view`
+- `solidworks.drawing.section_view`
+- `solidworks.drawing.note`
+- `solidworks.drawing.center_mark`
 - `solidworks.export.step`
 - `solidworks.export.iges`
 - `solidworks.export.parasolid`
@@ -124,15 +135,19 @@ Granular native capability keys are used for the accepted surface:
 - `solidworks.export.pdf`
 - `solidworks.export.dxf`
 - `solidworks.export.dwg`
+- `solidworks.export.pdf.single_sheet`
+- `solidworks.import.step`
+- `solidworks.import.iges`
+- `solidworks.import.parasolid`
 - `solidworks.evaluation.mass_properties`
 - `solidworks.evaluation.bounding_box`
 - `solidworks.evaluation.geometry_sanity`
 
 Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support`: native Cut Extrude is now promoted, but Revolve and the remaining parametric feature family still require their own production native gates. Broad `solidworks.assembly.mates` remains partial because Concentric/Tangent/Lock/Width/Slot and other mate behavior are not promoted without direct native gates. Broad `solidworks.configurations` remains partial because design-table and wider configuration-state automation are not yet promoted.
 
-Lane D's bounded drawing lifecycle, STEP/IGES/Parasolid/STL/3MF geometry export, PDF/DXF/DWG drawing export, and part evaluation are now callable and have passed public-wrapper native smoke. Broad `solidworks.drawing`, `solidworks.export`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
+Lane D's bounded drawing lifecycle now includes standard-view parity, Projected, Section, Note, and Center Mark; STEP/IGES/Parasolid provider imports and exact-sheet PDF are also callable alongside the existing export matrix. Broad `solidworks.drawing`, `solidworks.export`, `solidworks.import`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
 
-The Lane D acceptance boundary still excludes projected/section/detail views, dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF, measurement/interference, and native MBD/DimXpert/PMI.
+The Lane D acceptance boundary still excludes Detail View, direct drawing dimensions/model items, balloons, GTol/datum/surface-finish/weld-symbol breadth, BOM/cut-list tables, flat-pattern DXF integration, STEP 242 PMI publication, measurement/interference, and native semantic MBD/DimXpert/PMI.
 
 `solidworks.simulation.study` is declared but `implemented=false`: native Simulation integration has not been built. Motion and Routing likewise remain outside the callable provider surface until their typed adapters and native gates exist. Add-ins are intended to load on demand rather than require Start Up. `solidworks.flow_simulation` and `solidworks.electrical` remain `implemented=false` until dedicated installation/license/API probes and native evidence exist.
 

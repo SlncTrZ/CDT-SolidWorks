@@ -11,6 +11,10 @@ from .domain import (
     ArtifactInspection,
     ExportFormat,
     ExportRequest,
+    ImportFormat,
+    ImportPostconditionError,
+    ImportRequest,
+    ImportSnapshot,
     NativeExportResult,
 )
 
@@ -24,9 +28,9 @@ class ExportPathPolicy(Protocol):
 class SolidWorksExporter:
     """Executes bounded SaveAs conversions on the serialized SOLIDWORKS session.
 
-    This adapter intentionally refuses STEP 242 and single-sheet PDF until their
-    dedicated publish/export-data paths are bound. A generic SaveAs must not be
-    relabeled as those stronger semantics.
+    STEP 242 remains fail-closed until a dedicated PMI publish path is bound.
+    Single-sheet PDF uses IExportPdfData with explicit sheet selection rather than
+    relabeling a generic SaveAs as stronger export semantics.
     """
 
     _DOC_TYPES = {".sldprt": 1, ".sldasm": 2, ".slddrw": 3}
@@ -59,13 +63,6 @@ class SolidWorksExporter:
                 partial=False,
                 errors=("step_242_requires_pmi_publish_path",),
             )
-        if request.drawing_sheet is not None:
-            return NativeExportResult(
-                completed=False,
-                partial=False,
-                errors=("single_sheet_pdf_requires_export_data",),
-            )
-
         source = self._path_policy.validate_open(request.source_document_id)
         target = self._path_policy.validate_save(request.target_path)
         source_extension = PureWindowsPath(source).suffix.casefold()
@@ -111,6 +108,11 @@ class SolidWorksExporter:
                             errors=("source_configuration_mismatch",),
                         )
 
+                if request.drawing_sheet is not None:
+                    return self._export_single_sheet_pdf(
+                        app, model, target, request.drawing_sheet
+                    )
+
                 if request.format in self._ACTIVATE_BEFORE_EXPORT:
                     activation = self._activate_document(app, model)
                     if activation != 0:
@@ -153,6 +155,90 @@ class SolidWorksExporter:
             )
         return result.value
 
+    def _export_single_sheet_pdf(
+        self, app: Any, model: Any, target: str, sheet_name: str
+    ) -> NativeExportResult:
+        if int(self._api.document_type(model)) != 3:
+            return NativeExportResult(
+                completed=False,
+                partial=False,
+                errors=("single_sheet_pdf_requires_drawing",),
+            )
+        try:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("drawing_sheet_not_found",),
+                )
+            sheet = self._api._member(model, "GetCurrentSheet")
+            actual_name = str(self._api._member(sheet, "GetName") or "")
+            if actual_name != sheet_name:
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("drawing_sheet_identity_mismatch",),
+                )
+            export_data = self._api._member(app, "GetExportFileData", 1)
+            if export_data is None:
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("pdf_export_data_unavailable",),
+                )
+            sheet_names = self._api.string_array((sheet_name,))
+            if not bool(self._api._member(export_data, "SetSheets", 3, sheet_names)):
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("pdf_sheet_selection_failed",),
+                )
+            export_data.ViewPdfAfterSaving = False
+            if int(self._api._member(export_data, "GetWhichSheets")) != 3:
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("pdf_sheet_mode_readback_mismatch",),
+                )
+            selected = self._api._member(export_data, "GetSheets")
+            selected_sheets = (
+                tuple(str(item) for item in selected)
+                if isinstance(selected, (tuple, list))
+                else (str(selected),) if selected is not None else ()
+            )
+            if selected_sheets != (sheet_name,):
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=("pdf_sheet_readback_mismatch",),
+                )
+            errors = self._api._client.VARIANT(
+                self._api._pythoncom.VT_BYREF | self._api._pythoncom.VT_I4, 0
+            )
+            warnings = self._api._client.VARIANT(
+                self._api._pythoncom.VT_BYREF | self._api._pythoncom.VT_I4, 0
+            )
+            value = model.Extension.SaveAs(target, 0, 1, export_data, errors, warnings)
+            success = bool(value[0]) if isinstance(value, (tuple, list)) else bool(value)
+            if isinstance(value, (tuple, list)):
+                if len(value) > 1 and value[1] is not None:
+                    errors.value = int(value[1])
+                if len(value) > 2 and value[2] is not None:
+                    warnings.value = int(value[2])
+            if not success or int(errors.value) != 0:
+                return NativeExportResult(
+                    completed=False,
+                    partial=False,
+                    errors=(f"pdf_save_as_failed:{int(errors.value)}:{int(warnings.value)}",),
+                )
+            return NativeExportResult(completed=True, partial=False, errors=())
+        except Exception as exc:
+            return NativeExportResult(
+                completed=False,
+                partial=False,
+                errors=(f"pdf_export_data_unavailable:{type(exc).__name__}",),
+            )
+
     def _activate_document(self, app: Any, model: Any) -> int:
         title = str(self._api._member(model, "GetTitle") or "")
         if not title:
@@ -165,6 +251,109 @@ class SolidWorksExporter:
         if active is None:
             return int(errors.value) or -1
         return int(errors.value)
+
+
+class SolidWorksImporter:
+    """Imports STEP/IGES/Parasolid into a persisted native SOLIDWORKS document."""
+
+    def __init__(
+        self,
+        session: Any,
+        *,
+        path_policy: ExportPathPolicy,
+        default_timeout: float = 90.0,
+    ) -> None:
+        self._session = session
+        self._api = session.api
+        self._path_policy = path_policy
+        self._default_timeout = float(default_timeout)
+
+    def import_model(self, request: ImportRequest) -> ImportSnapshot:
+        source = self._path_policy.validate_open(request.source_path)
+        target = self._path_policy.validate_save(request.target_document_id)
+
+        def operation(app: Any) -> ImportSnapshot:
+            errors = self._api._client.VARIANT(
+                self._api._pythoncom.VT_BYREF | self._api._pythoncom.VT_I4, 0
+            )
+            try:
+                import_data = app.GetImportFileData(source)
+            except Exception:
+                import_data = None
+            if import_data is None:
+                import_data = self._api.null_dispatch()
+            model = app.LoadFile4(source, "r", import_data, errors)
+            if isinstance(model, (tuple, list)):
+                values = list(model)
+                model = values[0] if values else None
+                if len(values) > 1 and values[1] is not None:
+                    errors.value = int(values[1])
+            if model is None or int(errors.value) != 0:
+                raise ImportPostconditionError(
+                    "import_load_failed", f"errors={int(errors.value)}"
+                )
+            title = str(self._api._member(model, "GetTitle") or "")
+            try:
+                doc_type = int(self._api.document_type(model))
+                if doc_type not in {1, 2}:
+                    raise ImportPostconditionError("import_document_type_invalid")
+                solid_count = (
+                    len(tuple(self._api.bodies(model, 0, False))) if doc_type == 1 else 0
+                )
+                surface_count = (
+                    len(tuple(self._api.bodies(model, 1, False))) if doc_type == 1 else 0
+                )
+                component_count = (
+                    len(tuple(self._api.components(model, False))) if doc_type == 2 else 0
+                )
+                if solid_count + surface_count + component_count < 1:
+                    raise ImportPostconditionError("import_geometry_missing")
+                saved, save_errors, save_warnings = self._api.save_as(model, target)
+                if not saved or int(save_errors) != 0:
+                    raise ImportPostconditionError(
+                        "import_save_failed",
+                        f"errors={save_errors}, warnings={save_warnings}",
+                    )
+                native_path = str(self._api.document_path(model) or "")
+                if native_path and PureWindowsPath(native_path) != PureWindowsPath(target):
+                    raise ImportPostconditionError(
+                        "import_target_identity_mismatch", native_path
+                    )
+                return ImportSnapshot(
+                    source_path=request.source_path,
+                    target_document_id=request.target_document_id,
+                    format=request.format,
+                    document_type=doc_type,
+                    solid_body_count=solid_count,
+                    surface_body_count=surface_count,
+                    component_count=component_count,
+                )
+            finally:
+                current_title = title
+                try:
+                    current_title = str(self._api._member(model, "GetTitle") or title)
+                except Exception:
+                    pass
+                if current_title:
+                    self._api.close_document(app, current_title)
+
+        result = self._session.execute(
+            operation,
+            stage="import_foreign_model",
+            timeout=self._default_timeout,
+            mutation=True,
+        )
+        if result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH:
+            detail = result.state.value
+            if result.failure is not None:
+                detail = f"{result.failure.code}@{result.failure.stage}"
+            raise ImportPostconditionError("native_state_uncertain", detail)
+        if result.state is not NativeCallState.SUCCESS or result.value is None:
+            detail = result.state.value
+            if result.failure is not None:
+                detail = f"{result.failure.code}@{result.failure.stage}"
+            raise ImportPostconditionError("native_import_failed", detail)
+        return result.value
 
 
 class SolidWorksGeometryVerifier:

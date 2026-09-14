@@ -26,11 +26,16 @@ from cdt_solidworks.export.domain import (
     ExportRefusal,
     ExportRequest,
     ExportService,
+    ImportFormat,
+    ImportPostconditionError,
+    ImportRequest,
+    ImportService,
 )
 from cdt_solidworks.export.native import (
     FileArtifactInspector,
     SolidWorksExporter,
     SolidWorksGeometryVerifier,
+    SolidWorksImporter,
 )
 from cdt_solidworks.native.errors import NativeRuntimeError, failure_from_exception
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
@@ -53,6 +58,16 @@ _DRAWING_EXPORTS = {
     "dwg": ExportFormat.DWG,
 }
 _PROMOTED_EXPORTS = {**_GEOMETRY_EXPORTS, **_DRAWING_EXPORTS}
+_PROMOTED_IMPORTS = {
+    "step": ImportFormat.STEP,
+    "iges": ImportFormat.IGES,
+    "parasolid": ImportFormat.PARASOLID,
+}
+_IMPORT_EXTENSIONS = {
+    "step": frozenset({".step", ".stp"}),
+    "iges": frozenset({".iges", ".igs"}),
+    "parasolid": frozenset({".x_t", ".x_b"}),
+}
 _EXPORT_EXTENSIONS = {
     "step": frozenset({".step", ".stp"}),
     "iges": frozenset({".iges", ".igs"}),
@@ -185,6 +200,93 @@ class IntegratedDrawingService:
             ),
         )
 
+    def create_standard_view(
+        self,
+        path: str,
+        sheet_name: str,
+        source_part_path: str,
+        view_kind: str,
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_standard_view_create"
+        normalized = str(view_kind).strip().lower()
+        if normalized not in {"front", "top", "right", "isometric"}:
+            return _local_failure(stage, "view_kind must be front, top, right, or isometric.")
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        source = self._validate_open(source_part_path, stage, _PART_EXTENSIONS)
+        if isinstance(source, NativeCallResult):
+            return source
+        if not isinstance(sheet_name, str) or not sheet_name.strip():
+            return _local_failure(stage, "sheet_name must be a non-empty string.")
+        return self._call(
+            stage,
+            lambda: self.service.create_view(drawing, sheet_name, normalized, source, None),
+        )
+
+    def create_projected_view(
+        self, path: str, parent_view_id: str, x: float, y: float
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_projected_view_create"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if not isinstance(parent_view_id, str) or not parent_view_id.strip():
+            return _local_failure(stage, "parent_view_id must be a non-empty string.")
+        return self._call(
+            stage,
+            lambda: self.service.create_projected_view(drawing, parent_view_id, x, y),
+        )
+
+    def create_section_view(
+        self,
+        path: str,
+        parent_view_id: str,
+        line_start: tuple[float, float],
+        line_end: tuple[float, float],
+        x: float,
+        y: float,
+        label: str,
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_section_view_create"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if not isinstance(parent_view_id, str) or not parent_view_id.strip():
+            return _local_failure(stage, "parent_view_id must be a non-empty string.")
+        if not isinstance(label, str) or not label.strip():
+            return _local_failure(stage, "label must be a non-empty string.")
+        return self._call(
+            stage,
+            lambda: self.service.create_section_view(
+                drawing, parent_view_id, line_start, line_end, x, y, label
+            ),
+        )
+
+    def add_note(self, path: str, view_id: str, text: str) -> NativeCallResult[Any]:
+        stage = "drawing_note_add"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if not isinstance(view_id, str) or not view_id.strip():
+            return _local_failure(stage, "view_id must be a non-empty string.")
+        if not isinstance(text, str) or not text.strip():
+            return _local_failure(stage, "text must be a non-empty string.")
+        return self._call(stage, lambda: self.service.add_note(drawing, view_id, text))
+
+    def auto_insert_center_marks(
+        self, path: str, view_id: str
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_center_marks_auto_insert"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if not isinstance(view_id, str) or not view_id.strip():
+            return _local_failure(stage, "view_id must be a non-empty string.")
+        return self._call(
+            stage, lambda: self.service.auto_insert_center_marks(drawing, view_id)
+        )
+
     def _validate_open(
         self,
         path: str,
@@ -279,6 +381,7 @@ class IntegratedExportService:
         format: str,
         *,
         source_configuration: str | None = None,
+        drawing_sheet: str | None = None,
     ) -> NativeCallResult[Any]:
         stage = "export_document"
         normalized = str(format).strip().lower()
@@ -320,12 +423,25 @@ class IntegratedExportService:
                     stage,
                     "source_configuration must be a non-empty string when supplied.",
                 )
+            if drawing_sheet is not None:
+                if normalized != "pdf":
+                    raise NativeRuntimeError(
+                        "cad_validation_error",
+                        stage,
+                        "drawing_sheet is supported only for PDF export.",
+                    )
+                if not isinstance(drawing_sheet, str) or not drawing_sheet.strip():
+                    raise NativeRuntimeError(
+                        "cad_validation_error",
+                        stage,
+                        "drawing_sheet must be a non-empty string when supplied.",
+                    )
             request = ExportRequest(
                 source_document_id=source,
                 target_path=target,
                 format=export_format,
                 source_configuration=source_configuration,
-                drawing_sheet=None,
+                drawing_sheet=drawing_sheet,
             )
         except Exception as exc:
             return NativeCallResult.failed(
@@ -340,6 +456,96 @@ class IntegratedExportService:
         except ExportPostconditionError as exc:
             if exc.reason == "native_state_uncertain":
                 return _uncertain(stage, exc.call_id or call_id, str(exc))
+            return NativeCallResult.failed(
+                NativeFailure(exc.reason, stage, str(exc), False),
+                call_id=call_id,
+                dispatched=True,
+            )
+        except ExportRefusal as exc:
+            return NativeCallResult.failed(
+                NativeFailure(exc.reason, stage, str(exc), False),
+                call_id=call_id,
+                dispatched=True,
+            )
+        except Exception as exc:
+            return NativeCallResult.failed(
+                failure_from_exception(exc, stage),
+                call_id=call_id,
+                dispatched=True,
+            )
+        return NativeCallResult.success(value, call_id=call_id, dispatched=True)
+
+
+class IntegratedImportService:
+    """Expose only STEP/IGES/Parasolid imports with native geometry evidence."""
+
+    def __init__(
+        self,
+        session: Any | None = None,
+        *,
+        path_policy: DocumentPathPolicy,
+        service: Any | None = None,
+        timeout: float = 90.0,
+    ) -> None:
+        self.path_policy = path_policy
+        if service is None:
+            if session is None:
+                raise ValueError("session is required when import service is not injected")
+            service = ImportService(
+                SolidWorksImporter(
+                    session,
+                    path_policy=path_policy,
+                    default_timeout=timeout,
+                ),
+                _PathGate(path_policy),
+            )
+        self.service = service
+
+    def import_model(
+        self, source_path: str, target_path: str, format: str
+    ) -> NativeCallResult[Any]:
+        stage = "import_document"
+        normalized = str(format).strip().lower()
+        import_format = _PROMOTED_IMPORTS.get(normalized)
+        if import_format is None:
+            return _local_failure(stage, "format must be step, iges, or parasolid.")
+        try:
+            source = self.path_policy.validate_open(source_path)
+            if Path(source).suffix.lower() not in _IMPORT_EXTENSIONS[normalized]:
+                raise NativeRuntimeError(
+                    "format_extension_mismatch",
+                    stage,
+                    "Import source extension does not match the requested format.",
+                )
+            target = self.path_policy.validate_save(target_path)
+            if Path(target).suffix.lower() not in _PART_EXTENSIONS:
+                raise NativeRuntimeError(
+                    "document_type_mismatch",
+                    stage,
+                    "Native-accepted imports currently target .SLDPRT only.",
+                )
+            if Path(target).exists():
+                raise NativeRuntimeError(
+                    "document_already_exists",
+                    stage,
+                    "Import refuses to overwrite an existing native document.",
+                )
+            request = ImportRequest(
+                source_path=source,
+                target_document_id=target,
+                format=import_format,
+            )
+        except Exception as exc:
+            return NativeCallResult.failed(
+                failure_from_exception(exc, stage),
+                call_id=uuid.uuid4().hex,
+                dispatched=False,
+            )
+
+        call_id = uuid.uuid4().hex
+        try:
+            value = self.service.import_model(request)
+        except ImportPostconditionError as exc:
             return NativeCallResult.failed(
                 NativeFailure(exc.reason, stage, str(exc), False),
                 call_id=call_id,

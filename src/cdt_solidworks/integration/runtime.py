@@ -24,6 +24,7 @@ from cdt_solidworks.integration.drawing_export_eval import (
     IntegratedDrawingService,
     IntegratedEvaluationService,
     IntegratedExportService,
+    IntegratedImportService,
 )
 from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
 
@@ -50,6 +51,7 @@ class IntegratedProviderRuntime:
         configuration_service: Any | None = None,
         drawing_service: Any | None = None,
         export_service: Any | None = None,
+        import_service: Any | None = None,
         evaluation_service: Any | None = None,
     ) -> None:
         self.version = version
@@ -83,6 +85,7 @@ class IntegratedProviderRuntime:
         self.configuration_service = configuration_service
         self.drawing_service = drawing_service
         self.export_service = export_service
+        self.import_service = import_service
         self.evaluation_service = evaluation_service
         if hasattr(self.session, "api"):
             if self.body_service is None:
@@ -111,6 +114,10 @@ class IntegratedProviderRuntime:
                 )
             if self.export_service is None:
                 self.export_service = IntegratedExportService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.import_service is None:
+                self.import_service = IntegratedImportService(
                     self.session, path_policy=self.path_policy
                 )
             if self.evaluation_service is None:
@@ -179,6 +186,9 @@ class IntegratedProviderRuntime:
         export_implemented = self.export_service is not None
         export_available = export_implemented and available
         export_reason = integrated_reason if export_implemented else deferred_reason
+        import_implemented = self.import_service is not None
+        import_available = import_implemented and available
+        import_reason = integrated_reason if import_implemented else deferred_reason
         evaluation_implemented = self.evaluation_service is not None
         evaluation_available = evaluation_implemented and available
         evaluation_reason = integrated_reason if evaluation_implemented else deferred_reason
@@ -573,6 +583,23 @@ class IntegratedProviderRuntime:
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.drawing.{name}",
+                    implemented=drawing_implemented,
+                    available=drawing_available,
+                    reason=drawing_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in (
+                    "standard_views",
+                    "projected_view",
+                    "section_view",
+                    "note",
+                    "center_mark",
+                )
+            ),
             CapabilityState(
                 name="solidworks.drawing",
                 implemented=False,
@@ -593,10 +620,37 @@ class IntegratedProviderRuntime:
                 for name in ("step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg")
             ),
             CapabilityState(
+                name="solidworks.export.pdf.single_sheet",
+                implemented=export_implemented,
+                available=export_available,
+                reason=export_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
                 name="solidworks.export",
                 implemented=False,
                 available=False,
                 reason=partial_reason if export_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.import.{name}",
+                    implemented=import_implemented,
+                    available=import_available,
+                    reason=import_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("step", "iges", "parasolid")
+            ),
+            CapabilityState(
+                name="solidworks.import",
+                implemented=False,
+                available=False,
+                reason=partial_reason if import_implemented else deferred_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),

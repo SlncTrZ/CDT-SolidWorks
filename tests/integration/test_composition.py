@@ -68,6 +68,10 @@ class _FakeExportService:
     pass
 
 
+class _FakeImportService:
+    pass
+
+
 class _FakeEvaluationService:
     pass
 
@@ -102,6 +106,7 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
         configuration_service=_FakeConfigurationService(),
         drawing_service=_FakeDrawingService(),
         export_service=_FakeExportService(),
+        import_service=_FakeImportService(),
         evaluation_service=_FakeEvaluationService(),
     )
     context = runtime.runtime_context()
@@ -161,12 +166,19 @@ def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     assert states["solidworks.configurations"].reason == "partial_native_support"
     assert states["solidworks.drawing.lifecycle"].available is True
     assert states["solidworks.drawing.front_view"].available is True
+    for capability in ("standard_views", "projected_view", "section_view", "note", "center_mark"):
+        assert states[f"solidworks.drawing.{capability}"].available is True
     assert states["solidworks.drawing"].implemented is False
     assert states["solidworks.drawing"].reason == "partial_native_support"
     for export_name in ("step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg"):
         assert states[f"solidworks.export.{export_name}"].available is True
+    assert states["solidworks.export.pdf.single_sheet"].available is True
     assert states["solidworks.export"].implemented is False
     assert states["solidworks.export"].reason == "partial_native_support"
+    for import_name in ("step", "iges", "parasolid"):
+        assert states[f"solidworks.import.{import_name}"].available is True
+    assert states["solidworks.import"].implemented is False
+    assert states["solidworks.import"].reason == "partial_native_support"
     assert states["solidworks.evaluation.mass_properties"].available is True
     assert states["solidworks.evaluation.bounding_box"].available is True
     assert states["solidworks.evaluation.geometry_sanity"].available is True
@@ -217,6 +229,7 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         configuration_service=_FakeConfigurationService(),
         drawing_service=_FakeDrawingService(),
         export_service=_FakeExportService(),
+        import_service=_FakeImportService(),
         evaluation_service=_FakeEvaluationService(),
     )
     server = build_integrated_server(ServerConfig.in_process(guide_path=guide), runtime=runtime)
@@ -255,7 +268,9 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "configuration_equations_list", "configuration_equation_add",
         "configuration_equation_set", "configuration_equation_delete",
         "drawing_create", "drawing_sheet_create", "drawing_front_view_create",
-        "export_document", "evaluation_mass_properties",
+        "drawing_standard_view_create", "drawing_projected_view_create",
+        "drawing_section_view_create", "drawing_note_add", "drawing_center_marks_auto_insert",
+        "export_document", "import_document", "evaluation_mass_properties",
         "evaluation_bounding_box", "evaluation_geometry_sanity",
     } <= names
     assert names <= set(_TOOL_ARGUMENTS)

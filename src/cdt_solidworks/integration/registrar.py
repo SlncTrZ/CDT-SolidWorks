@@ -952,6 +952,80 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 )
             )
 
+        @server.tool(
+            name="drawing_standard_view_create",
+            description=(
+                "Create one native-accepted Front/Top/Right/Isometric view on an explicit drawing sheet from one native part source."
+            ),
+        )
+        def drawing_standard_view_create(
+            path: str,
+            sheet_name: str,
+            source_part_path: str,
+            view_kind: Literal["front", "top", "right", "isometric"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_standard_view(
+                    path, sheet_name, source_part_path, view_kind
+                )
+            )
+
+        @server.tool(
+            name="drawing_projected_view_create",
+            description="Create a projected drawing view from one explicit parent view and verify parent/source/position read-back.",
+        )
+        def drawing_projected_view_create(
+            path: str, parent_view_id: str, x: float, y: float
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_projected_view(
+                    path, parent_view_id, x, y
+                )
+            )
+
+        @server.tool(
+            name="drawing_section_view_create",
+            description="Create one bounded section view from an explicit parent view and section line, then verify persisted view identity/read-back.",
+        )
+        def drawing_section_view_create(
+            path: str,
+            parent_view_id: str,
+            line_start_x: float,
+            line_start_y: float,
+            line_end_x: float,
+            line_end_y: float,
+            x: float,
+            y: float,
+            label: str,
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.create_section_view(
+                    path,
+                    parent_view_id,
+                    (line_start_x, line_start_y),
+                    (line_end_x, line_end_y),
+                    x,
+                    y,
+                    label,
+                )
+            )
+
+        @server.tool(
+            name="drawing_note_add",
+            description="Add one note to an explicit drawing view and verify non-dangling text read-back.",
+        )
+        def drawing_note_add(path: str, view_id: str, text: str) -> dict[str, Any]:
+            return _result_payload(runtime.drawing_service.add_note(path, view_id, text))
+
+        @server.tool(
+            name="drawing_center_marks_auto_insert",
+            description="Auto-insert bounded center marks for an explicit drawing view and verify unique persisted annotation identities.",
+        )
+        def drawing_center_marks_auto_insert(path: str, view_id: str) -> dict[str, Any]:
+            return _result_payload(
+                runtime.drawing_service.auto_insert_center_marks(path, view_id)
+            )
+
     if runtime.export_service is not None:
         @server.tool(
             name="export_document",
@@ -967,6 +1041,7 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                 "step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg"
             ],
             source_configuration: str | None = None,
+            drawing_sheet: str | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.export_service.export(
@@ -974,7 +1049,22 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
                     target_path,
                     format,
                     source_configuration=source_configuration,
+                    drawing_sheet=drawing_sheet,
                 )
+            )
+
+    if runtime.import_service is not None:
+        @server.tool(
+            name="import_document",
+            description="Import a STEP, IGES, or Parasolid file into a new native .SLDPRT and require persisted geometry read-back.",
+        )
+        def import_document(
+            source_path: str,
+            target_path: str,
+            format: Literal["step", "iges", "parasolid"],
+        ) -> dict[str, Any]:
+            return _result_payload(
+                runtime.import_service.import_model(source_path, target_path, format)
             )
 
     if runtime.evaluation_service is not None:
