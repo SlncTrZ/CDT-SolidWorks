@@ -117,6 +117,9 @@ class FakeApi:
     def active_configuration(self, model):
         return None
 
+    def string_array(self, values):
+        return tuple(values)
+
     def close_document(self, app, title):
         raise AssertionError("caller-owned drawing must stay open")
 
@@ -158,8 +161,7 @@ class SingleSheetPdfTests(unittest.TestCase):
         )
         self.assertTrue(result.completed)
         self.assertEqual(3, app.pdf_data.which)
-        self.assertEqual(1, len(app.pdf_data.sheets))
-        self.assertEqual("Sheet1", app.pdf_data.sheets[0].GetName())
+        self.assertEqual(("Sheet1",), app.pdf_data.sheets)
         self.assertFalse(app.pdf_data.ViewPdfAfterSaving)
         self.assertEqual(r"C:\\exports\\sheet1.pdf", drawing.Extension.saved[-1][0])
 

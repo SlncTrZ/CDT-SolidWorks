@@ -186,7 +186,8 @@ class SolidWorksExporter:
                     partial=False,
                     errors=("pdf_export_data_unavailable",),
                 )
-            if not bool(self._api._member(export_data, "SetSheets", 3, (sheet,))):
+            sheet_names = self._api.string_array((sheet_name,))
+            if not bool(self._api._member(export_data, "SetSheets", 3, sheet_names)):
                 return NativeExportResult(
                     completed=False,
                     partial=False,
@@ -201,13 +202,11 @@ class SolidWorksExporter:
                 )
             selected = self._api._member(export_data, "GetSheets")
             selected_sheets = (
-                tuple(selected)
+                tuple(str(item) for item in selected)
                 if isinstance(selected, (tuple, list))
-                else (selected,) if selected is not None else ()
+                else (str(selected),) if selected is not None else ()
             )
-            if len(selected_sheets) != 1 or str(
-                self._api._member(selected_sheets[0], "GetName") or ""
-            ) != sheet_name:
+            if selected_sheets != (sheet_name,):
                 return NativeExportResult(
                     completed=False,
                     partial=False,
