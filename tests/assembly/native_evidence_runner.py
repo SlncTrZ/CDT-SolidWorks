@@ -886,37 +886,98 @@ def run_standard_mates_evidence(
 
 
 def run_mate_status_evidence(
-    session: SolidWorksSession, sample_root: Path
+    session: SolidWorksSession, root: Path, sample_root: Path
 ) -> dict[str, Any]:
     source = sample_root / "repairassemmates.sldasm"
-    if not source.is_file():
-        raise EvidenceError("mate-status SOLIDWORKS sample is missing")
-    _open_document(session, source, 2, read_only=True)
-    try:
-        service = AssemblyService(AssemblyNativeAdapter(session, timeout=60.0))
-        mates = service.list_mates(str(source.resolve()))
-        dangling = tuple(mate for mate in mates if mate.state is MateState.DANGLING)
-        if not dangling:
-            observed = tuple((mate.identity, mate.state.value) for mate in mates)
-            raise EvidenceError(
-                f"repairassemmates sample exposed no dangling mate: {observed!r}"
+    replacement = sample_root / "block20.sldprt"
+    if not source.is_file() or not replacement.is_file():
+        raise EvidenceError("mate-status SOLIDWORKS samples are missing")
+
+    _open_document(session, source, 2, read_only=False)
+    artifact = root / "dangling-mate-status.SLDASM"
+    _save_as_current_model(session, source, artifact)
+    assembly_id = str(artifact.resolve())
+    adapter = AssemblyNativeAdapter(session, timeout=60.0)
+
+    def break_reference(app: Any) -> None:
+        model = session.api.get_open_document(app, assembly_id)
+        if model is None:
+            raise EvidenceError("mate-status artifact not open")
+        component = adapter._component(model, "bolt-1")
+        adapter._select_component(model, component)
+        try:
+            replaced = bool(
+                session.api._member(
+                    model,
+                    "ReplaceComponents2",
+                    str(replacement.resolve()),
+                    "",
+                    False,
+                    0,
+                    False,
+                )
             )
-        return {
-            "source": str(source.resolve()),
-            "mate_count": len(mates),
-            "dangling": [
-                {
-                    "identity": mate.identity,
-                    "kind": mate.kind.value if mate.kind else None,
-                    "state": mate.state.value,
-                    "error_status": mate.error_status,
-                    "rebuild_errors": list(mate.rebuild_errors),
-                }
-                for mate in dangling
-            ],
-        }
-    finally:
-        _close_document(session, source)
+        finally:
+            session.api._member(model, "ClearSelection2", True)
+        if not replaced:
+            raise EvidenceError("mate-status replacement failed")
+        session.api.force_rebuild(model, False)
+
+    _require(
+        session.execute(
+            break_reference,
+            stage="assembly_evidence_break_mate_reference",
+            timeout=120.0,
+            mutation=True,
+        ),
+        "break_mate_reference",
+    )
+
+    service = AssemblyService(adapter)
+    mates = service.list_mates(assembly_id)
+    dangling = tuple(mate for mate in mates if mate.state is MateState.DANGLING)
+    if not dangling:
+        observed = tuple(
+            (mate.identity, mate.state.value, tuple(mate.rebuild_errors))
+            for mate in mates
+        )
+        raise EvidenceError(f"fixture exposed no dangling mate: {observed!r}")
+    dangling_ids = tuple(mate.identity for mate in dangling)
+
+    _save_document(session, artifact)
+    _close_document(session, artifact)
+    _open_document(session, artifact, 2, read_only=False)
+    reopened_service = AssemblyService(AssemblyNativeAdapter(session, timeout=60.0))
+    reopened = reopened_service.list_mates(assembly_id)
+    reopened_dangling = tuple(
+        mate.identity for mate in reopened if mate.state is MateState.DANGLING
+    )
+    if reopened_dangling != dangling_ids:
+        raise EvidenceError(
+            "dangling mate state did not persist after reopen: "
+            f"before={dangling_ids!r}; after={reopened_dangling!r}"
+        )
+    _close_document(session, artifact)
+
+    return {
+        "source": str(source.resolve()),
+        "artifact": str(artifact.resolve()),
+        "artifact_sha256": _sha256(artifact),
+        "replacement": str(replacement.resolve()),
+        "mate_count": len(mates),
+        "dangling": [
+            {
+                "identity": mate.identity,
+                "kind": mate.kind.value if mate.kind else None,
+                "state": mate.state.value,
+                "error_status": mate.error_status,
+                "component_ids": list(mate.component_ids),
+                "rebuild_errors": list(mate.rebuild_errors),
+            }
+            for mate in dangling
+        ],
+        "reopen_dangling": list(reopened_dangling),
+    }
 
 
 def run_width_mate_evidence(
@@ -1028,7 +1089,7 @@ def main() -> None:
         )
         lifecycle = run_lifecycle_evidence(session, root)
         standard_mates = run_standard_mates_evidence(session, root, sample_root)
-        mate_status = run_mate_status_evidence(session, sample_root)
+        mate_status = run_mate_status_evidence(session, root, sample_root)
         width = run_width_mate_evidence(session, root, sample_root)
         slot = run_slot_mate_evidence(session, root, sample_root)
         report.update(
