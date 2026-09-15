@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from cdt_solidworks.mechanical.gear import (
     GEAR_DIMENSION_NAMES,
@@ -36,9 +36,16 @@ class SpurGearBuildResult:
 class SpurGearService:
     """Build and inspect gears without direct COM, macros, or transient selections."""
 
-    def __init__(self, sketch_service: Any, part_service: Any) -> None:
+    def __init__(
+        self,
+        sketch_service: Any,
+        part_service: Any,
+        *,
+        target_refresher: Callable[[DocumentTarget], DocumentTarget] | None = None,
+    ) -> None:
         self._sketches = sketch_service
         self._parts = part_service
+        self._target_refresher = target_refresher
 
     def create(
         self, target: DocumentTarget, name: str, spec: SpurGearSpec
@@ -50,8 +57,13 @@ class SpurGearService:
         definition = build_spur_gear_sketch(f"{normalized_name}_Profile", spec)
         sketch = self._sketches.create(target, definition)
         try:
+            extrude_target = (
+                self._target_refresher(target)
+                if self._target_refresher is not None
+                else target
+            )
             feature = self._parts.extrude(
-                target,
+                extrude_target,
                 ExtrudeSpec(
                     name=normalized_name,
                     profile=ProfileRef(sketch.sketch_id),

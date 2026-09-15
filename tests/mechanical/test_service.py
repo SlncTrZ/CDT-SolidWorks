@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from cdt_solidworks.mechanical.gear import SpurGearSpec
-from cdt_solidworks.mechanical.service import SpurGearService
+from cdt_solidworks.mechanical.service import GearBuildMutationError, SpurGearService
 from cdt_solidworks.part.models import BodySnapshot, Bounds3D, ExtrudeSpec, FeatureKind, FeatureSnapshot, PartMutationResult
 from cdt_solidworks.part.runtime import DocumentTarget
 from cdt_solidworks.sketch.models import SketchSnapshot
@@ -35,8 +35,10 @@ class PartPort:
     def __init__(self) -> None:
         self.feature = None
         self.calls = []
+        self.targets = []
 
     def extrude(self, target, spec: ExtrudeSpec, *, postconditions=None):
+        self.targets.append(target)
         self.calls.append(("extrude", spec))
         self.feature = FeatureSnapshot(
             feature_id=spec.name, name=spec.name, kind=FeatureKind.EXTRUDE, parameters={"depth_mm": spec.depth_mm}
@@ -74,6 +76,48 @@ def test_create_gear_uses_sketch_and_part_primitives_only() -> None:
     assert sketches.definition is not None
     assert parts.calls[0][0] == "extrude"
     assert parts.calls[0][1].profile.sketch_id == result.sketch_id
+
+
+def test_create_refreshes_document_target_between_sketch_and_extrude_mutations() -> None:
+    sketches = SketchPort()
+    parts = PartPort()
+    refresh_calls = []
+
+    def refresh(target: DocumentTarget) -> DocumentTarget:
+        refresh_calls.append(target)
+        return DocumentTarget(
+            target.document_id,
+            target.expected_revision + 16,
+            target.expected_units,
+            expected_configuration=target.expected_configuration,
+        )
+
+    service = SpurGearService(sketches, parts, target_refresher=refresh)
+    target = DocumentTarget("gear.SLDPRT", 117, "mm", expected_configuration="Default")
+
+    service.create(target, "DriveGear", SpurGearSpec(24, 2.0, 20.0, 12.0, 10.0))
+
+    assert refresh_calls == [target]
+    assert parts.targets[0].expected_revision == 133
+    assert parts.targets[0].document_id == target.document_id
+    assert parts.targets[0].expected_configuration == "Default"
+
+
+def test_create_marks_refresh_failure_as_partial_mutation_and_skips_extrude() -> None:
+    sketches = SketchPort()
+    parts = PartPort()
+
+    def refresh(_target: DocumentTarget) -> DocumentTarget:
+        raise RuntimeError("revision read failed")
+
+    service = SpurGearService(sketches, parts, target_refresher=refresh)
+    target = DocumentTarget("gear.SLDPRT", 117, "mm", expected_configuration="Default")
+
+    with pytest.raises(GearBuildMutationError, match="sketch was created"):
+        service.create(target, "DriveGear", SpurGearSpec(24, 2.0, 20.0, 12.0, 10.0))
+
+    assert sketches.snapshot is not None
+    assert parts.calls == []
 
 
 def test_parameters_reconstruct_from_named_sketch_dimensions_after_reopen() -> None:

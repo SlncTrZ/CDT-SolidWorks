@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.integration.mechanical import IntegratedMechanicalService
 from cdt_solidworks.mechanical.service import GearBuildMutationError
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
+from cdt_solidworks.part.runtime import DocumentTarget
 
 
 @dataclass
@@ -64,6 +66,70 @@ def test_mechanical_wrapper_binds_configuration_and_refuses_bad_keyway(tmp_path)
     )
     assert bad.state is NativeCallState.FAILURE
     assert bad.dispatched is False
+
+
+def test_native_target_refresh_updates_revision_without_changing_identity(tmp_path) -> None:
+    part = tmp_path / "gear.SLDPRT"
+    part.write_bytes(b"part")
+    model = object()
+
+    class Api:
+        @staticmethod
+        def get_open_document(app, path):
+            assert path == str(part.resolve())
+            return model
+
+        @staticmethod
+        def document_type(value):
+            assert value is model
+            return 1
+
+        @staticmethod
+        def document_path(value):
+            assert value is model
+            return str(part.resolve())
+
+        @staticmethod
+        def update_stamp(value):
+            assert value is model
+            return 133
+
+        @staticmethod
+        def active_configuration(value):
+            assert value is model
+            return "Default"
+
+        @staticmethod
+        def _member(value, name):
+            assert value is model and name == "LengthUnit"
+            return 0
+
+    class Session:
+        api = Api()
+
+        @staticmethod
+        def execute(operation, *, stage, timeout, mutation=False):
+            assert stage == "part_gear_refresh_revision"
+            assert mutation is False
+            return NativeCallResult.success(
+                operation(object()), call_id="revision-read", dispatched=True
+            )
+
+    service = IntegratedMechanicalService(
+        path_policy=DocumentPathPolicy((tmp_path,)),
+        service=Service(),
+        part_feature_service=SimpleNamespace(session=Session(), default_timeout=60.0),
+    )
+    original = DocumentTarget(
+        str(part.resolve()), 117, "mm", expected_configuration="Default"
+    )
+
+    refreshed = service._refresh_target(original)
+
+    assert refreshed.document_id == original.document_id
+    assert refreshed.expected_revision == 133
+    assert refreshed.expected_units == "mm"
+    assert refreshed.expected_configuration == "Default"
 
 
 def test_mechanical_wrapper_preserves_original_uncertain_call_id(tmp_path) -> None:

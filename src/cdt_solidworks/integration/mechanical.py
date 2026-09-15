@@ -12,7 +12,7 @@ import uuid
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.mechanical.gear import GearValidationError, SpurGearSpec
 from cdt_solidworks.mechanical.service import GearBuildMutationError, SpurGearService
-from cdt_solidworks.native.models import NativeCallResult, NativeFailure
+from cdt_solidworks.native.models import NativeCallResult, NativeCallState, NativeFailure
 from cdt_solidworks.part.runtime import DocumentTarget
 from cdt_solidworks.part.service import PartContextError, PartMutationError, PartValidationError
 from cdt_solidworks.sketch.service import SketchContextError, SketchMutationError, SketchValidationError
@@ -32,13 +32,87 @@ class IntegratedMechanicalService:
         service: Any | None = None,
     ) -> None:
         self.path_policy = path_policy
+        self._sketch_service = sketch_service
+        self._part_feature_service = part_feature_service
         if service is None:
             sketch_domain = getattr(sketch_service, "service", None)
             part_domain = getattr(part_feature_service, "service", None)
             if sketch_domain is None or part_domain is None:
                 raise ValueError("gear integration requires sketch and part service dependencies")
-            service = SpurGearService(sketch_domain, part_domain)
+            service = SpurGearService(
+                sketch_domain,
+                part_domain,
+                target_refresher=self._refresh_target,
+            )
         self.service = service
+
+    def _refresh_target(self, target: DocumentTarget) -> DocumentTarget:
+        try:
+            wrapper = self._part_feature_service or self._sketch_service
+            session = getattr(wrapper, "session", None) if wrapper is not None else None
+            api = getattr(session, "api", None) if session is not None else None
+            if session is None or api is None:
+                raise RuntimeError("native session is unavailable")
+            source = self.path_policy.validate_open(target.document_id)
+            timeout = float(getattr(wrapper, "default_timeout", 60.0))
+
+            def operation(app: Any) -> tuple[int, str | None]:
+                model = api.get_open_document(app, source)
+                if model is None:
+                    raise RuntimeError("gear target is not open after sketch mutation")
+                if int(api.document_type(model)) != 1:
+                    raise RuntimeError("gear target is no longer a part document")
+                actual_path = self.path_policy.canonical(api.document_path(model) or source)
+                if actual_path != source:
+                    raise RuntimeError("gear target identity changed after sketch mutation")
+                unit_code = int(api._member(model, "LengthUnit"))
+                if target.expected_units == "mm" and unit_code != 0:
+                    raise RuntimeError("gear target units changed after sketch mutation")
+                configuration = api.active_configuration(model)
+                if (
+                    target.expected_configuration is not None
+                    and configuration != target.expected_configuration
+                ):
+                    raise RuntimeError(
+                        "gear target configuration changed after sketch mutation"
+                    )
+                revision = api.update_stamp(model)
+                if revision is None:
+                    raise RuntimeError(
+                        "SOLIDWORKS did not provide a gear document revision after sketch mutation"
+                    )
+                return int(revision), configuration
+
+            result = session.execute(
+                operation,
+                stage="part_gear_refresh_revision",
+                timeout=timeout,
+                mutation=False,
+            )
+            if result.state is not NativeCallState.SUCCESS or result.value is None:
+                detail = (
+                    result.failure.message
+                    if result.failure is not None
+                    else result.state.value
+                )
+                raise RuntimeError(detail)
+            revision, configuration = result.value
+            return DocumentTarget(
+                source,
+                revision,
+                target.expected_units,
+                expected_configuration=(
+                    target.expected_configuration
+                    if target.expected_configuration is not None
+                    else configuration
+                ),
+            )
+        except GearBuildMutationError:
+            raise
+        except Exception as exc:
+            raise GearBuildMutationError(
+                "gear sketch was created but document revision refresh failed"
+            ) from exc
 
     def gear_create_spur(
         self,
