@@ -106,13 +106,27 @@ class FakeSection:
         return self.label
 
 
+class FakeDimension:
+    def __init__(self, user_value):
+        self.user_value = float(user_value)
+
+    def GetUserValueIn(self, document):
+        assert document is not None
+        return self.user_value
+
+
 class FakeDisplayDimension:
-    def __init__(self, name, text="10.00"):
+    def __init__(self, name, text="10.00", user_value=10.0):
         self.annotation = FakeAnnotation(name, 4, text)
+        self.dimension = FakeDimension(user_value)
         self._next = None
 
     def GetAnnotation(self):
         return self.annotation
+
+    def GetDimension2(self, index):
+        assert index == 0
+        return self.dimension
 
     def GetNext5(self):
         return self._next
@@ -284,7 +298,8 @@ class FakeDrawing:
 
     def AddDimension2(self, x, y, z):
         assert self.selected_view is not None
-        display = FakeDisplayDimension(f"D{len(self.selected_view._display_dimensions) + 1}@{self.selected_view.Name}")
+        name = f"D{len(self.selected_view._display_dimensions) + 1}@{self.selected_view.Name}"
+        display = FakeDisplayDimension(name, text=name, user_value=16.0)
         if self.selected_view._display_dimensions:
             self.selected_view._display_dimensions[-1]._next = display
         self.selected_view._display_dimensions.append(display)
@@ -461,6 +476,7 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual("swref1.source.edge", dimension.source_ref)
+        self.assertEqual("16", dimension.display_text)
         self.assertEqual(1, len(topology.calls))
         self.assertIs(self.base_source_document(), topology.calls[0][0])
 

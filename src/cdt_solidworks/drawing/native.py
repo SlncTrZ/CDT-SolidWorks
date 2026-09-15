@@ -707,7 +707,7 @@ class SolidWorksDrawingAdapter:
             if display_dimension is None:
                 raise DrawingPostconditionError("dimension_create_failed", source_ref)
             snapshot = self._dimension_snapshot(
-                display_dimension, view_id, source_ref
+                model, display_dimension, view_id, source_ref
             )
             self._persist(model, "dimension_create")
             return snapshot
@@ -760,6 +760,7 @@ class SolidWorksDrawingAdapter:
                     except Exception:
                         identity = ""
                     snapshot = self._dimension_snapshot(
+                        model,
                         display,
                         view_id,
                         cached_ref or f"native:{identity or view_id}",
@@ -1057,11 +1058,18 @@ class SolidWorksDrawingAdapter:
             )
 
     def _dimension_snapshot(
-        self, display_dimension: Any, view_id: str, source_ref: str
+        self,
+        model: Any,
+        display_dimension: Any,
+        view_id: str,
+        source_ref: str,
     ) -> DimensionSnapshot:
         annotation = self._api._member(display_dimension, "GetAnnotation")
         identity = self._annotation_identity(annotation)
-        text = self._annotation_text(annotation, identity)
+        fallback_text = self._annotation_text(annotation, identity)
+        text = self._dimension_user_value_text(
+            model, display_dimension, fallback=fallback_text
+        )
         dangling = self._annotation_dangling(annotation)
         return DimensionSnapshot(
             identity=identity,
@@ -1070,6 +1078,20 @@ class SolidWorksDrawingAdapter:
             display_text=text,
             dangling=dangling,
         )
+
+    def _dimension_user_value_text(
+        self, model: Any, display_dimension: Any, *, fallback: str
+    ) -> str:
+        try:
+            dimension = self._api._member(display_dimension, "GetDimension2", 0)
+            if dimension is None:
+                return fallback
+            number = float(self._api._member(dimension, "GetUserValueIn", model))
+            if number != number or number in (float("inf"), float("-inf")):
+                return fallback
+            return format(number, ".15g")
+        except Exception:
+            return fallback
 
     def _annotation_identity(self, annotation: Any) -> str:
         if annotation is None:
