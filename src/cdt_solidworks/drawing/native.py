@@ -1338,10 +1338,14 @@ class SolidWorksDrawingAdapter:
     ) -> tuple[str, str | None]:
         bom_feature = None
         try:
+            bom_feature = self._api._member(table, "BomFeature")
+        except Exception:
+            bom_feature = None
+        try:
             specific = self._api._member(table, "GetSpecificAnnotation")
         except Exception:
             specific = None
-        if specific is not None:
+        if bom_feature is None and specific is not None:
             try:
                 bom_feature = self._api._member(specific, "BomFeature")
             except Exception:

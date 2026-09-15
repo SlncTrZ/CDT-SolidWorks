@@ -552,8 +552,14 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
         native_view = self.drawing.views[0]
         self.assertEqual(1, len(native_view._tables))
+        table = native_view._tables[0]
+        table.BomFeature = FakeBomFeature(
+            native_view.ReferencedDocument.path, native_view.ReferencedConfiguration
+        )
+        table.GetFeature = None
+        table.GetAnnotation = lambda: FakeAnnotation("BOM1", 0, "BOM1")
         sheet_view = FakeView("Sheet1", "")
-        sheet_view._tables = list(native_view._tables)
+        sheet_view._tables = [table]
         native_view._tables.clear()
         sheet_view._next = native_view
         self.drawing.GetFirstView = lambda: sheet_view
