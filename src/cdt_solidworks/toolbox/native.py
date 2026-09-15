@@ -7,10 +7,12 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 from typing import Any, Callable, TypeVar
 
 from cdt_solidworks.native.errors import NativeRuntimeError
 from cdt_solidworks.native.models import ApplicationOwnership, NativeCallState
+from cdt_solidworks.native.rebuild import rebuild_document
 
 from .domain import (
     ToolboxCatalogItem,
@@ -22,12 +24,19 @@ from .domain import (
 
 T = TypeVar("T")
 _SW_DOC_PART = 1
+_SW_SPECIFY_CONFIGURATION = 3
+_SW_SET_VALUE_SUCCESS = 0
 _SW_HOLE_WIZARD_TOOLBOX_FOLDER = 52
 _TOOLBOX_ROOT_PARENT_LIMIT = 3
 _TOOLBOX_BROWSER_GUID = "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
 _PART_NUMBER_KEYS = ("Part Number", "PartNumber", "PART NUMBER")
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
 _DB_VALUE_FIELD = re.compile(r"\[([^\[\]]+)\]")
+_SYSTEM_LENGTH_FACTORS = {
+    "INCH": 0.0254,
+    "MILLIMETER": 0.001,
+    "METER": 1.0,
+}
 
 
 class _ToolboxNativeError(NativeRuntimeError):
@@ -388,10 +397,308 @@ class ToolboxNativeAdapter:
             raise ToolboxRefusal("project_directory_missing", str(target.parent))
         if target.exists():
             raise ToolboxRefusal("project_component_exists", str(target))
-        shutil.copy2(source, target)
-        if not target.exists() or target.stat().st_size != source.stat().st_size:
-            raise ToolboxPostconditionError("project_copy_verification_failed", str(target))
-        return str(target)
+        try:
+            shutil.copy2(source, target)
+            target.chmod(target.stat().st_mode | stat.S_IWRITE)
+            if not target.exists() or target.stat().st_size != source.stat().st_size:
+                raise ToolboxPostconditionError("project_copy_verification_failed", str(target))
+            if self._requires_database_materialization(item):
+                probe = self.probe()
+                assignments = self._database_materialization_plan(probe, item)
+                self._materialize_project_copy(
+                    target,
+                    configuration=item.configuration,
+                    assignments=assignments,
+                )
+            return str(target)
+        except Exception:
+            if target.exists():
+                try:
+                    target.chmod(target.stat().st_mode | stat.S_IWRITE)
+                    target.unlink()
+                except OSError:
+                    pass
+            raise
+
+    @staticmethod
+    def _requires_database_materialization(item: ToolboxCatalogItem) -> bool:
+        return item.configuration.casefold() == "default" and any(
+            key.casefold() == "toolbox units" for key, _value in item.properties
+        )
+
+    def _materialize_project_copy(
+        self,
+        target: Path,
+        *,
+        configuration: str,
+        assignments: tuple[tuple[str, float], ...],
+    ) -> None:
+        def operation(app: Any) -> None:
+            if self.api.get_open_document(app, str(target)) is not None:
+                raise _ToolboxNativeError(
+                    "project_component_already_open", str(target)
+                )
+            model = None
+            try:
+                model, errors, warnings = self.api.open_document(
+                    app,
+                    str(target),
+                    _SW_DOC_PART,
+                    read_only=False,
+                    silent=True,
+                    configuration=configuration,
+                )
+                if model is None or int(errors) != 0:
+                    raise _ToolboxNativeError(
+                        "project_component_open_failed",
+                        f"path={target}; errors={int(errors)}; warnings={int(warnings)}",
+                    )
+                for dimension_name, value in assignments:
+                    dimension = self.api._member(model, "Parameter", dimension_name)
+                    if dimension is None:
+                        raise _ToolboxNativeError(
+                            "toolbox_materialization_dimension_missing",
+                            dimension_name,
+                        )
+                    status = int(
+                        self.api._member(
+                            dimension,
+                            "SetSystemValue3",
+                            float(value),
+                            _SW_SPECIFY_CONFIGURATION,
+                            self.api.string_array((configuration,)),
+                        )
+                    )
+                    if status != _SW_SET_VALUE_SUCCESS:
+                        raise _ToolboxNativeError(
+                            "toolbox_materialization_dimension_set_failed",
+                            f"{dimension_name}; native_status={status}",
+                        )
+                rebuilt = rebuild_document(model, self.api)
+                if not rebuilt.success:
+                    detail = ",".join(
+                        f"{issue.feature_name}:{issue.error_code}"
+                        for issue in rebuilt.feature_issues
+                        if not issue.is_warning
+                    )
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_rebuild_failed",
+                        detail or "native_rebuild_failed",
+                    )
+                saved, save_errors, save_warnings = self.api.save_document(model)
+                if not saved or int(save_errors) != 0:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_save_failed",
+                        f"errors={int(save_errors)}; warnings={int(save_warnings)}",
+                    )
+                self.api.close_document(app, self.api.document_title(model))
+                model = None
+                reopened, errors, warnings = self.api.open_document(
+                    app,
+                    str(target),
+                    _SW_DOC_PART,
+                    read_only=True,
+                    silent=True,
+                    configuration=configuration,
+                )
+                model = reopened
+                if model is None or int(errors) != 0:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_reopen_failed",
+                        f"errors={int(errors)}; warnings={int(warnings)}",
+                    )
+                for dimension_name, expected in assignments:
+                    dimension = self.api._member(model, "Parameter", dimension_name)
+                    if dimension is None:
+                        raise _ToolboxNativeError(
+                            "toolbox_materialization_dimension_missing_after_reopen",
+                            dimension_name,
+                        )
+                    values = self.api._member(
+                        dimension,
+                        "GetSystemValue3",
+                        _SW_SPECIFY_CONFIGURATION,
+                        self.api.string_array((configuration,)),
+                    )
+                    if values is None:
+                        raise _ToolboxNativeError(
+                            "toolbox_materialization_readback_missing",
+                            dimension_name,
+                        )
+                    if isinstance(values, (tuple, list)):
+                        actual = float(values[0]) if values else None
+                    else:
+                        actual = float(values)
+                    if actual is None or abs(actual - expected) > 1e-9:
+                        raise _ToolboxNativeError(
+                            "toolbox_materialization_readback_mismatch",
+                            f"{dimension_name}; expected={expected}; actual={actual}",
+                        )
+            finally:
+                if model is not None:
+                    try:
+                        self.api.close_document(app, self.api.document_title(model))
+                    except Exception:
+                        pass
+
+        result = self.session.execute(
+            operation,
+            stage="toolbox_component_materialize",
+            timeout=self.timeout,
+            mutation=True,
+        )
+        if result.state is NativeCallState.SUCCESS:
+            return
+        failure = result.failure
+        detail = failure.message if failure is not None else result.state.value
+        if result.state is NativeCallState.UNCERTAIN_AFTER_DISPATCH:
+            raise ToolboxPostconditionError(
+                "native_state_uncertain", f"call_id={result.call_id}; {detail}"
+            )
+        code = failure.code if failure is not None else result.state.value
+        raise ToolboxRefusal(code, detail)
+
+    def _database_materialization_plan(
+        self,
+        probe: ToolboxProbeSnapshot,
+        item: ToolboxCatalogItem,
+    ) -> tuple[tuple[str, float], ...]:
+        if not probe.database_path:
+            raise _ToolboxNativeError("toolbox_database_missing")
+        database = Path(probe.database_path).resolve(strict=False)
+        properties = {
+            key.casefold(): value
+            for key, value in item.properties
+            if value is not None
+        }
+        units = str(properties.get("toolbox units") or "").strip().upper()
+        factor = _SYSTEM_LENGTH_FACTORS.get(units)
+        if factor is None:
+            raise _ToolboxNativeError(
+                "toolbox_materialization_units_unsupported", units or "missing"
+            )
+        try:
+            connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            raise _ToolboxNativeError("toolbox_database_read_failed", str(exc)) from exc
+        connection.row_factory = sqlite3.Row
+        try:
+            standard_row = connection.execute(
+                "SELECT Name, TableNamePrefix FROM Standards "
+                "WHERE lower(Name)=lower(?) AND enabled=1 AND Installed=1 AND IsToolbox=1 LIMIT 1",
+                (item.standard,),
+            ).fetchone()
+            if standard_row is None:
+                raise _ToolboxNativeError(
+                    "toolbox_materialization_standard_missing", item.standard
+                )
+            prefix = str(standard_row["TableNamePrefix"] or "")
+            if not _SQL_IDENTIFIER.fullmatch(prefix.rstrip("_")):
+                raise _ToolboxNativeError("toolbox_database_prefix_invalid", prefix)
+            table_names = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                )
+            )
+            table_names_by_casefold = {
+                name.casefold(): name for name in table_names
+            }
+            config_tables: set[str] = set()
+            type_prefix = f"{prefix}TYPE_".casefold()
+            for type_table in table_names:
+                if not type_table.casefold().startswith(type_prefix):
+                    continue
+                if not _SQL_IDENTIFIER.fullmatch(type_table):
+                    continue
+                columns = {
+                    str(row[1]).casefold()
+                    for row in connection.execute(f'PRAGMA table_info("{type_table}")')
+                }
+                if not {"filename", "configurationtable", "enabled"}.issubset(columns):
+                    continue
+                for row in connection.execute(
+                    f'SELECT * FROM "{type_table}" WHERE enabled=1'
+                ):
+                    filename = str(row["Filename"] or "").strip()
+                    if not filename:
+                        continue
+                    relative_parts = tuple(
+                        part for part in re.split(r"[\\/]+", filename) if part
+                    )
+                    if not relative_parts:
+                        continue
+                    family = Path(relative_parts[-1]).stem
+                    if family.casefold() != item.family.casefold():
+                        continue
+                    reference = self._database_table_name(
+                        prefix, str(row["ConfigurationTable"] or "")
+                    )
+                    config_table = table_names_by_casefold.get(reference.casefold())
+                    if config_table is None:
+                        raise _ToolboxNativeError(
+                            "toolbox_database_metadata_invalid", item.family
+                        )
+                    config_tables.add(config_table)
+            if not config_tables:
+                raise _ToolboxNativeError(
+                    "toolbox_materialization_metadata_missing", item.family
+                )
+            if len(config_tables) != 1:
+                raise _ToolboxNativeError(
+                    "toolbox_materialization_metadata_ambiguous", item.family
+                )
+            config_table = next(iter(config_tables))
+            assignments: list[tuple[str, float]] = []
+            rows = connection.execute(
+                f'SELECT * FROM "{config_table}" ORDER BY Grid_Item_Number'
+            ).fetchall()
+            for row in rows:
+                dimension = str(row["Dimension"] or "").strip()
+                if not dimension:
+                    continue
+                grid_name = str(row["Grid_Item_Name"] or dimension).strip() or dimension
+                if dimension.casefold() == "suppression":
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_requires_additional_configuration",
+                        grid_name,
+                    )
+                alt_source = str(row["AltDataSource"] or "").strip()
+                relation = str(row["RelationField"] or "").strip()
+                if alt_source or relation:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_requires_additional_configuration",
+                        grid_name,
+                    )
+                if int(row["NoUnitConversion"] or 0) != 0:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_dimension_units_unsupported",
+                        grid_name,
+                    )
+                template = str(row["ValueList"] or "").strip()
+                if template.startswith("{") and template.endswith("}"):
+                    template = template[1:-1]
+                rendered = self._render_database_value(template, properties)
+                if rendered is None:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_value_missing", grid_name
+                    )
+                try:
+                    value = float(rendered) * factor
+                except ValueError as exc:
+                    raise _ToolboxNativeError(
+                        "toolbox_materialization_value_invalid", grid_name
+                    ) from exc
+                assignments.append((dimension, value))
+            if not assignments:
+                raise _ToolboxNativeError(
+                    "toolbox_materialization_dimensions_missing", item.family
+                )
+            return tuple(assignments)
+        except sqlite3.Error as exc:
+            raise _ToolboxNativeError("toolbox_database_read_failed", str(exc)) from exc
+        finally:
+            connection.close()
 
     def component_properties(
         self, path: str, configuration: str

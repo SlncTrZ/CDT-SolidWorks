@@ -1,8 +1,10 @@
 from pathlib import Path
 import sqlite3
+import stat
 from types import SimpleNamespace
 
 from cdt_solidworks.native.models import ApplicationOwnership, NativeCallResult
+from cdt_solidworks.toolbox.domain import ToolboxCatalogItem
 from cdt_solidworks.toolbox.native import ToolboxNativeAdapter
 
 
@@ -167,6 +169,9 @@ def _sqlite_fixture(root: Path) -> None:
             "INSERT INTO AI_CFG_BS_HBOLT VALUES (1,'Size','STRING_COMBO',1,'',0,'','{[size]-[pitch]}','')"
         )
         con.execute(
+            "INSERT INTO AI_CFG_BS_HBOLT VALUES (10,'Length','NUMERIC_COMBO',0,'Length@BodySke',0,'+DATA_HBOLT_LENGTHS','{[Length]}','[Size=Controller@Size]')"
+        )
+        con.execute(
             "CREATE TABLE AI_DATA_HBOLT (SIZE TEXT, PITCH TEXT, DIAMETER TEXT, WIDTH_FLATS TEXT, HEAD_HT TEXT, enabled INTEGER, key INTEGER)"
         )
         con.execute(
@@ -180,6 +185,15 @@ def _sqlite_fixture(root: Path) -> None:
         )
         con.execute(
             "INSERT INTO AI_CFG_WASHERS_FW VALUES (1,'Size','STRING_COMBO',1,'',0,'','{[size]}','')"
+        )
+        con.execute(
+            "INSERT INTO AI_CFG_WASHERS_FW VALUES (34,'Inside Diameter','Disabled_Greyed',0,'Inside_dia@Sketch1',0,'','{[Insid_dia]}','')"
+        )
+        con.execute(
+            "INSERT INTO AI_CFG_WASHERS_FW VALUES (36,'Outside Diameter','Disabled_Greyed',0,'Outside_dia@Sketch1',0,'','{[Outsid_dia]}','')"
+        )
+        con.execute(
+            "INSERT INTO AI_CFG_WASHERS_FW VALUES (38,'Thickness','Disabled_Greyed',0,'Thickness@Sketch1',0,'','{[Thickness]}','')"
         )
         con.execute(
             "CREATE TABLE AI_DATA_FW1 (SIZE TEXT, INSID_DIA TEXT, OUTSID_DIA TEXT, THICKNESS TEXT, enabled INTEGER, key INTEGER)"
@@ -221,6 +235,73 @@ def test_database_catalog_returns_real_washer_size(tmp_path: Path) -> None:
     assert item.size == "1/4"
     assert ("INSID_DIA", "0.281") in item.properties
     assert ("THICKNESS", "0.063") in item.properties
+
+
+def test_database_materialization_plan_maps_washer_dimensions_to_system_units(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+    item = adapter.catalog_query(
+        "Ansi Inch", "flat washer type b regular_ai", "1/4", 10
+    )[0]
+
+    plan = adapter._database_materialization_plan(adapter.probe(), item)
+
+    assert plan == (
+        ("Inside_dia@Sketch1", 0.281 * 0.0254),
+        ("Outside_dia@Sketch1", 0.734 * 0.0254),
+        ("Thickness@Sketch1", 0.063 * 0.0254),
+    )
+
+
+def test_copy_component_makes_project_copy_writable_without_changing_vendor_mode(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    source = _fixture(root)
+    source.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    destination = tmp_path / "project" / "copy.SLDPRT"
+    destination.parent.mkdir()
+    adapter = ToolboxNativeAdapter(_Session(root))
+    item = ToolboxCatalogItem(
+        standard="ANSI Inch",
+        family="hex bolt",
+        size="1/4-20 x 1",
+        source_path=str(source),
+        configuration="1/4-20 x 1",
+    )
+
+    copied = Path(adapter.copy_component(item, destination))
+
+    assert source.stat().st_mode & stat.S_IWUSR == 0
+    assert copied.stat().st_mode & stat.S_IWUSR
+
+
+def test_database_catalog_copy_invokes_materialization_hook(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+    item = adapter.catalog_query(
+        "Ansi Inch", "flat washer type b regular_ai", "1/4", 10
+    )[0]
+    destination = tmp_path / "project" / "washer.SLDPRT"
+    destination.parent.mkdir()
+    calls = []
+
+    def fake_materialize(target, *, configuration, assignments):
+        calls.append((Path(target), configuration, assignments))
+
+    monkeypatch.setattr(adapter, "_materialize_project_copy", fake_materialize)
+
+    copied = Path(adapter.copy_component(item, destination))
+
+    assert copied == destination.resolve()
+    assert len(calls) == 1
+    assert calls[0][0] == destination.resolve()
+    assert calls[0][1] == "Default"
+    assert calls[0][2] == (
+        ("Inside_dia@Sketch1", 0.281 * 0.0254),
+        ("Outside_dia@Sketch1", 0.734 * 0.0254),
+        ("Thickness@Sketch1", 0.063 * 0.0254),
+    )
 
 
 def test_probe_reads_addin_root_database_and_version(tmp_path: Path) -> None:
