@@ -369,7 +369,7 @@ def test_export_wrapper_preserves_uncertain_call_id(tmp_path: Path) -> None:
     assert result.dispatched is True
 
 
-def test_evaluation_wrapper_is_read_only_part_surface(tmp_path: Path) -> None:
+def test_evaluation_wrapper_allows_accepted_part_and_assembly_surfaces(tmp_path: Path) -> None:
     part, _drawing, assembly = _files(tmp_path)
     domain = _EvaluationDomain()
     service = IntegratedEvaluationService(path_policy=DocumentPathPolicy((tmp_path,)), service=domain)
@@ -379,6 +379,13 @@ def test_evaluation_wrapper_is_read_only_part_surface(tmp_path: Path) -> None:
     assert service.geometry_sanity(str(part), "Default").state is NativeCallState.SUCCESS
     assert service.measure(str(part), "Sketch1:segment:0", "Sketch1:segment:1").state is NativeCallState.SUCCESS
     assert service.measure(str(part), "Sketch2:segment:0").state is NativeCallState.SUCCESS
+
+    assert service.bounding_box(str(assembly), "Default").state is NativeCallState.SUCCESS
+    assert service.geometry_sanity(str(assembly), "Default").state is NativeCallState.SUCCESS
+    assert domain.calls[-2:] == [
+        ("bounds", str(assembly.resolve()), "Default"),
+        ("sanity", str(assembly.resolve()), "Default"),
+    ]
 
     before = len(domain.calls)
     refused = service.mass_properties(str(assembly))

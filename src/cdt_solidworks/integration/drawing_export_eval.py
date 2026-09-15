@@ -770,6 +770,7 @@ class IntegratedEvaluationService:
             "evaluation_bounding_box",
             path,
             lambda target: self.service.bounding_box(target, configuration),
+            extensions=_PART_EXTENSIONS | _ASSEMBLY_EXTENSIONS,
         )
 
     def geometry_sanity(
@@ -779,6 +780,7 @@ class IntegratedEvaluationService:
             "evaluation_geometry_sanity",
             path,
             lambda target: self.service.require_clean_geometry(target, configuration),
+            extensions=_PART_EXTENSIONS | _ASSEMBLY_EXTENSIONS,
         )
 
     def measure(
