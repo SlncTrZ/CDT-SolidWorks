@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from cdt_solidworks.native.models import NativeCallResult
+from cdt_solidworks.native.models import ApplicationOwnership, NativeCallResult
 from cdt_solidworks.toolbox.native import ToolboxNativeAdapter
 
 
@@ -36,6 +36,9 @@ class _App:
         self.root = root
         self.addin = object()
         self.preference = 123
+        self.preference_value = root
+        self.executable_path = root / "Program" / "SLDWORKS.exe"
+        self.load_addin_calls = []
 
     def GetAddInObject(self, guid):
         assert guid == "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
@@ -43,7 +46,17 @@ class _App:
 
     def GetUserPreferenceStringValue(self, preference):
         assert preference == self.preference
-        return str(self.root)
+        return str(self.preference_value)
+
+    def GetExecutablePath(self):
+        return str(self.executable_path)
+
+    def LoadAddIn(self, path):
+        self.load_addin_calls.append(str(path))
+        if Path(path).is_file() and Path(path).name.casefold() == "swbrowser.dll":
+            self.addin = object()
+            return 0
+        return 1
 
 
 class _Api:
@@ -83,9 +96,15 @@ class _Api:
 
 
 class _Session:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        ownership: ApplicationOwnership = ApplicationOwnership.PROVIDER_OWNED,
+    ) -> None:
         self.api = _Api()
         self.app = _App(root)
+        self.ownership = ownership
         self.calls = []
 
     def execute(self, operation, *, stage, timeout, mutation=False):
@@ -131,6 +150,20 @@ def test_probe_falls_back_to_stable_toolbox_preference_enum_without_makepy_const
     assert Path(probe.root_path or "") == root.resolve()
 
 
+def test_probe_normalizes_language_database_directory_to_toolbox_root(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _fixture(root)
+    session = _Session(root)
+    session.app.preference_value = root / "lang" / "english"
+    adapter = ToolboxNativeAdapter(session)
+
+    probe = adapter.probe()
+
+    assert probe.available is True
+    assert Path(probe.root_path or "") == root.resolve()
+    assert Path(probe.database_path or "").name == "swbrowser.sldedb"
+
+
 def test_catalog_scans_bounded_vendor_parts_read_only(tmp_path: Path) -> None:
     root = tmp_path / "Toolbox"
     part = _fixture(root)
@@ -147,13 +180,36 @@ def test_catalog_scans_bounded_vendor_parts_read_only(tmp_path: Path) -> None:
     assert session.api.closed
 
 
-def test_probe_fails_closed_when_addin_unavailable(tmp_path: Path) -> None:
+def test_probe_loads_browser_addin_only_for_provider_owned_session(tmp_path: Path) -> None:
     root = tmp_path / "Toolbox"
     _fixture(root)
     session = _Session(root)
     session.app.addin = None
+    browser_dll = session.app.executable_path.parent / "Toolbox" / "SwBrowser.dll"
+    browser_dll.parent.mkdir(parents=True)
+    browser_dll.write_bytes(b"addin")
     adapter = ToolboxNativeAdapter(session)
+
     probe = adapter.probe()
+
+    assert probe.available is True
+    assert probe.addin_loaded is True
+    assert session.app.load_addin_calls == [str(browser_dll)]
+
+
+def test_probe_does_not_load_browser_addin_for_user_owned_session(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _fixture(root)
+    session = _Session(root, ownership=ApplicationOwnership.USER_OWNED)
+    session.app.addin = None
+    browser_dll = session.app.executable_path.parent / "Toolbox" / "SwBrowser.dll"
+    browser_dll.parent.mkdir(parents=True)
+    browser_dll.write_bytes(b"addin")
+    adapter = ToolboxNativeAdapter(session)
+
+    probe = adapter.probe()
+
     assert probe.available is False
     assert probe.reason == "toolbox_addin_unavailable_or_unlicensed"
     assert probe.license_state == "unknown"
+    assert session.app.load_addin_calls == []

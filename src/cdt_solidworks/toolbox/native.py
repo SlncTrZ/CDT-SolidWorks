@@ -7,7 +7,7 @@ import shutil
 from typing import Any, Callable, TypeVar
 
 from cdt_solidworks.native.errors import NativeRuntimeError
-from cdt_solidworks.native.models import NativeCallState
+from cdt_solidworks.native.models import ApplicationOwnership, NativeCallState
 
 from .domain import (
     ToolboxCatalogItem,
@@ -20,6 +20,7 @@ from .domain import (
 T = TypeVar("T")
 _SW_DOC_PART = 1
 _SW_HOLE_WIZARD_TOOLBOX_FOLDER = 52
+_TOOLBOX_ROOT_PARENT_LIMIT = 3
 _TOOLBOX_BROWSER_GUID = "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
 _PART_NUMBER_KEYS = ("Part Number", "PartNumber", "PART NUMBER")
 
@@ -49,7 +50,7 @@ class ToolboxNativeAdapter:
         self.max_properties = int(max_properties)
 
     def probe(self) -> ToolboxProbeSnapshot:
-        return self._run("toolbox_probe", False, self._probe)
+        return self._run("toolbox_probe", True, self._probe)
 
     def catalog_query(
         self,
@@ -110,7 +111,7 @@ class ToolboxNativeAdapter:
                         return tuple(results)
             return tuple(results)
 
-        return self._run("toolbox_catalog_query", False, operation)
+        return self._run("toolbox_catalog_query", True, operation)
 
     def copy_component(self, item: ToolboxCatalogItem, destination: Path) -> str:
         source = Path(item.source_path).resolve(strict=False)
@@ -141,11 +142,7 @@ class ToolboxNativeAdapter:
         return self._run("toolbox_component_properties", False, operation)
 
     def _probe(self, app: Any) -> ToolboxProbeSnapshot:
-        addin = None
-        try:
-            addin = self.api._member(app, "GetAddInObject", _TOOLBOX_BROWSER_GUID)
-        except Exception:
-            addin = None
+        addin = self._toolbox_addin(app)
         root = self._toolbox_root(app)
         if not root:
             return ToolboxProbeSnapshot(
@@ -192,6 +189,32 @@ class ToolboxNativeAdapter:
             reason=reason,
         )
 
+    def _toolbox_addin(self, app: Any) -> Any | None:
+        try:
+            addin = self.api._member(app, "GetAddInObject", _TOOLBOX_BROWSER_GUID)
+        except Exception:
+            addin = None
+        if addin is not None:
+            return addin
+        if getattr(self.session, "ownership", None) is not ApplicationOwnership.PROVIDER_OWNED:
+            return None
+        try:
+            executable = Path(str(self.api._member(app, "GetExecutablePath") or "")).resolve(
+                strict=False
+            )
+        except Exception:
+            return None
+        if not executable.name:
+            return None
+        browser_dll = executable.parent / "Toolbox" / "SwBrowser.dll"
+        if not browser_dll.is_file():
+            return None
+        try:
+            self.api._member(app, "LoadAddIn", str(browser_dll))
+            return self.api._member(app, "GetAddInObject", _TOOLBOX_BROWSER_GUID)
+        except Exception:
+            return None
+
     def _toolbox_root(self, app: Any) -> str | None:
         client = getattr(self.api, "_client", None)
         constants = getattr(client, "constants", None) if client is not None else None
@@ -203,7 +226,21 @@ class ToolboxNativeAdapter:
         except Exception:
             return None
         normalized = str(value or "").strip()
-        return normalized or None
+        if not normalized:
+            return None
+        return self._normalize_toolbox_root(normalized)
+
+    @staticmethod
+    def _normalize_toolbox_root(value: str) -> str:
+        candidate = Path(value).resolve(strict=False)
+        base = candidate.parent if candidate.is_file() else candidate
+        search_roots = (base, *tuple(base.parents)[:_TOOLBOX_ROOT_PARENT_LIMIT])
+        for root in search_roots:
+            browser = root / "Browser"
+            databases = tuple(root.glob("lang/*/swbrowser.sldedb"))
+            if browser.is_dir() and any(path.is_file() for path in databases):
+                return str(root.resolve(strict=False))
+        return str(candidate)
 
     def _configuration_names(self, app: Any, path: Path) -> tuple[str, ...]:
         model, opened_here = self._open_part(app, path)
