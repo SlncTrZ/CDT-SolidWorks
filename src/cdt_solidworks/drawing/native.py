@@ -882,10 +882,9 @@ class SolidWorksDrawingAdapter:
             seen: set[str] = set()
             model_views = tuple(self._iter_model_views(model))
             sheet_view = self._api._member(model, "GetFirstView")
-            table_views: list[tuple[str | None, Any]] = []
+            table_views: list[tuple[str | None, Any]] = list(model_views)
             if sheet_view is not None:
                 table_views.append((None, sheet_view))
-            table_views.extend(model_views)
             for owner_view_id, view in table_views:
                 table = self._first_table_annotation(view)
                 while table is not None:

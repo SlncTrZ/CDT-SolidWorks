@@ -530,6 +530,24 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
                     )
                 self.assertEqual(before, len(self.drawing.views[0]._display_dimensions))
 
+    def test_model_view_bom_wins_over_sheet_duplicate_before_reopen(self):
+        bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        native_view = self.drawing.views[0]
+        table = native_view._tables[0]
+        table.source_path = ""
+        sheet_view = FakeView("Sheet1", "")
+        sheet_view._tables = [table]
+        sheet_view._next = native_view
+        self.drawing.GetFirstView = lambda: sheet_view
+        self.adapter._bom_metadata.clear()
+        self.adapter._view_metadata.clear()
+
+        boms = self.adapter.list_boms(self.path)
+
+        self.assertEqual((bom.identity,), tuple(item.identity for item in boms))
+        self.assertEqual(self.base.identity, boms[0].view_id)
+        self.assertEqual("Default", boms[0].source_configuration)
+
     def test_bom_readback_survives_cache_loss_when_native_table_moves_to_sheet_view(self):
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
         native_view = self.drawing.views[0]
