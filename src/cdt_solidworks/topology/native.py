@@ -34,6 +34,8 @@ _TOKEN_PREFIX = "swref1"
 _M_TO_MM = 1000.0
 _M2_TO_MM2 = 1_000_000.0
 _M3_TO_MM3 = 1_000_000_000.0
+_REFERENCE_KEY_CONTEXT = b"cdt-solidworks/topology-reference/v1\0"
+_DEFAULT_REFERENCE_SECRET = os.urandom(32)
 
 
 class TopologyNativeAdapter:
@@ -46,6 +48,7 @@ class TopologyNativeAdapter:
         document_service: DocumentService,
         default_timeout: float = 15.0,
         max_items: int = 4096,
+        reference_secret: str | bytes | bytearray | memoryview | None = None,
     ) -> None:
         self.session = session
         self.api = session.api
@@ -54,6 +57,14 @@ class TopologyNativeAdapter:
         self.max_items = int(max_items)
         if self.max_items < 1:
             raise ValueError("max_items must be positive")
+        secret = _DEFAULT_REFERENCE_SECRET if reference_secret is None else reference_secret
+        if isinstance(secret, str):
+            secret_bytes = secret.encode("utf-8")
+        else:
+            secret_bytes = bytes(secret)
+        if not secret_bytes:
+            raise ValueError("reference_secret must be non-empty")
+        self._reference_key = hashlib.sha256(_REFERENCE_KEY_CONTEXT + secret_bytes).digest()
 
     def query(
         self,
@@ -574,18 +585,18 @@ class TopologyNativeAdapter:
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-        checksum = hashlib.sha256(raw).hexdigest()[:24]
-        return f"{_TOKEN_PREFIX}.{encoded}.{checksum}"
+        signature = self._reference_signature(raw)
+        return f"{_TOKEN_PREFIX}.{encoded}.{signature}"
 
     def _decode_reference(self, reference: str) -> dict[str, object]:
         try:
-            prefix, encoded, checksum = str(reference).split(".", 2)
+            prefix, encoded, signature = str(reference).split(".", 2)
             if prefix != _TOKEN_PREFIX:
                 raise ValueError("prefix")
             raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-            expected = hashlib.sha256(raw).hexdigest()[:24]
-            if not hmac.compare_digest(checksum, expected):
-                raise ValueError("checksum")
+            expected = self._reference_signature(raw)
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError("signature")
             payload = json.loads(raw.decode("utf-8"))
             if not isinstance(payload, dict) or payload.get("version") != 1:
                 raise ValueError("version")
@@ -653,6 +664,9 @@ class TopologyNativeAdapter:
     def _document_fingerprint(path: str) -> str:
         canonical = os.path.normcase(os.path.abspath(path))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _reference_signature(self, raw: bytes) -> str:
+        return hmac.new(self._reference_key, raw, hashlib.sha256).hexdigest()[:24]
 
     @staticmethod
     def _encode_pid(pid: bytes) -> str:

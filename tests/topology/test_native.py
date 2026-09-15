@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -138,7 +141,7 @@ class FakeSession:
             return NativeCallResult.failed(failure_from_exception(exc, stage), call_id=call_id, dispatched=True)
 
 
-def fixture(root: Path):
+def fixture(root: Path, *, reference_secret: str | bytes | None = None):
     v1 = FakeVertex(b"v1", (0.0, 0.0, 0.0))
     v2 = FakeVertex(b"v2", (1.0, 0.0, 0.0))
     v3 = FakeVertex(b"v3", (1.0, 1.0, 0.0))
@@ -153,7 +156,12 @@ def fixture(root: Path):
     api = FakeApi()
     session = FakeSession(FakeApp(doc), api)
     documents = DocumentService(session, path_policy=DocumentPathPolicy((root,)))
-    service = TopologyNativeAdapter(session, document_service=documents, max_items=64)
+    service = TopologyNativeAdapter(
+        session,
+        document_service=documents,
+        max_items=64,
+        reference_secret=reference_secret,
+    )
     context = DocumentContext(
         session_id=session.session_id, path=doc.path, title=doc.title,
         document_type=DocumentType.PART, configuration=doc.configuration, update_stamp=doc.update_stamp,
@@ -191,6 +199,27 @@ def test_open_document_native_resolve_does_not_enqueue_nested_dispatch():
         assert result.value["kind"] == "edge"
         assert result.value["reference"] == edge.reference
         assert service.session.calls == before
+
+
+def test_explicit_reference_secret_allows_restart_and_rejects_other_secret():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first, first_context, _ = fixture(root, reference_secret="shared-secret")
+        reference = first.query(first_context, kinds=("face",)).value.items[0].reference
+
+        restarted, restarted_context, _ = fixture(root, reference_secret="shared-secret")
+        restarted.query(restarted_context, kinds=("face",))
+        resolved = restarted.resolve(restarted_context, reference, expected_kind="face")
+        assert resolved.state is NativeCallState.SUCCESS
+
+        wrong, wrong_context, _ = fixture(root, reference_secret="different-secret")
+        before = wrong.session.calls
+        rejected = wrong.resolve(wrong_context, reference, expected_kind="face")
+        assert rejected.state is NativeCallState.FAILURE
+        assert rejected.dispatched is False
+        assert rejected.failure is not None
+        assert rejected.failure.code == "invalid_topology_reference"
+        assert wrong.session.calls == before
 
 
 def test_reference_round_trip_resolves_same_kind():
@@ -252,6 +281,39 @@ def test_native_deleted_suppressed_and_invalid_states_fail_closed():
             assert result.state is NativeCallState.FAILURE
             assert result.failure is not None
             assert result.failure.code == code
+
+
+def test_rehashed_client_forgery_cannot_bypass_stale_revision_binding():
+    with tempfile.TemporaryDirectory() as tmp:
+        service, context, doc = fixture(Path(tmp))
+        item = service.query(context, kinds=("face",)).value.items[0]
+        doc.update_stamp += 1
+        refreshed = DocumentContext(
+            session_id=context.session_id,
+            path=context.path,
+            title=context.title,
+            document_type=context.document_type,
+            configuration=context.configuration,
+            update_stamp=doc.update_stamp,
+        )
+
+        prefix, encoded, _ = item.reference.split(".", 2)
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+        payload["update_stamp"] = refreshed.update_stamp
+        forged_raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        forged_encoded = base64.urlsafe_b64encode(forged_raw).decode("ascii").rstrip("=")
+        forged_checksum = hashlib.sha256(forged_raw).hexdigest()[:24]
+        forged = f"{prefix}.{forged_encoded}.{forged_checksum}"
+        before = service.session.calls
+
+        result = service.resolve(refreshed, forged, expected_kind="face")
+
+        assert result.state is NativeCallState.FAILURE
+        assert result.dispatched is False
+        assert result.failure is not None
+        assert result.failure.code == "invalid_topology_reference"
+        assert service.session.calls == before
 
 
 def test_tampered_reference_is_rejected_before_dispatch():

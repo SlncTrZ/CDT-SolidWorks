@@ -89,6 +89,7 @@ def main() -> None:
         weldment_profile_roots=_weldment_profile_roots_from_environ(os.environ),
         drawing_bom_template_path=_bom_template_path_from_environ(os.environ),
         version=_version_from_environ(os.environ),
+        topology_reference_secret=auth.bearer_token,
     )
     failed = False
     try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,7 +66,7 @@ def _install_main_fakes(monkeypatch, events: list[tuple[str, object]], *, run_er
     monkeypatch.setattr(
         cli.NetworkAuthConfig,
         "from_environ",
-        classmethod(lambda cls, environ: object()),
+        classmethod(lambda cls, environ: SimpleNamespace(bearer_token="test-topology-secret")),
     )
     monkeypatch.setattr(
         cli,
@@ -87,6 +88,8 @@ def test_main_cleans_up_native_runtime_after_normal_server_return(monkeypatch) -
 
     cli.main()
 
+    runtime_kwargs = next(value for event, value in events if event == "runtime")
+    assert runtime_kwargs["topology_reference_secret"] == "test-topology-secret"
     assert events[-3:] == [
         ("uvicorn", ("127.0.0.1", 8000)),
         ("disconnect", 30.0),

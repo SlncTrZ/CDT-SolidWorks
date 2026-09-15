@@ -40,6 +40,7 @@ class IntegratedProviderRuntime:
         weldment_profile_roots: Iterable[str | Path] = (),
         drawing_bom_template_path: str | Path | None = None,
         version: int | None = None,
+        topology_reference_secret: str | bytes | None = None,
         session: Any | None = None,
         document_service: Any | None = None,
         cad_service: Any | None = None,
@@ -58,6 +59,7 @@ class IntegratedProviderRuntime:
         observer: SafeObserver | None = None,
     ) -> None:
         self.version = version
+        self.topology_reference_secret = topology_reference_secret
         self.session = session if session is not None else SolidWorksSession()
         self.path_policy = DocumentPathPolicy(allowed_roots)
         self.document_service = (
