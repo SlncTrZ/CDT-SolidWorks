@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+import inspect
 from typing import Any
 
 from mcp.server.context import HandlerResult, ServerRequestContext
@@ -125,55 +126,73 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
 }
 
 
-def seal_tool_input_schemas(server: Any) -> None:
-    """Make advertised MCP schemas match the provider's strict wire contract.
+def seal_tool_input_schemas(server: Any) -> dict[str, frozenset[str]]:
+    """Seal every advertised tool schema and return its runtime argument allowlist.
 
-    The project pins MCP 2.2.0, whose registered Tool objects expose the generated
-    JSON schema through ``Tool.parameters``. Runtime rejection remains owned by
-    ``strict_platform_tool_inputs``; this function only makes tools/list truthful.
+    Provider-owned legacy tools are checked against the pinned static contract;
+    plugin/extension tools derive their closed allowlist from the SDK-generated
+    signature schema. No advertised tool may retain a ``**kwargs`` escape hatch.
     """
 
     manager = getattr(server, "_tool_manager", None)
     if manager is None or not hasattr(manager, "list_tools"):
         raise RuntimeError("MCP tool manager is unavailable for schema sealing.")
+
+    sealed: dict[str, frozenset[str]] = {}
     for tool in manager.list_tools():
-        allowed = _TOOL_ARGUMENTS.get(str(tool.name))
-        if allowed is None:
-            # build_server is also an extension seam; only provider-owned tools are
-            # governed by this allowlist/schema contract.
-            continue
+        name = str(tool.name)
         parameters = tool.parameters
         properties = parameters.get("properties", {})
-        if set(properties) != set(allowed):
+        generated = frozenset(str(key) for key in properties)
+        pinned = _TOOL_ARGUMENTS.get(name)
+        if pinned is not None and generated != pinned:
             raise RuntimeError(
-                f"Tool argument schema mismatch for {tool.name}: "
-                f"schema={sorted(properties)}, allowlist={sorted(allowed)}"
+                f"Tool argument schema mismatch for {name}: "
+                f"schema={sorted(generated)}, allowlist={sorted(pinned)}"
             )
+
+        func = getattr(tool, "fn", None)
+        if callable(func):
+            signature = inspect.signature(func)
+            if any(
+                item.kind is inspect.Parameter.VAR_KEYWORD
+                for item in signature.parameters.values()
+            ):
+                raise RuntimeError(f"Tool {name} may not expose **kwargs.")
+
         parameters["additionalProperties"] = False
+        sealed[name] = pinned if pinned is not None else generated
+    return sealed
 
 
-async def strict_platform_tool_inputs(
-    ctx: ServerRequestContext[Any, Any],
-    call_next: Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
-) -> HandlerResult:
-    """Reject unknown arguments for the current provider-owned MCP tool surface.
+def strict_tool_input_middleware(
+    allowed_by_tool: Mapping[str, frozenset[str]],
+) -> Callable[
+    [
+        ServerRequestContext[Any, Any],
+        Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
+    ],
+    Awaitable[HandlerResult],
+]:
+    """Build isolated fail-closed input validation for one server tool catalog."""
 
-    MCP SDK argument models are permissive toward unknown keys by default. This
-    pre-validation middleware makes the provider contract fail loud instead of
-    silently discarding client mistakes.
-    """
+    async def middleware(
+        ctx: ServerRequestContext[Any, Any],
+        call_next: Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
+    ) -> HandlerResult:
+        if ctx.method != "tools/call":
+            return await call_next(ctx)
 
-    if ctx.method != "tools/call":
-        return await call_next(ctx)
+        params = ctx.params
+        if not isinstance(params, dict):
+            return await call_next(ctx)
 
-    params = ctx.params
-    if not isinstance(params, dict):
-        return await call_next(ctx)
+        tool_name = str(params.get("name"))
+        allowed = allowed_by_tool.get(tool_name)
+        if allowed is None:
+            return await call_next(ctx)
 
-    tool_name = params.get("name")
-    arguments = params.get("arguments")
-    allowed = _TOOL_ARGUMENTS.get(str(tool_name))
-    if allowed is not None:
+        arguments = params.get("arguments")
         if arguments is None:
             arguments = {}
         if not isinstance(arguments, dict):
@@ -188,5 +207,15 @@ async def strict_platform_tool_inputs(
                 code=INVALID_PARAMS,
                 message=f"Invalid params: unexpected field(s): {unexpected}",
             )
+        return await call_next(ctx)
 
-    return await call_next(ctx)
+    return middleware
+
+
+async def strict_platform_tool_inputs(
+    ctx: ServerRequestContext[Any, Any],
+    call_next: Callable[[ServerRequestContext[Any, Any]], Awaitable[HandlerResult]],
+) -> HandlerResult:
+    """Compatibility middleware for tests and legacy direct construction."""
+
+    return await strict_tool_input_middleware(_TOOL_ARGUMENTS)(ctx, call_next)

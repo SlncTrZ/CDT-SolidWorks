@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.document.service import DocumentService
@@ -27,6 +27,7 @@ from cdt_solidworks.integration.drawing_export_eval import (
     IntegratedImportService,
 )
 from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
+from cdt_solidworks.platform.observability import SafeObserver
 
 
 class IntegratedProviderRuntime:
@@ -53,6 +54,7 @@ class IntegratedProviderRuntime:
         export_service: Any | None = None,
         import_service: Any | None = None,
         evaluation_service: Any | None = None,
+        observer: SafeObserver | None = None,
     ) -> None:
         self.version = version
         self.session = session if session is not None else SolidWorksSession()
@@ -124,6 +126,91 @@ class IntegratedProviderRuntime:
                 self.evaluation_service = IntegratedEvaluationService(
                     self.session, path_policy=self.path_policy
                 )
+
+        self.observer = observer or SafeObserver()
+        self._services: dict[str, Any] = {
+            "core.session": self.session,
+            "core.path_policy": self.path_policy,
+            "core.document_service": self.document_service,
+            "core.cad_service": self.cad_service,
+        }
+        self._plugin_capabilities: dict[str, CapabilityState] = {}
+
+    def set_observer(self, observer: SafeObserver) -> None:
+        """Bind the observer shared by platform and plugin tool composition."""
+
+        self.observer = observer
+
+    def register_service(self, name: str, service: Any) -> None:
+        """Register one cross-lane service port; duplicates fail deterministically."""
+
+        normalized = str(name).strip()
+        if not normalized:
+            raise ValueError("service name must be non-empty")
+        if normalized in self._services:
+            raise ValueError(f"duplicate service: {normalized}")
+        self._services[normalized] = service
+
+    def get_service(self, name: str) -> Any:
+        """Return a registered service port, including explicit ``None`` core ports."""
+
+        normalized = str(name).strip()
+        if normalized not in self._services:
+            raise KeyError(normalized)
+        return self._services[normalized]
+
+    def register_capability_descriptors(
+        self,
+        descriptors: Iterable[Mapping[str, Any] | CapabilityState],
+        *,
+        source: str,
+    ) -> None:
+        """Validate and register plugin capability descriptors without silent overwrite."""
+
+        normalized_source = str(source).strip()
+        if not normalized_source:
+            raise ValueError("capability source must be non-empty")
+        pending: list[CapabilityState] = []
+        pending_names: set[str] = set()
+        for descriptor in descriptors:
+            capability = (
+                descriptor
+                if isinstance(descriptor, CapabilityState)
+                else CapabilityState.model_validate(descriptor)
+            )
+            if capability.available and not capability.implemented:
+                raise ValueError(
+                    f"capability {capability.name} from {normalized_source} cannot be available when unimplemented"
+                )
+            if capability.name in self._plugin_capabilities or capability.name in pending_names:
+                raise ValueError(f"duplicate capability: {capability.name}")
+            pending.append(capability)
+            pending_names.add(capability.name)
+        for capability in pending:
+            self._plugin_capabilities[capability.name] = capability
+
+    def _resolved_plugin_capabilities(
+        self, dependencies: tuple[DependencyState, ...]
+    ) -> tuple[CapabilityState, ...]:
+        dependency_states = {item.name: item for item in dependencies}
+        resolved: list[CapabilityState] = []
+        for name in sorted(self._plugin_capabilities):
+            capability = self._plugin_capabilities[name]
+            available = capability.available and capability.implemented
+            reason = capability.reason
+            if available:
+                for dependency_name in capability.dependencies:
+                    dependency = dependency_states.get(dependency_name)
+                    if dependency is None:
+                        available = False
+                        reason = f"dependency_not_registered:{dependency_name}"
+                        break
+                    if not dependency.available:
+                        available = False
+                        reason = dependency.reason or f"dependency_unavailable:{dependency_name}"
+                        break
+            resolved.append(capability.model_copy(update={"available": available, "reason": reason}))
+        return tuple(resolved)
 
     def runtime_context(self) -> RuntimeContext:
         result = self.session.probe(version=self.version, timeout=3.0)
@@ -791,13 +878,22 @@ class IntegratedProviderRuntime:
                 dependencies=("solidworks",),
             ),
         )
+        plugin_capabilities = self._resolved_plugin_capabilities((dependency,))
+        built_in_names = {item.name for item in capabilities}
+        duplicate_names = sorted(
+            item.name for item in plugin_capabilities if item.name in built_in_names
+        )
+        if duplicate_names:
+            raise ValueError(f"duplicate capability: {duplicate_names[0]}")
         return RuntimeContext(
             backend="solidworks_com",
             dependencies=(dependency,),
-            capabilities=capabilities,
+            capabilities=(*capabilities, *plugin_capabilities),
         )
 
     def register_tools(self, server: Any) -> None:
+        from .plugins.loader import register_plugins
         from .registrar import register_runtime_tools
 
         register_runtime_tools(server, self)
+        register_plugins(server, self)

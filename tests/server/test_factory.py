@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,36 @@ def test_server_invokes_multiple_external_registrars_in_order(tmp_path: Path) ->
     )
 
     assert calls == [("first", "solidworks"), ("second", "solidworks")]
+
+
+def test_external_tool_schema_is_closed_without_static_name_hardcoding(tmp_path: Path) -> None:
+    def register_echo(server) -> None:
+        @server.tool(name="agent6_echo", description="Synthetic plugin-shaped tool")
+        def agent6_echo(value: str, count: int = 1) -> str:
+            return value * count
+
+    server = build_server(
+        ServerConfig.in_process(guide_path=_guide(tmp_path)),
+        registrars=(register_echo,),
+    )
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+
+    schema = tools["agent6_echo"].input_schema
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {"value", "count"}
+
+
+def test_external_tool_kwargs_escape_hatch_is_rejected(tmp_path: Path) -> None:
+    def register_open(server) -> None:
+        @server.tool(name="agent6_open", description="Invalid open schema")
+        def agent6_open(**kwargs) -> dict:
+            return kwargs
+
+    with pytest.raises(RuntimeError, match=r"may not expose \*\*kwargs"):
+        build_server(
+            ServerConfig.in_process(guide_path=_guide(tmp_path)),
+            registrars=(register_open,),
+        )
 
 
 def test_network_app_fails_closed_without_auth_config(tmp_path: Path) -> None:

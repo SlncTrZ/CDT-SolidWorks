@@ -70,6 +70,8 @@ def build_system_status(context: RuntimeContext) -> SystemStatus:
 def build_system_capabilities(context: RuntimeContext) -> SystemCapabilities:
     merged: dict[str, CapabilityState] = {item.name: item for item in _BASE_CAPABILITIES}
     for capability in context.capabilities:
+        if capability.name in merged:
+            raise ValueError(f"duplicate capability: {capability.name}")
         merged[capability.name] = capability
 
     return SystemCapabilities(

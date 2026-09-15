@@ -119,6 +119,40 @@ async def test_valid_auth_reaches_read_only_help_and_unknown_fields_are_rejected
 
 
 @pytest.mark.asyncio
+async def test_dynamic_registered_tool_rejects_unknown_fields(tmp_path: Path) -> None:
+    def register_echo(server) -> None:
+        @server.tool(name="agent6_echo", description="Synthetic plugin-shaped tool")
+        def agent6_echo(value: str) -> str:
+            return value
+
+    app = build_network_app(_config(tmp_path), registrars=(register_echo,))
+    transport = httpx2.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=transport,
+            base_url="https://solidworks.example.test",
+            headers={"authorization": "Bearer test-only-secret"},
+        ) as http_client:
+            target = streamable_http_client(
+                RESOURCE_URL,
+                http_client=http_client,
+                terminate_on_close=False,
+            )
+            async with Client(target) as client:
+                valid = await client.call_tool("agent6_echo", {"value": "ok"})
+                with pytest.raises(MCPError) as exc_info:
+                    await client.call_tool(
+                        "agent6_echo",
+                        {"value": "ok", "unexpected": True},
+                    )
+
+    assert valid.is_error is False
+    assert exc_info.value.code == INVALID_PARAMS
+    assert "unexpected" in exc_info.value.message.lower()
+
+
+@pytest.mark.asyncio
 async def test_unexpected_tool_failure_does_not_leak_exception_or_secret(tmp_path: Path, caplog) -> None:
     def register_crash(server) -> None:
         @server.tool(name="crash")

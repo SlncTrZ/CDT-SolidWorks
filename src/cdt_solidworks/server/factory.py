@@ -26,7 +26,11 @@ from cdt_solidworks.platform.identity import PROVIDER_ID, PROVIDER_VERSION
 from cdt_solidworks.platform.log_safety import install_mcp_tool_log_safety
 from cdt_solidworks.platform.models import HelpResponse, RuntimeContext, SystemCapabilities, SystemStatus
 from cdt_solidworks.platform.observability import SafeObserver
-from cdt_solidworks.server.validation import seal_tool_input_schemas, strict_platform_tool_inputs
+from cdt_solidworks.server.validation import (
+    _TOOL_ARGUMENTS,
+    seal_tool_input_schemas,
+    strict_tool_input_middleware,
+)
 
 
 RuntimeContextProvider = Callable[[], RuntimeContext]
@@ -85,12 +89,13 @@ def build_server(
             validate_token_resource=True,
         )
 
+    tool_arguments: dict[str, frozenset[str]] = dict(_TOOL_ARGUMENTS)
     server = MCPServer(
         PROVIDER_ID,
         version=PROVIDER_VERSION,
         auth=auth_settings,
         token_verifier=token_verifier,
-        middleware=(strict_platform_tool_inputs,),
+        middleware=(strict_tool_input_middleware(tool_arguments),),
     )
     observer = config.observer or SafeObserver()
     help_service = HelpService(config.guide_path)
@@ -166,7 +171,7 @@ def build_server(
     for registrar in registrars:
         registrar(server)
 
-    seal_tool_input_schemas(server)
+    tool_arguments.update(seal_tool_input_schemas(server))
     return server
 
 
