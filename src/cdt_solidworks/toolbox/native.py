@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
+import sqlite3
 from typing import Any, Callable, TypeVar
 
 from cdt_solidworks.native.errors import NativeRuntimeError
@@ -23,6 +25,8 @@ _SW_HOLE_WIZARD_TOOLBOX_FOLDER = 52
 _TOOLBOX_ROOT_PARENT_LIMIT = 3
 _TOOLBOX_BROWSER_GUID = "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
 _PART_NUMBER_KEYS = ("Part Number", "PartNumber", "PART NUMBER")
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
+_DB_VALUE_FIELD = re.compile(r"\[([^\[\]]+)\]")
 
 
 class _ToolboxNativeError(NativeRuntimeError):
@@ -63,6 +67,16 @@ class ToolboxNativeAdapter:
             probe = self._probe(app)
             if not probe.available or not probe.root_path:
                 raise _ToolboxNativeError(probe.reason or "toolbox_unavailable")
+            if standard and family and probe.database_path:
+                database_results = self._database_catalog_query(
+                    probe,
+                    standard=standard,
+                    family=family,
+                    size=size,
+                    limit=limit,
+                )
+                if database_results:
+                    return database_results
             browser = Path(probe.root_path) / "Browser"
             if not browser.is_dir():
                 raise _ToolboxNativeError("toolbox_browser_missing", str(browser))
@@ -112,6 +126,211 @@ class ToolboxNativeAdapter:
             return tuple(results)
 
         return self._run("toolbox_catalog_query", True, operation)
+
+    def _database_catalog_query(
+        self,
+        probe: ToolboxProbeSnapshot,
+        *,
+        standard: str,
+        family: str,
+        size: str | None,
+        limit: int,
+    ) -> tuple[ToolboxCatalogItem, ...]:
+        if not probe.database_path or not probe.root_path:
+            return ()
+        database = Path(probe.database_path).resolve(strict=False)
+        if not database.is_file():
+            return ()
+        try:
+            connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        except sqlite3.Error:
+            return ()
+        connection.row_factory = sqlite3.Row
+        try:
+            standard_row = connection.execute(
+                "SELECT Name, TableNamePrefix, DefaultUnits FROM Standards "
+                "WHERE lower(Name)=lower(?) AND enabled=1 AND Installed=1 AND IsToolbox=1 LIMIT 1",
+                (standard,),
+            ).fetchone()
+            if standard_row is None:
+                return ()
+            prefix = str(standard_row["TableNamePrefix"] or "")
+            if not _SQL_IDENTIFIER.fullmatch(prefix.rstrip("_")):
+                raise _ToolboxNativeError("toolbox_database_prefix_invalid", prefix)
+            table_names = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                )
+            )
+            type_prefix = f"{prefix}TYPE_".casefold()
+            type_tables = tuple(
+                name
+                for name in table_names
+                if name.casefold().startswith(type_prefix)
+                and _SQL_IDENTIFIER.fullmatch(name)
+            )
+            for type_table in type_tables:
+                columns = {
+                    str(row[1]).casefold()
+                    for row in connection.execute(f'PRAGMA table_info("{type_table}")')
+                }
+                required = {
+                    "filename",
+                    "configurationtable",
+                    "datatable",
+                    "enabled",
+                }
+                if not required.issubset(columns):
+                    continue
+                rows = connection.execute(
+                    f'SELECT * FROM "{type_table}" WHERE enabled=1'
+                ).fetchall()
+                for row in rows:
+                    filename = str(row["Filename"] or "").strip()
+                    if not filename:
+                        continue
+                    relative_parts = tuple(
+                        part for part in re.split(r"[\\/]+", filename) if part
+                    )
+                    if not relative_parts:
+                        continue
+                    item_family = Path(relative_parts[-1]).stem
+                    if item_family.casefold() != family.casefold():
+                        continue
+                    data_table = self._database_table_name(
+                        prefix, str(row["DataTable"] or "")
+                    )
+                    config_table = self._database_table_name(
+                        prefix, str(row["ConfigurationTable"] or "")
+                    )
+                    if data_table not in table_names or config_table not in table_names:
+                        raise _ToolboxNativeError(
+                            "toolbox_database_metadata_invalid", item_family
+                        )
+                    size_template = self._database_size_template(
+                        connection, config_table
+                    )
+                    if size_template is None:
+                        continue
+                    source = (
+                        Path(probe.root_path)
+                        / "Browser"
+                        / Path(*relative_parts)
+                    ).resolve(strict=False)
+                    if not source.is_file():
+                        continue
+                    units = str(row["DataTableUnits"] or standard_row["DefaultUnits"] or "")
+                    results = self._database_size_items(
+                        connection,
+                        data_table=data_table,
+                        standard=str(standard_row["Name"]),
+                        family=item_family,
+                        source=source,
+                        size_template=size_template,
+                        requested_size=size,
+                        units=units,
+                        limit=limit,
+                    )
+                    if results:
+                        return results
+            return ()
+        except sqlite3.Error as exc:
+            raise _ToolboxNativeError("toolbox_database_read_failed", str(exc)) from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _database_table_name(prefix: str, reference: str) -> str:
+        normalized = reference.strip()
+        if normalized.startswith("+"):
+            normalized = f"{prefix}{normalized[1:]}"
+        if not _SQL_IDENTIFIER.fullmatch(normalized):
+            raise _ToolboxNativeError("toolbox_database_table_invalid", normalized)
+        return normalized
+
+    @staticmethod
+    def _database_size_template(
+        connection: sqlite3.Connection, config_table: str
+    ) -> str | None:
+        row = connection.execute(
+            f'SELECT ValueList FROM "{config_table}" '
+            "WHERE Controller=1 ORDER BY Grid_Item_Number LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        template = str(row[0] or "").strip()
+        if not template.startswith("{") or not template.endswith("}"):
+            return None
+        body = template[1:-1]
+        if "<" in body or ">" in body or "$" in body:
+            return None
+        return body
+
+    def _database_size_items(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        data_table: str,
+        standard: str,
+        family: str,
+        source: Path,
+        size_template: str,
+        requested_size: str | None,
+        units: str,
+        limit: int,
+    ) -> tuple[ToolboxCatalogItem, ...]:
+        rows = connection.execute(f'SELECT * FROM "{data_table}"').fetchall()
+        results: list[ToolboxCatalogItem] = []
+        for row in rows:
+            values = {str(key).casefold(): row[key] for key in row.keys()}
+            enabled = values.get("enabled", 1)
+            if enabled is not None and int(enabled) != 1:
+                continue
+            rendered = self._render_database_value(size_template, values)
+            if rendered is None:
+                continue
+            if requested_size and rendered.casefold() != requested_size.casefold():
+                continue
+            properties = tuple(
+                (str(key), None if row[key] is None else str(row[key]))
+                for key in row.keys()
+                if str(key).casefold() not in {"enabled", "key"}
+            ) + (("Toolbox Units", units),)
+            results.append(
+                ToolboxCatalogItem(
+                    standard=standard,
+                    family=family,
+                    size=rendered,
+                    source_path=str(source),
+                    configuration="Default",
+                    part_number=None,
+                    properties=properties,
+                )
+            )
+            if len(results) >= limit:
+                break
+        return tuple(results)
+
+    @staticmethod
+    def _render_database_value(
+        template: str, values: dict[str, Any]
+    ) -> str | None:
+        missing = False
+
+        def replacement(match: re.Match[str]) -> str:
+            nonlocal missing
+            key = match.group(1).strip().casefold()
+            value = values.get(key)
+            if value is None:
+                missing = True
+                return ""
+            return str(value).strip()
+
+        rendered = _DB_VALUE_FIELD.sub(replacement, template).strip()
+        if missing or "[" in rendered or "]" in rendered or not rendered:
+            return None
+        return rendered
 
     def copy_component(self, item: ToolboxCatalogItem, destination: Path) -> str:
         source = Path(item.source_path).resolve(strict=False)

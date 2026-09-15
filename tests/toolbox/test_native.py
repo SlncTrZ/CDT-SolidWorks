@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 from cdt_solidworks.native.models import ApplicationOwnership, NativeCallResult
@@ -120,8 +121,106 @@ def _fixture(root: Path) -> Path:
     part.write_bytes(b"vendor-component")
     database = root / "lang" / "english" / "swbrowser.sldedb"
     database.parent.mkdir(parents=True)
-    database.write_bytes(b"database")
+    con = sqlite3.connect(database)
+    try:
+        con.execute(
+            "CREATE TABLE Standards (Name TEXT, enabled INTEGER, Installed INTEGER, IsToolbox INTEGER, TableNamePrefix TEXT, DefaultUnits TEXT)"
+        )
+        con.commit()
+    finally:
+        con.close()
     return part
+
+
+def _sqlite_fixture(root: Path) -> None:
+    browser = root / "Browser"
+    bolt = browser / "Ansi Inch" / "Bolts And Screws" / "Hex Bolt_AI.SLDPRT"
+    washer = browser / "Ansi Inch" / "washers" / "Flat Washer Type B Regular_AI.sldprt"
+    bolt.parent.mkdir(parents=True)
+    washer.parent.mkdir(parents=True)
+    bolt.write_bytes(b"bolt-master")
+    washer.write_bytes(b"washer-master")
+    database = root / "lang" / "english" / "swbrowser.sldedb"
+    database.parent.mkdir(parents=True)
+    con = sqlite3.connect(database)
+    try:
+        con.execute(
+            "CREATE TABLE Standards (Name TEXT, enabled INTEGER, Installed INTEGER, IsToolbox INTEGER, TableNamePrefix TEXT, DefaultUnits TEXT)"
+        )
+        con.execute(
+            "INSERT INTO Standards VALUES ('Ansi Inch',1,1,1,'AI_','INCH')"
+        )
+        for table in ("AI_TYPE_BS", "AI_TYPE_WASHERS"):
+            con.execute(
+                f'CREATE TABLE "{table}" (enabled INTEGER, Title TEXT, Filename TEXT, ConfigurationTable TEXT, DataTable TEXT, DataTableUnits TEXT, PartNumberID TEXT)'
+            )
+        con.execute(
+            "INSERT INTO AI_TYPE_BS VALUES (1,'Hex Bolt','Ansi Inch\\Bolts And Screws\\Hex Bolt_AI.SLDPRT','+CFG_BS_HBOLT','+DATA_HBOLT','','HBOLT_AI_BS_PN')"
+        )
+        con.execute(
+            "INSERT INTO AI_TYPE_WASHERS VALUES (1,'Regular Flat Washer Type B','Ansi Inch\\washers\\Flat Washer Type B Regular_AI.sldprt','+CFG_WASHERS_FW','+DATA_FW1','','FW1_AI_WASHERS_PN')"
+        )
+        con.execute(
+            "CREATE TABLE AI_CFG_BS_HBOLT (Grid_Item_Number INTEGER, Grid_Item_Name TEXT, Grid_Item_Type TEXT, Controller INTEGER, Dimension TEXT, NoUnitConversion INTEGER, AltDataSource TEXT, ValueList TEXT, RelationField TEXT)"
+        )
+        con.execute(
+            "INSERT INTO AI_CFG_BS_HBOLT VALUES (1,'Size','STRING_COMBO',1,'',0,'','{[size]-[pitch]}','')"
+        )
+        con.execute(
+            "CREATE TABLE AI_DATA_HBOLT (SIZE TEXT, PITCH TEXT, DIAMETER TEXT, WIDTH_FLATS TEXT, HEAD_HT TEXT, enabled INTEGER, key INTEGER)"
+        )
+        con.execute(
+            "INSERT INTO AI_DATA_HBOLT VALUES ('1/4','20','0.2500','0.438','0.188',1,1)"
+        )
+        con.execute(
+            "INSERT INTO AI_DATA_HBOLT VALUES ('1/4','28','0.2500','0.438','0.188',1,2)"
+        )
+        con.execute(
+            "CREATE TABLE AI_CFG_WASHERS_FW (Grid_Item_Number INTEGER, Grid_Item_Name TEXT, Grid_Item_Type TEXT, Controller INTEGER, Dimension TEXT, NoUnitConversion INTEGER, AltDataSource TEXT, ValueList TEXT, RelationField TEXT)"
+        )
+        con.execute(
+            "INSERT INTO AI_CFG_WASHERS_FW VALUES (1,'Size','STRING_COMBO',1,'',0,'','{[size]}','')"
+        )
+        con.execute(
+            "CREATE TABLE AI_DATA_FW1 (SIZE TEXT, INSID_DIA TEXT, OUTSID_DIA TEXT, THICKNESS TEXT, enabled INTEGER, key INTEGER)"
+        )
+        con.execute(
+            "INSERT INTO AI_DATA_FW1 VALUES ('1/4','0.281','0.734','0.063',1,1)"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_database_catalog_returns_real_hex_bolt_size_instead_of_master_configuration(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+
+    result = adapter.catalog_query("Ansi Inch", "hex bolt_ai", "1/4-20", 10)
+
+    assert len(result) == 1
+    item = result[0]
+    assert item.size == "1/4-20"
+    assert item.configuration == "Default"
+    assert ("DIAMETER", "0.2500") in item.properties
+    assert Path(item.source_path).name.casefold() == "hex bolt_ai.sldprt"
+
+
+def test_database_catalog_returns_real_washer_size(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+
+    result = adapter.catalog_query(
+        "Ansi Inch", "flat washer type b regular_ai", "1/4", 10
+    )
+
+    assert len(result) == 1
+    item = result[0]
+    assert item.size == "1/4"
+    assert ("INSID_DIA", "0.281") in item.properties
+    assert ("THICKNESS", "0.063") in item.properties
 
 
 def test_probe_reads_addin_root_database_and_version(tmp_path: Path) -> None:
