@@ -26,7 +26,7 @@ from cdt_solidworks.platform.identity import PROVIDER_ID, PROVIDER_VERSION
 from cdt_solidworks.platform.log_safety import install_mcp_tool_log_safety
 from cdt_solidworks.platform.models import HelpResponse, RuntimeContext, SystemCapabilities, SystemStatus
 from cdt_solidworks.platform.observability import SafeObserver
-from cdt_solidworks.server.validation import strict_platform_tool_inputs
+from cdt_solidworks.server.validation import seal_tool_input_schemas, strict_platform_tool_inputs
 
 
 RuntimeContextProvider = Callable[[], RuntimeContext]
@@ -166,6 +166,7 @@ def build_server(
     for registrar in registrars:
         registrar(server)
 
+    seal_tool_input_schemas(server)
     return server
 
 

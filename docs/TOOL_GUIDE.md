@@ -1,110 +1,202 @@
-# CDT-SolidWorks Tool Guide
+# CDT-SolidWorks Provider
 
-> Status: bounded Mechanical 90 provider surface through M95-R3 Agent A public integration; native-verified subsets on SOLIDWORKS 2024 SP0.1 · Updated: 2026-09-14
+The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD primitives are advertised only when they have a bounded implementation path, rebuild/read-back checks, and Windows SOLIDWORKS acceptance evidence.
 
-## Current callable surface
+## Platform tools
 
-The provider exposes platform identity/status/capabilities, application lifecycle, explicit document lifecycle/query/rebuild/reconciliation, and a bounded native CAD-core surface.
+- `help` — read-only provider identity, version, contract fingerprint and this guide content.
+- `system_status` — provider/backend dependency state.
+- `system_capabilities` — separates `implemented` from currently `available`.
 
-### Native CAD core
+## Application tools
 
-| Tool | Current native scope |
-| --- | --- |
-| `sketch_create_geometry` | Bounded explicit sketch geometry in an opened part: line, centerline, circle, arc, ellipse, point, cubic spline; may include the native-passed relation and dimension subsets below |
-| `sketch_get` | Read back one explicit native sketch by stable sketch identity, including definition state, relations and dimensions |
-| `sketch_relations_list` | List native-passed sketch relations using persisted relation identity |
-| `sketch_relation_delete` | Delete one explicit sketch relation with rebuild/read-back verification |
-| `sketch_dimension_set` | Edit one explicit native-passed sketch dimension in `mm` or `deg` with rebuild/read-back verification |
-| `sketch_create_rectangle` | New part, Front/Top/Right plane, rectangular 2D sketch |
-| `part_create_rect_extrude` | New rectangular solid boss |
-| `part_add_rect_extrude` | Add boss; `merge=false` supports multi-body creation |
-| `part_cut_extrude` | Native blind or through-all Cut Extrude from a sketch on Front/Top/Right standard reference planes in an opened millimeter part; path + revision identity required |
-| `part_cut_reconcile` | Reconcile an uncertain Cut Extrude by native call ID; clears quarantine only after expected Cut definition, clean rebuild, and solid-body verification |
-| `part_simple_hole` | Native single-center blind/through-all Simple Hole on a one-solid-body part using `face_ref=bbox:+z`; selected face must be planar with outward +Z normal; center is model-space `[x_mm, y_mm]` |
-| `part_simple_hole_reconcile` | Reconcile uncertain Simple Hole by call ID; verifies native type, diameter, center, end condition/depth, rebuild and solid body |
-| `part_revolve` | Native solid Revolve from a Front/Top/Right sketch with exactly one construction centerline; `axis_ref=profile_centerline`; angle `(0, 360]` degrees |
-| `part_revolve_cut` | Native Revolve Cut with the same bounded profile-centerline/angle contract |
-| `part_revolve_reconcile` | Reconcile uncertain boss/cut Revolve by call ID; verifies type, centerline axis, angle, rebuild and solid body before clearing quarantine |
-| `part_hole_wizard` | ANSI Metric countersink / Flat Head Screw ANSI B18.6.7M, native-passed sizes `M2`, `M4`, `M6`, one center, through-all, one solid body, `face_ref=bbox:+z` only |
-| `part_fillet` | Constant-radius fillet on the native-passed `bbox:edge:+x:+z` selector; tangent propagation remains disabled |
-| `part_chamfer` | Distance-angle chamfer on the native-passed `bbox:edge:-x:+z` selector |
-| `part_shell` | Shell using the native-passed `bbox:+z` face removal selector, inward only |
-| `part_draft` | Neutral-plane draft for `face_refs=[bbox:+x]`, `neutral_plane_ref=bbox:+z`, non-reversed direction |
-| `part_rib` | Rib from one explicit sketch profile with native-passed `both_sides=true` contract |
-| `part_linear_pattern` | Feature linear pattern with explicit seed identities, `direction_ref=bbox:edge:+y:+z`, `geometry_pattern=false` |
-| `part_circular_pattern` | Feature circular pattern around an explicitly promoted reference-axis feature, `geometry_pattern=false` |
-| `part_mirror` | Feature mirror about `plane:right`, `geometry_pattern=false` |
-| `part_reference_plane` / `part_reference_axis` / `part_reference_point` | Native-passed reference combinations: offset from `plane:front`; axis from `plane:top` + `plane:right`; point from `bbox:+z` |
-| `part_feature_get` / `part_feature_rename` / `part_feature_set_suppressed` | Explicit feature query/rename/suppress/unsuppress with identity and rebuild/read-back gates |
-| `part_feature_set_parameter` | Whitelist-only feature edit; currently only constant-fillet `radius_mm`, never an arbitrary feature-definition surface |
-| `part_combine_all_bodies` | Boolean Add of all current solid bodies |
-| `part_split_by_plane` | Split using Front/Top/Right standard plane |
-| `sheet_metal_create_base_flange` | Base flange with thickness/bend-radius read-back |
-| `surface_create_extrude` | Line-profile surface extrusion |
-| `body_inspect` | Read bounded solid/surface-body state and identity |
-| `body_combine` | Explicit body Boolean `add` / `subtract` / `common` on named bodies |
-| `surface_thicken` | Thicken one explicitly named surface body with solid-body read-back |
-| `sheet_metal_inspect` | Read accepted Base Flange / Flat Pattern state |
-| `sheet_metal_set_flattened` | Persist Flat Pattern suppression state |
-| `weldment_inspect` | Read structural-member and cut-list state |
-| `weldment_create_structural_member` | Create a structural member from an allowed `.sldlfp` profile and named path sketch |
-| `assembly_create` | Insert native part/assembly components at XYZ placements |
-| `assembly_add_coincident_plane_mate` | Coincident standard-plane mate |
-| `assembly_components_list` | Explicit recursive/non-recursive native component read-back |
-| `assembly_component_set_fixed` | Fix/float one explicit component with rebuild/read-back |
-| `assembly_component_set_load_state` | Native-accepted `resolved` / `suppressed` component state |
-| `assembly_component_set_configuration` | Referenced configuration read-back for one component |
-| `assembly_mate_create` | Native-accepted Coincident / Parallel / Perpendicular / Distance / Angle mate creation |
-| `assembly_mates_list` | Stable mate identity/type/state read-back |
-| `assembly_coincident_mate_set_suppressed` | Coincident mate suppress/unsuppress with solved-state read-back |
-| `assembly_distance_mate_set_value` | Distance mate value edit with persisted read-back |
-| `configuration_list` / `configuration_create` / `configuration_rename` / `configuration_delete` / `configuration_activate` | Bounded configuration lifecycle |
-| `configuration_set_dimension` | Configuration-specific model dimension mutation in system units |
-| `configuration_set_property` / `configuration_delete_property` | Document/configuration custom property mutation |
-| `configuration_set_feature_suppressed` | Configuration-specific feature suppression |
-| `configuration_equations_list` / `configuration_equation_add` / `configuration_equation_set` / `configuration_equation_delete` | Equation/global-variable CRUD with canonical read-back |
-| `drawing_create` | Create a new native `.SLDDRW` using the configured/default SOLIDWORKS drawing template |
-| `drawing_sheet_create` | Add and rebuild one explicit drawing sheet |
-| `drawing_front_view_create` | Create the native-accepted Front model view from one native part source |
-| `export_document` | Part → STEP/IGES/Parasolid/STL/3MF or drawing → PDF/DXF/DWG; target overwrite refused |
-| `evaluation_mass_properties` | Read validated part mass, volume, surface area, center of mass, and inertia |
-| `evaluation_bounding_box` | Read a validated approximate part bounding box |
-| `evaluation_geometry_sanity` | Read body/feature-error sanity and fail on native feature errors |
+- `application_probe` — read-only SOLIDWORKS registration/running/version probe.
+- `application_connect` — attach to or start an explicit SOLIDWORKS application session.
+- `application_disconnect` — disconnect; only provider-owned applications may be exited.
 
-Paths are constrained to configured allowed roots. Create operations refuse to overwrite an existing native document. Unknown tool fields fail loud instead of being silently discarded.
+## Document tools
 
-## Verification status
+- `document_open`
+- `document_info`
+- `document_save`
+- `document_save_as`
+- `document_close`
+- `document_reopen`
+- `document_list_features`
+- `document_list_bodies`
+- `document_list_components`
+- `document_rebuild`
+- `document_reconcile`
 
-The production native services have been exercised on SOLIDWORKS 2024 through provider-owned COM sessions. Accepted evidence includes sketch relation/definition-state/dimension workflows, Hole Wizard M2/M4/M6, Fillet/Chamfer/Shell, Draft/Rib, Linear/Circular Pattern/Mirror, bounded reference geometry, feature query/rename/suppression/fillet-radius edit, part creation, blind/through-all Cut Extrude with save/reopen and volume read-back, Revolve/Revolve Cut, Simple Hole, a second non-merged body, Combine, Split, sheet-metal base flange, surface extrusion, assembly/configuration workflows, clean rebuild/error checks, native saves/reopens, and provider-owned cleanup.
+Document access is disabled unless deployment configuration supplies at least one allowed filesystem root. Explicit document identity/revision is required for document mutations; stale identity is rejected.
 
-Capability promotion remains granular. `solidworks.part.parametric` intentionally remains partial even though the evidence-backed Agent A feature groups above are now individually callable and advertised. Sweep, Loft/Boundary and broader arbitrary topology/feature-definition editing remain unavailable. Full assembly-mate, configuration, drawing, evaluation and MBD families also remain partial; no broad capability is promoted merely because a neighboring subset exists.
+## Native CAD tools
 
-## Lane D accepted boundary
+The following bounded operations have native SOLIDWORKS 2024 acceptance evidence:
 
-The callable Lane D surface above has passed a public-wrapper native smoke on SOLIDWORKS 2024 SP0.1. Geometry exports are independently reopened and checked through SOLIDWORKS; drawing exports persist non-empty typed artifacts; evaluation is read-only. The accepted boundary deliberately excludes projected/section/detail views, drawing dimensions/annotations/BOM, STEP 242 PMI publication, single-sheet PDF export, measurement/interference tools, and native MBD/DimXpert/PMI. Those remain unavailable until their own deterministic native gates pass.
+- `sketch_create_geometry` — create bounded explicit sketch geometry in an opened native part.
+- `sketch_get` — read one explicit native sketch with stable identity/read-back.
+- `sketch_relations_list` — list native sketch relations and bounded definition-state evidence.
+- `sketch_relation_delete` — delete one explicit accepted sketch relation and verify read-back.
+- `sketch_dimension_set` — edit one accepted sketch dimension and verify persisted value.
+- `sketch_create_rectangle` — create a rectangular 2D sketch in a new native part.
+- `part_create_rect_extrude` — create a rectangular sketch plus one solid boss extrude.
+- `part_add_rect_extrude` — add an extrusion to an existing part; `merge=false` creates another solid body.
+- `part_cut_extrude` — create a blind or through-all Cut Extrude from a sketch on a Front/Top/Right standard reference plane using path + revision identity.
+- `part_cut_reconcile` — reconcile an uncertain Cut Extrude by native call ID and expected feature definition; quarantine clears only after rebuild/body verification succeeds.
+- `part_simple_hole` — create one blind or through-all native Simple Hole on a one-solid-body part using only `face_ref=bbox:+z`, one model-space X/Y center and a planar face with outward +Z normal; arbitrary face identities, multi-body targeting and multi-center holes remain intentionally unexposed.
+- `part_simple_hole_reconcile` — reconcile an uncertain Simple Hole by call ID; verifies persisted native type, diameter, center, end condition/depth, rebuild and solid body before clearing quarantine.
+- `part_revolve` — create a solid Revolve from a standard-plane sketch containing exactly one construction centerline; `axis_ref` is intentionally bounded to `profile_centerline`.
+- `part_revolve_cut` — create a Revolve Cut using the same bounded profile-centerline and angle contract.
+- `part_revolve_reconcile` — reconcile an uncertain boss/cut Revolve by call ID; verifies native type, axis, angle, rebuild and solid body before clearing quarantine.
+- `part_hole_wizard` — create the bounded native-accepted ANSI Metric countersink Hole Wizard subset with explicit size/center identity and save-reopen read-back.
+- `part_fillet`, `part_chamfer`, `part_shell`, `part_draft`, `part_rib` — create the bounded native-accepted common feature subsets with rebuild/read-back validation.
+- `part_linear_pattern`, `part_circular_pattern`, `part_mirror` — create native-accepted feature pattern/mirror subsets with persisted feature identity.
+- `part_reference_plane`, `part_reference_axis`, `part_reference_point` — create bounded native reference geometry.
+- `part_feature_get`, `part_feature_rename`, `part_feature_set_suppressed`, `part_feature_set_parameter` — bounded feature query/rename/suppression and whitelisted parameter editing.
+- `part_combine_all_bodies` — Boolean-add all solid bodies and verify the result is one solid body.
+- `part_split_by_plane` — split a solid by Front/Top/Right standard plane and retain resulting bodies.
+- `sheet_metal_create_base_flange` — create a base flange with explicit thickness and bend radius.
+- `surface_create_extrude` — create an extruded surface and verify surface-body read-back.
+- `body_inspect` — inspect bounded native solid/surface-body state.
+- `body_combine` — run named-body Boolean Add/Subtract/Common with native read-back.
+- `surface_thicken` — thicken one named surface body and verify resulting solid state.
+- `sheet_metal_inspect` — inspect accepted Base Flange and Flat Pattern state.
+- `sheet_metal_set_flattened` — persist Flat Pattern suppression state.
+- `weldment_inspect` — inspect structural-member and cut-list state.
+- `weldment_create_structural_member` — create a structural member from an allowed profile root and named path sketch.
+- `assembly_create` — create an assembly from explicit native component paths and XYZ placements.
+- `assembly_add_coincident_plane_mate` — create one coincident mate between a component standard plane and an assembly standard plane.
+- `assembly_components_list` — list native assembly components by explicit document identity.
+- `assembly_component_set_fixed` — fix/float one explicit component.
+- `assembly_component_set_load_state` — set one component to the native-accepted `resolved` or `suppressed` state.
+- `assembly_component_set_configuration` — set/read back one component referenced configuration.
+- `assembly_component_delete` — delete one explicit top-level component and verify absence after rebuild.
+- `assembly_component_replace` — replace one explicit top-level component with an allowed native part/assembly and verify source/configuration read-back.
+- `assembly_component_set_transform` — apply one explicit 16-value native component transform and verify persistence.
+- `assembly_component_pattern_create` — create a bounded one-direction linear component pattern from stable seed/direction identities.
+- `assembly_mate_create` — create Coincident, Concentric, Distance, Angle, Parallel, Perpendicular, Tangent, Lock, Width, or Slot mates using bounded stable selection references; Width/Slot constraints are bounded to centered/free.
+- `assembly_mates_list` — list stable mate identity/type/state, including solved/suppressed/dangling state.
+- `assembly_mate_set_suppressed` — suppress/unsuppress a native-accepted mate and verify solved-state read-back.
+- `assembly_mate_set_value` — edit native-accepted Distance or Angle mate values and verify solved read-back.
+- `assembly_coincident_mate_set_suppressed` — compatibility surface for Coincident-only suppression.
+- `assembly_distance_mate_set_value` — compatibility surface for Distance-only value edit.
+- `configuration_list`, `configuration_create`, `configuration_rename`, `configuration_delete`, `configuration_activate` — bounded configuration lifecycle.
+- `configuration_set_dimension` — set a configuration-specific model dimension.
+- `configuration_set_property`, `configuration_delete_property` — mutate document/configuration custom properties.
+- `configuration_set_feature_suppressed` — set feature suppression for one explicit configuration.
+- `configuration_set_material` — assign and read back one explicit SOLIDWORKS material for one configuration.
+- `configuration_display_states_list`, `configuration_display_state_create`, `configuration_display_state_rename`, `configuration_display_state_delete` — bounded display-state lifecycle for one explicit configuration.
+- `configuration_equations_list`, `configuration_equation_add`, `configuration_equation_set`, `configuration_equation_delete` — bounded equation/global-variable CRUD.
+- `drawing_create` — create one new native drawing under the configured path policy.
+- `drawing_sheet_create` — add and rebuild one explicit drawing sheet.
+- `drawing_front_view_create` — create the native-accepted Front view from one native part source.
+- `drawing_standard_view_create` — create bounded Front/Top/Right/Isometric views.
+- `drawing_projected_view_create` — create a projected view from one explicit parent view.
+- `drawing_section_view_create` — create a bounded section view from an explicit parent view and section line.
+- `drawing_note_add` — add a non-dangling note to one explicit view.
+- `drawing_center_marks_auto_insert` — auto-insert and read back persisted center-mark identities.
+- `export_document` — export only accepted source/format pairs: part → STEP/IGES/Parasolid/STL/3MF, drawing → PDF/DXF/DWG; PDF may target one explicit sheet.
+- `import_document` — import STEP/IGES/Parasolid into a new native `.SLDPRT` with geometry read-back.
+- `evaluation_mass_properties` — read validated part mass/volume/area, center of mass, and inertia.
+- `evaluation_bounding_box` — read a validated approximate part bounding box.
+- `evaluation_geometry_sanity` — read body/error sanity and fail when native feature errors exist.
+- `evaluation_measure` — measure one or two bounded stable part references and return validated distance/angle/radius/diameter values where applicable.
+- `evaluation_interferences` — detect assembly interference pairs and validated overlap volume, including a clean zero-interference case.
 
-## Add-in capability status
+All CAD paths are constrained by the same configured path policy as document operations. The provider does not expose arbitrary macros, scripts, COM method names, or raw native API argument lists.
 
-- SOLIDWORKS Simulation, Motion and Routing adapters are not callable yet; provider integration will load add-ins on demand rather than require Start Up.
-- Full Flow Simulation availability is not claimed until a dedicated installation/license/API probe succeeds.
-- SOLIDWORKS Electrical availability is not claimed until a dedicated installation/license/API probe succeeds.
+## Capability honesty
 
-The provider reports those families as unsupported/unverified instead of returning fake success.
+Granular native capability keys are used for the accepted surface:
 
-## Correctness and timeout semantics
+- `solidworks.sketch.geometry`
+- `solidworks.sketch.rectangle`
+- `solidworks.part.extrude`
+- `solidworks.part.cut_extrude`
+- `solidworks.part.multibody`
+- `solidworks.part.combine`
+- `solidworks.part.split`
+- `solidworks.sheet_metal.base_flange`
+- `solidworks.surface.extrude`
+- `solidworks.body.inspect`
+- `solidworks.body.combine`
+- `solidworks.surface.thicken`
+- `solidworks.sheet_metal.inspect`
+- `solidworks.sheet_metal.flat_pattern`
+- `solidworks.weldment.cut_list`
+- `solidworks.weldment.structural_member`
+- `solidworks.assembly.components`
+- `solidworks.assembly.component_state`
+- `solidworks.assembly.component_configuration`
+- `solidworks.assembly.component_lifecycle`
+- `solidworks.assembly.component_pattern`
+- `solidworks.assembly.coincident_mate`
+- `solidworks.assembly.common_mates`
+- `solidworks.assembly.advanced_common_mates`
+- `solidworks.assembly.mate_suppression`
+- `solidworks.assembly.mate_value`
+- `solidworks.assembly.coincident_mate_suppression`
+- `solidworks.assembly.distance_mate_value`
+- `solidworks.configuration.lifecycle`
+- `solidworks.configuration.dimension`
+- `solidworks.configuration.properties`
+- `solidworks.configuration.feature_suppression`
+- `solidworks.configuration.material`
+- `solidworks.configuration.display_states`
+- `solidworks.configuration.equations`
+- `solidworks.drawing.lifecycle`
+- `solidworks.drawing.front_view`
+- `solidworks.drawing.standard_views`
+- `solidworks.drawing.projected_view`
+- `solidworks.drawing.section_view`
+- `solidworks.drawing.note`
+- `solidworks.drawing.center_mark`
+- `solidworks.export.step`
+- `solidworks.export.iges`
+- `solidworks.export.parasolid`
+- `solidworks.export.stl`
+- `solidworks.export.3mf`
+- `solidworks.export.pdf`
+- `solidworks.export.dxf`
+- `solidworks.export.dwg`
+- `solidworks.export.pdf.single_sheet`
+- `solidworks.import.step`
+- `solidworks.import.iges`
+- `solidworks.import.parasolid`
+- `solidworks.evaluation.mass_properties`
+- `solidworks.evaluation.bounding_box`
+- `solidworks.evaluation.geometry_sanity`
+- `solidworks.evaluation.measurement`
+- `solidworks.evaluation.interference`
 
-Mutations must pass native postconditions and rebuild/feature-error checks before success. An in-flight timeout becomes `uncertain`; dependent mutations remain blocked until reconciliation proves final state.
+Broad `solidworks.part.parametric` remains `implemented=false` with `partial_native_support`: multiple bounded parametric subsets are promoted, but Sweep/Loft/Boundary and unrestricted feature-definition editing remain outside the accepted public surface. Broad `solidworks.assembly.mates` remains partial because the ten promoted common mate families do not imply Gear/Rack-Pinion/Screw or unrestricted mate semantics. Broad `solidworks.configurations` remains partial because deterministic design-table integration is intentionally unpromoted.
 
-## Authentication and launch
+Lane D's bounded drawing lifecycle now includes standard-view parity, Projected, Section, Note, and Center Mark; STEP/IGES/Parasolid provider imports and exact-sheet PDF are also callable alongside the existing export matrix. Broad `solidworks.drawing`, `solidworks.export`, `solidworks.import`, and `solidworks.evaluation` remain `partial_native_support` rather than implying family-wide support; `solidworks.mbd` and `solidworks.license` remain unavailable.
 
-Network mode is fail-closed behind Bearer authentication. Install the package and run `cdt-solidworks` with deployment-managed values for:
+The bounded Drawing/MBD acceptance boundary still excludes Detail View, direct drawing dimensions/model items, balloons, GTol/datum/surface-finish/weld-symbol breadth, BOM/cut-list tables, flat-pattern DXF integration, STEP 242 PMI publication, and native semantic MBD/DimXpert/PMI. Stable-reference measurement and assembly interference are separately promoted by the Evaluation surface and do not imply broader Drawing/MBD support.
+
+`solidworks.simulation.study` is declared but `implemented=false`: native Simulation integration has not been built. Motion and Routing likewise remain outside the callable provider surface until their typed adapters and native gates exist. Add-ins are intended to load on demand rather than require Start Up. `solidworks.flow_simulation` and `solidworks.electrical` remain `implemented=false` until dedicated installation/license/API probes and native evidence exist.
+
+## Native correctness
+
+A COM return value alone is never sufficient proof of success. Mutations verify the relevant combination of feature identity, body/component count, native rebuild result, feature error state, and persisted artifact state. A mutation that times out after native dispatch is `uncertain`, not an ordinary failure, and dependent writes remain blocked until reconciliation.
+
+## Authentication
+
+Network mode requires a Bearer token sourced from deployment-managed runtime secrets. Missing or invalid credentials fail closed before MCP tool execution.
+
+## Launch
+
+Install the package and run `cdt-solidworks`. Network startup reads runtime configuration from these environment variable names only:
 
 - `CDT_SOLIDWORKS_BEARER_TOKEN`
 - `CDT_SOLIDWORKS_AUTH_ISSUER_URL`
 - `CDT_SOLIDWORKS_RESOURCE_URL`
 - `CDT_SOLIDWORKS_ALLOWED_ROOTS`
+- `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS`
 - `CDT_SOLIDWORKS_BIND_HOST`
 - `CDT_SOLIDWORKS_PORT`
 - `CDT_SOLIDWORKS_VERSION`
 
-If allowed roots are not configured, document and CAD path operations remain disabled.
+Authentication configuration is mandatory and startup fails closed when it is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.

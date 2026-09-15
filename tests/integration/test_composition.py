@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import re
 
 from cdt_solidworks.integration.registrar import register_runtime_tools
 from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
@@ -289,6 +290,28 @@ def test_integrated_server_registers_native_document_tools(tmp_path: Path) -> No
         "evaluation_measure", "evaluation_interferences",
     } <= names
     assert names <= set(_TOOL_ARGUMENTS)
+    for tool in asyncio.run(server.list_tools()):
+        assert tool.input_schema.get("additionalProperties") is False
+        assert set(tool.input_schema.get("properties", {})) == set(_TOOL_ARGUMENTS[tool.name])
+
+
+def test_public_and_packaged_guides_name_every_registered_tool(tmp_path: Path) -> None:
+    runtime = IntegratedProviderRuntime(
+        allowed_roots=(tmp_path,),
+        session=_FakeSession(_success_probe(registered=True, running=True)),
+        document_service=_FakeDocumentService(),
+        cad_service=_FakeCadService(),
+    )
+    server = build_integrated_server(ServerConfig.in_process(), runtime=runtime)
+    names = {tool.name for tool in asyncio.run(server.list_tools())}
+    repo_root = Path(__file__).resolve().parents[2]
+    for relative in (
+        Path("docs/TOOL_GUIDE.md"),
+        Path("src/cdt_solidworks/platform/PROVIDER_GUIDE.md"),
+    ):
+        text = (repo_root / relative).read_text(encoding="utf-8")
+        documented = set(re.findall(r"`([a-z][a-z0-9_]+)`", text))
+        assert names <= documented
 
 
 def test_runtime_context_exposes_license_probe_as_unimplemented() -> None:

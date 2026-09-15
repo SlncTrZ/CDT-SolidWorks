@@ -125,6 +125,32 @@ _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
 }
 
 
+def seal_tool_input_schemas(server: Any) -> None:
+    """Make advertised MCP schemas match the provider's strict wire contract.
+
+    The project pins MCP 2.2.0, whose registered Tool objects expose the generated
+    JSON schema through ``Tool.parameters``. Runtime rejection remains owned by
+    ``strict_platform_tool_inputs``; this function only makes tools/list truthful.
+    """
+
+    manager = getattr(server, "_tool_manager", None)
+    if manager is None or not hasattr(manager, "list_tools"):
+        raise RuntimeError("MCP tool manager is unavailable for schema sealing.")
+    for tool in manager.list_tools():
+        allowed = _TOOL_ARGUMENTS.get(str(tool.name))
+        if allowed is None:
+            # build_server is also an extension seam; only provider-owned tools are
+            # governed by this allowlist/schema contract.
+            continue
+        parameters = tool.parameters
+        properties = parameters.get("properties", {})
+        if set(properties) != set(allowed):
+            raise RuntimeError(
+                f"Tool argument schema mismatch for {tool.name}: "
+                f"schema={sorted(properties)}, allowlist={sorted(allowed)}"
+            )
+        parameters["additionalProperties"] = False
+
 
 async def strict_platform_tool_inputs(
     ctx: ServerRequestContext[Any, Any],
