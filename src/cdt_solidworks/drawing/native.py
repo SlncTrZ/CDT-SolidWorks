@@ -23,6 +23,8 @@ from .domain import (
 
 T = TypeVar("T")
 
+_SW_BOM_ANCHOR_TOP_LEFT = 1
+
 
 class DrawingPathPolicy(Protocol):
     def validate_open(self, path: str) -> str: ...
@@ -822,7 +824,7 @@ class SolidWorksDrawingAdapter:
                 False,
                 0.02,
                 0.02,
-                0,
+                _SW_BOM_ANCHOR_TOP_LEFT,
                 1,
                 source_configuration or "",
                 template,

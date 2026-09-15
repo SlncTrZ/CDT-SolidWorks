@@ -174,6 +174,7 @@ class FakeView:
         self._center_marks = []
         self._display_dimensions = []
         self._tables = []
+        self._last_bom_args = None
 
     def GetNextView(self):
         return self._next
@@ -182,6 +183,7 @@ class FakeView:
         return 3
 
     def InsertBomTable5(self, *args):
+        self._last_bom_args = args
         table = FakeTable()
         if self._tables:
             self._tables[-1]._next = table
@@ -417,6 +419,9 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
             self.path, projected.identity
         )
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        native_view = self.drawing.views[0]
+        self.assertIsNotNone(native_view._last_bom_args)
+        self.assertEqual(1, native_view._last_bom_args[3])
         dimension = self.service.add_dimension(
             self.path,
             self.base.identity,
