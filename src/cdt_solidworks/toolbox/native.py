@@ -19,6 +19,7 @@ from .domain import (
 
 T = TypeVar("T")
 _SW_DOC_PART = 1
+_SW_HOLE_WIZARD_TOOLBOX_FOLDER = 52
 _TOOLBOX_BROWSER_GUID = "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
 _PART_NUMBER_KEYS = ("Part Number", "PartNumber", "PART NUMBER")
 
@@ -194,9 +195,9 @@ class ToolboxNativeAdapter:
     def _toolbox_root(self, app: Any) -> str | None:
         client = getattr(self.api, "_client", None)
         constants = getattr(client, "constants", None) if client is not None else None
-        preference = getattr(constants, "swHoleWizardToolBoxFolder", None)
-        if preference is None:
-            return None
+        preference = getattr(
+            constants, "swHoleWizardToolBoxFolder", _SW_HOLE_WIZARD_TOOLBOX_FOLDER
+        )
         try:
             value = self.api._member(app, "GetUserPreferenceStringValue", int(preference))
         except Exception:

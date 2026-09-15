@@ -35,13 +35,14 @@ class _App:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.addin = object()
+        self.preference = 123
 
     def GetAddInObject(self, guid):
         assert guid == "{ED783340-D5DB-11d4-BD5A-00C04F019809}"
         return self.addin
 
     def GetUserPreferenceStringValue(self, preference):
-        assert preference == 123
+        assert preference == self.preference
         return str(self.root)
 
 
@@ -114,6 +115,20 @@ def test_probe_reads_addin_root_database_and_version(tmp_path: Path) -> None:
     assert Path(probe.root_path or "") == root.resolve()
     assert Path(probe.database_path or "").name == "swbrowser.sldedb"
     assert probe.license_state == "available"
+
+
+def test_probe_falls_back_to_stable_toolbox_preference_enum_without_makepy_constants(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _fixture(root)
+    session = _Session(root)
+    session.api._client.constants = SimpleNamespace()
+    session.app.preference = 52
+    adapter = ToolboxNativeAdapter(session)
+
+    probe = adapter.probe()
+
+    assert probe.available is True
+    assert Path(probe.root_path or "") == root.resolve()
 
 
 def test_catalog_scans_bounded_vendor_parts_read_only(tmp_path: Path) -> None:
