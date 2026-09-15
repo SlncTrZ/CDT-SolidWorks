@@ -880,7 +880,13 @@ class SolidWorksDrawingAdapter:
         def read(model: Any) -> tuple[BomSnapshot, ...]:
             result: list[BomSnapshot] = []
             seen: set[str] = set()
-            for view_id, view in self._iter_model_views(model):
+            model_views = tuple(self._iter_model_views(model))
+            sheet_view = self._api._member(model, "GetFirstView")
+            table_views: list[tuple[str | None, Any]] = []
+            if sheet_view is not None:
+                table_views.append((None, sheet_view))
+            table_views.extend(model_views)
+            for owner_view_id, view in table_views:
                 table = self._first_table_annotation(view)
                 while table is not None:
                     try:
@@ -892,10 +898,16 @@ class SolidWorksDrawingAdapter:
                         table = self._next_table_annotation(table)
                         continue
                     if bom_id not in seen and rows and rows[0]:
+                        if owner_view_id is None:
+                            view_id, configuration = self._bom_source_view(
+                                table, model_views
+                            )
+                        else:
+                            view_id = owner_view_id
+                            configuration = str(
+                                self._api._member(view, "ReferencedConfiguration") or ""
+                            ) or None
                         seen.add(bom_id)
-                        configuration = str(
-                            self._api._member(view, "ReferencedConfiguration") or ""
-                        ) or None
                         component_ids = self._table_component_ids(
                             table, len(rows), configuration
                         )
@@ -1319,6 +1331,85 @@ class SolidWorksDrawingAdapter:
         if isinstance(value, (tuple, list)):
             return tuple(value)
         return (value,)
+
+    def _bom_source_view(
+        self,
+        table: Any,
+        model_views: tuple[tuple[str, Any], ...],
+    ) -> tuple[str, str | None]:
+        bom_feature = None
+        try:
+            specific = self._api._member(table, "GetSpecificAnnotation")
+        except Exception:
+            specific = None
+        if specific is not None:
+            try:
+                bom_feature = self._api._member(specific, "BomFeature")
+            except Exception:
+                bom_feature = None
+        if bom_feature is None:
+            try:
+                feature = self._api._member(table, "GetFeature")
+            except Exception:
+                feature = None
+            if feature is not None:
+                try:
+                    bom_feature = self._api._member(feature, "GetSpecificFeature2")
+                except Exception:
+                    bom_feature = None
+        if bom_feature is None:
+            raise DrawingPostconditionError("bom_source_feature_missing")
+        try:
+            referenced_model = str(
+                self._api._member(bom_feature, "GetReferencedModelName") or ""
+            ).strip()
+        except Exception as exc:
+            raise DrawingPostconditionError("bom_source_model_read_failed") from exc
+        if not referenced_model:
+            raise DrawingPostconditionError("bom_source_model_missing")
+        try:
+            bom_configuration = str(
+                self._api._member(bom_feature, "Configuration") or ""
+            ).strip()
+        except Exception:
+            bom_configuration = ""
+
+        referenced_path = PureWindowsPath(referenced_model)
+        candidates: list[tuple[str, str | None]] = []
+        for view_id, view in model_views:
+            try:
+                referenced_document = self._api._member(view, "ReferencedDocument")
+            except Exception:
+                referenced_document = None
+            if referenced_document is None:
+                continue
+            native_path = str(self._api.document_path(referenced_document) or "").strip()
+            if not native_path:
+                continue
+            native_windows_path = PureWindowsPath(native_path)
+            if native_windows_path != referenced_path and (
+                native_windows_path.name.casefold()
+                != referenced_path.name.casefold()
+            ):
+                continue
+            try:
+                view_configuration = str(
+                    self._api._member(view, "ReferencedConfiguration") or ""
+                ).strip()
+            except Exception:
+                view_configuration = ""
+            if bom_configuration and view_configuration != bom_configuration:
+                continue
+            candidates.append((view_id, view_configuration or bom_configuration or None))
+        if not candidates:
+            raise DrawingPostconditionError(
+                "bom_source_view_missing", referenced_model
+            )
+        if len(candidates) != 1:
+            raise DrawingPostconditionError(
+                "bom_source_view_ambiguous", referenced_model
+            )
+        return candidates[0]
 
     def _find_view(self, model: Any, view_id: str) -> Any | None:
         for current_id, view in self._iter_model_views(model):

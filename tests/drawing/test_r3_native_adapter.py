@@ -60,8 +60,24 @@ class FakeNote:
         return self.annotation
 
 
+class FakeBomFeature:
+    def __init__(self, source_path, configuration):
+        self.source_path = source_path
+        self.Configuration = configuration
+
+    def GetReferencedModelName(self):
+        return self.source_path
+
+
 class FakeFeature:
     Name = "BOM1"
+
+    def __init__(self, source_path="", configuration="Default"):
+        self.source_path = source_path
+        self.configuration = configuration
+
+    def GetSpecificFeature2(self):
+        return FakeBomFeature(self.source_path, self.configuration)
 
 
 class FakeComponent:
@@ -76,11 +92,13 @@ class FakeTable:
     RowCount = 2
     ColumnCount = 4
 
-    def __init__(self):
+    def __init__(self, source_path="", configuration="Default"):
         self._next = None
+        self.source_path = source_path
+        self.configuration = configuration
 
     def GetFeature(self):
-        return FakeFeature()
+        return FakeFeature(self.source_path, self.configuration)
 
     def DisplayedText2(self, row, column, include_hidden):
         values = (
@@ -184,7 +202,7 @@ class FakeView:
 
     def InsertBomTable5(self, *args):
         self._last_bom_args = args
-        table = FakeTable()
+        table = FakeTable(self.ReferencedDocument.path, self.ReferencedConfiguration)
         if self._tables:
             self._tables[-1]._next = table
         self._tables.append(table)
@@ -511,6 +529,43 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
                         y_mm=30.0,
                     )
                 self.assertEqual(before, len(self.drawing.views[0]._display_dimensions))
+
+    def test_bom_readback_survives_cache_loss_when_native_table_moves_to_sheet_view(self):
+        bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        native_view = self.drawing.views[0]
+        self.assertEqual(1, len(native_view._tables))
+        sheet_view = FakeView("Sheet1", "")
+        sheet_view._tables = list(native_view._tables)
+        native_view._tables.clear()
+        sheet_view._next = native_view
+        self.drawing.GetFirstView = lambda: sheet_view
+        self.adapter._bom_metadata.clear()
+        self.adapter._view_metadata.clear()
+
+        boms = self.adapter.list_boms(self.path)
+
+        self.assertEqual((bom.identity,), tuple(item.identity for item in boms))
+        self.assertEqual(self.base.identity, boms[0].view_id)
+        self.assertEqual("Default", boms[0].source_configuration)
+        self.assertEqual(("PIN-1@fixture", "PIN-2@fixture"), boms[0].component_ids[1])
+
+    def test_sheet_level_bom_refuses_ambiguous_source_view_after_cache_loss(self):
+        self.service.create_bom(self.path, self.base.identity, "Default")
+        self.service.create_projected_view(self.path, self.base.identity, 0.25, 0.10)
+        native_view = self.drawing.views[0]
+        sheet_view = FakeView("Sheet1", "")
+        sheet_view._tables = list(native_view._tables)
+        native_view._tables.clear()
+        current = sheet_view
+        for view in self.drawing.views:
+            current._next = view
+            current = view
+        self.drawing.GetFirstView = lambda: sheet_view
+        self.adapter._bom_metadata.clear()
+        self.adapter._view_metadata.clear()
+
+        with self.assertRaisesRegex(Exception, "bom_source_view_ambiguous"):
+            self.adapter.list_boms(self.path)
 
     def test_structure_readback_survives_lane_metadata_cache_loss(self):
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
