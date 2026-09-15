@@ -93,9 +93,15 @@ class FakeModel:
 
 
 class FakeComponent:
-    def __init__(self, name, *, suppressed=False):
+    def __init__(self, name, *, suppressed=False, box=None):
         self.Name2 = name
         self.suppressed = suppressed
+        self.box = box or (0.0, 0.0, 0.0, 0.1, 0.2, 0.3)
+        self.get_box_calls = []
+
+    def GetBox(self, include_ref_planes, include_sketches):
+        self.get_box_calls.append((include_ref_planes, include_sketches))
+        return self.box
 
 
 class FakeInterference:
@@ -235,6 +241,24 @@ class SolidWorksEvaluationAdapterTests(unittest.TestCase):
         result = self.adapter.geometry_sanity(self.model.path, "Default")
         self.assertEqual(1, result.solid_body_count)
         self.assertEqual(1, result.feature_error_count)
+
+    def test_assembly_bounding_box_calls_component_get_box_with_explicit_flags(self):
+        assembly = FakeAssemblyModel()
+        assembly.components = (
+            FakeComponent("Plate-1", box=(-0.1, -0.2, 0.0, 0.1, 0.2, 0.01)),
+            FakeComponent("Bolt-1", box=(-0.01, -0.01, 0.0, 0.01, 0.01, 0.05)),
+        )
+        api = FakeApi(assembly)
+        adapter = SolidWorksEvaluationAdapter(
+            FakeSession(api), path_policy=FakePathPolicy(), default_timeout=5.0
+        )
+
+        result = adapter.bounding_box(assembly.path, "Default")
+
+        self.assertEqual((-0.1, -0.2, 0.0), result.min_m)
+        self.assertEqual((0.1, 0.2, 0.05), result.max_m)
+        self.assertEqual([(False, False)], assembly.components[0].get_box_calls)
+        self.assertEqual([(False, False)], assembly.components[1].get_box_calls)
 
     def test_measure_uses_explicit_bounded_selection_and_clears_it(self):
         selected = []

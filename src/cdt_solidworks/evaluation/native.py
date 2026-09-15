@@ -119,7 +119,9 @@ class SolidWorksEvaluationAdapter:
                 components = tuple(self._api.components(model, False))
                 boxes = tuple(
                     self._float_tuple(
-                        self._api._member(component, "GetBox"), 6, "component_box"
+                        self._api._member(component, "GetBox", False, False),
+                        6,
+                        "component_box",
                     )
                     for component in components
                     if not self._api.component_suppressed(component)

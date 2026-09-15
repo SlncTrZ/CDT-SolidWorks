@@ -1160,7 +1160,7 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         @server.tool(
             name="evaluation_bounding_box",
             description=(
-                "Read a validated approximate native part bounding box in SOLIDWORKS system units."
+                "Read a validated approximate native part or assembly bounding box in SOLIDWORKS system units."
             ),
         )
         def evaluation_bounding_box(
@@ -1173,7 +1173,7 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
         @server.tool(
             name="evaluation_geometry_sanity",
             description=(
-                "Read bounded part body/feature-error sanity and fail when native feature errors exist."
+                "Read bounded native part or assembly geometry sanity and fail when feature errors exist."
             ),
         )
         def evaluation_geometry_sanity(
