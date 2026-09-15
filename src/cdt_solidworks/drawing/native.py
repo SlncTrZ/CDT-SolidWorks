@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Protocol, TypeVar
 
 from cdt_solidworks.native.models import NativeCallState
@@ -777,13 +777,23 @@ class SolidWorksDrawingAdapter:
         return self._with_drawing(source, stage="drawing_list_dimensions", reader=read)
 
     def supports_bom(self, drawing_id: str) -> bool:
-        if self._bom_template_path is None:
-            return False
         try:
-            template = self._path_policy.validate_open(self._bom_template_path)
+            self._validated_bom_template_path()
+            return True
         except Exception:
             return False
-        return PureWindowsPath(template).suffix.casefold() == ".sldbomtbt"
+
+    def _validated_bom_template_path(self) -> str:
+        if self._bom_template_path is None:
+            raise DrawingRefusal("unsupported_capability", "solidworks.drawing.bom")
+        candidate = Path(self._bom_template_path).expanduser().resolve(strict=False)
+        if not candidate.is_absolute():
+            raise DrawingRefusal("bom_template_path_not_absolute", str(candidate))
+        if candidate.suffix.casefold() != ".sldbomtbt":
+            raise DrawingRefusal("bom_template_extension_mismatch", str(candidate))
+        if not candidate.is_file():
+            raise DrawingRefusal("bom_template_not_found", str(candidate))
+        return str(candidate)
 
     def create_bom(
         self, drawing_id: str, view_id: str, source_configuration: str | None
@@ -791,7 +801,7 @@ class SolidWorksDrawingAdapter:
         if not self.supports_bom(drawing_id):
             raise DrawingRefusal("unsupported_capability", "solidworks.drawing.bom")
         source = self._path_policy.validate_open(drawing_id)
-        template = self._path_policy.validate_open(str(self._bom_template_path))
+        template = self._validated_bom_template_path()
         metadata = self._view_metadata.get(
             (drawing_id, view_id), self._view_metadata.get((source, view_id))
         )

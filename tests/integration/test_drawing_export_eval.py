@@ -262,25 +262,34 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
     assert bad_target.dispatched is False
 
 
-def test_native_drawing_bom_capability_requires_real_allowed_template(tmp_path: Path) -> None:
+def test_native_drawing_bom_capability_uses_explicit_dependency_outside_document_roots(tmp_path: Path) -> None:
     class _Session:
         api = object()
 
-    policy = DocumentPathPolicy((tmp_path,))
-    valid = tmp_path / "bom-standard.sldbomtbt"
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    policy = DocumentPathPolicy((documents,))
+    valid = templates / "bom-standard.sldbomtbt"
     valid.write_bytes(b"template")
-    wrong_extension = tmp_path / "bom-standard.txt"
+    wrong_extension = templates / "bom-standard.txt"
     wrong_extension.write_bytes(b"template")
+    missing = templates / "missing.sldbomtbt"
 
     configured = IntegratedDrawingService(
         _Session(), path_policy=policy, bom_template_path=str(valid)
     )
-    invalid = IntegratedDrawingService(
+    invalid_extension = IntegratedDrawingService(
         _Session(), path_policy=policy, bom_template_path=str(wrong_extension)
+    )
+    missing_template = IntegratedDrawingService(
+        _Session(), path_policy=policy, bom_template_path=str(missing)
     )
 
     assert configured.bom_available is True
-    assert invalid.bom_available is False
+    assert invalid_extension.bom_available is False
+    assert missing_template.bom_available is False
 
 
 def test_drawing_wrapper_preserves_uncertain_native_call_id(tmp_path: Path) -> None:

@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from cdt_solidworks.drawing.domain import DrawingRefusal, DrawingService
 from cdt_solidworks.drawing.native import SolidWorksDrawingAdapter
@@ -372,10 +374,14 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.drawing = FakeDrawing(self.path)
         self.api = FakeApi(self.drawing)
         self.selector = FakeReferenceSelector()
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tempdir.cleanup)
+        bom_template = Path(self._tempdir.name) / "bom.sldbomtbt"
+        bom_template.write_bytes(b"template")
         self.adapter = SolidWorksDrawingAdapter(
             FakeSession(self.api, object()),
             path_policy=FakePathPolicy(),
-            bom_template_path=r"C:\\templates\\bom.sldbomtbt",
+            bom_template_path=str(bom_template),
             reference_selector=self.selector,
         )
         self.service = DrawingService(self.adapter)
