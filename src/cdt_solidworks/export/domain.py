@@ -76,7 +76,8 @@ class ImportSnapshot:
 
 
 class ImportPostconditionError(RuntimeError):
-    def __init__(self, reason: str, detail: str | None = None) -> None:
+    def __init__(self, reason: str, detail: str | None = None, *, native_result=None) -> None:
+        self.native_result = native_result
         self.reason = reason
         self.detail = detail
         super().__init__(reason if detail is None else f"{reason}: {detail}")

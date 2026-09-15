@@ -117,8 +117,8 @@ class SolidWorksMbdAdapter:
             values = self._as_tuple(
                 self._api._member(annotation, "GetAttachedEntityTypes")
             )
-        except Exception:
-            return False
+        except Exception as exc:
+            raise MbdPostconditionError("attachment_read_failed") from exc
         return any(int(value) == 0 for value in values)
 
     def _with_document(

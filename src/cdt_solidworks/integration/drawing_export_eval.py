@@ -547,6 +547,8 @@ class IntegratedImportService:
         try:
             value = self.service.import_model(request)
         except ImportPostconditionError as exc:
+            if exc.native_result is not None:
+                return exc.native_result
             return NativeCallResult.failed(
                 NativeFailure(exc.reason, stage, str(exc), False),
                 call_id=call_id,

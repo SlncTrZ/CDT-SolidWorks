@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Callable, TypeVar
 
 from .api import WindowsComApi
-from .dispatcher import SerializedNativeDispatcher
+from .dispatcher import RecoveryPlan, SerializedNativeDispatcher
 from .errors import NativeRuntimeError
 from .models import ApplicationOwnership, ApplicationProbe, NativeCallResult, NativeCallState, NativeFailure, SessionInfo
 
@@ -183,6 +183,9 @@ class SolidWorksSession:
         stage: str,
         timeout: float,
         mutation: bool = False,
+        recovery_identity: tuple[object, ...] | None = None,
+        recovery_stage: str | None = None,
+        recovery_verifier: Callable[[Any], object] | None = None,
     ) -> NativeCallResult[T]:
         if self._application is None:
             return NativeCallResult.failed(
@@ -199,15 +202,20 @@ class SolidWorksSession:
             stage=stage,
             timeout=timeout,
             mutation=mutation,
+            recovery=(RecoveryPlan((self.session_id, *recovery_identity), recovery_stage,
+                                   lambda: recovery_verifier(self._application))
+                      if recovery_identity is not None and recovery_stage is not None
+                      and recovery_verifier is not None else None),
         )
 
     def reconcile(
         self,
         call_id: str,
-        verifier: Callable[[Any], T],
+        verifier: Callable[[Any], T] | None = None,
         *,
         stage: str,
         timeout: float,
+        identity: tuple[object, ...] | None = None,
     ) -> NativeCallResult[T]:
         if self._application is None:
             return NativeCallResult.failed(
@@ -217,7 +225,7 @@ class SolidWorksSession:
             )
         return self._dispatcher.reconcile(
             call_id,
-            lambda: verifier(self._application),
+            identity=(self.session_id, *identity) if identity is not None else None,
             stage=stage,
             timeout=timeout,
         )

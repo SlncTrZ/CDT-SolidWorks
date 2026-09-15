@@ -4,6 +4,9 @@ Wing: Mechanical 90 | Topic: parametric-part | Updated: 2026-09-14
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from collections.abc import Sequence
 import math
 from pathlib import Path
@@ -234,6 +237,7 @@ class IntegratedPartFeatureService:
         service: Any | None = None,
         default_timeout: float = 60.0,
     ) -> None:
+        self._recovery = ContextVar("part_recovery", default=None)
         self.session = session
         self.path_policy = path_policy
         self.default_timeout = float(default_timeout)
@@ -298,15 +302,16 @@ class IntegratedPartFeatureService:
                 depth_mm = float(depth_mm)
                 if not math.isfinite(depth_mm) or depth_mm <= 0:
                     raise PartValidationError("blind cut depth_mm must be positive and finite")
-            value = self.service.cut(
-                target,
-                CutSpec(
-                    name=name,
-                    profile=ProfileRef(sketch_id),
-                    through_all=through_all,
-                    depth_mm=depth_mm,
-                ),
-            )
+            with self._recoverable("cut", path=path, name=name, through_all=through_all, depth_mm=depth_mm):
+                value = self.service.cut(
+                    target,
+                    CutSpec(
+                        name=name,
+                        profile=ProfileRef(sketch_id),
+                        through_all=through_all,
+                        depth_mm=depth_mm,
+                    ),
+                )
             return NativeCallResult.success(value, call_id=call_id, dispatched=True)
         except _NativeResultInterrupt as exc:
             return exc.result
@@ -373,17 +378,18 @@ class IntegratedPartFeatureService:
                     raise PartValidationError(
                         "blind simple hole depth_mm must be positive and finite"
                     )
-            mutation = self.service.hole(
-                target,
-                HoleSpec(
-                    name=name,
-                    diameter_mm=diameter,
-                    face_ref=_SIMPLE_HOLE_FACE_REF,
-                    centers_mm=(center,),
-                    through_all=through_all,
-                    depth_mm=depth,
-                ),
-            )
+            with self._recoverable("simple_hole", path=path, name=name, diameter_mm=diameter, face_ref=face_ref, center_mm=center, through_all=through_all, depth_mm=depth):
+                mutation = self.service.hole(
+                    target,
+                    HoleSpec(
+                        name=name,
+                        diameter_mm=diameter,
+                        face_ref=_SIMPLE_HOLE_FACE_REF,
+                        centers_mm=(center,),
+                        through_all=through_all,
+                        depth_mm=depth,
+                    ),
+                )
             actual_x = mutation.feature.parameters.get("center_x_mm")
             actual_y = mutation.feature.parameters.get("center_y_mm")
             if (
@@ -822,9 +828,10 @@ class IntegratedPartFeatureService:
         through_all: bool,
         depth_mm: float | None = None,
         timeout: float | None = None,
+        _capture: bool = False,
     ) -> NativeCallResult[FeatureSnapshot]:
         """Verify an uncertain Simple Hole before clearing dispatcher quarantine."""
-        local_call_id = uuid.uuid4().hex
+        local_call_id = call_id
         try:
             if self.session is None or self.api is None:
                 raise PartValidationError(
@@ -1058,9 +1065,13 @@ class IntegratedPartFeatureService:
                 suppressed=False,
             )
 
+        identity = (source, name, float(diameter_mm), face_ref, tuple(center_mm), through_all, depth_mm)
+        if _capture:
+            return identity, verifier
         return self.session.reconcile(
             call_id,
             verifier,
+            identity=identity,
             stage="part_simple_hole_reconcile",
             timeout=(
                 self.default_timeout
@@ -1144,11 +1155,12 @@ class IntegratedPartFeatureService:
                 axis_ref="profile_centerline",
                 angle_deg=angle,
             )
-            mutation = (
-                self.service.revolve_cut(target, spec)
-                if is_cut
-                else self.service.revolve(target, spec)
-            )
+            with self._recoverable("revolve", path=path, name=name, axis_ref=axis_ref, angle_deg=angle, is_cut=is_cut):
+                mutation = (
+                    self.service.revolve_cut(target, spec)
+                    if is_cut
+                    else self.service.revolve(target, spec)
+                )
             return NativeCallResult.success(
                 mutation, call_id=call_id, dispatched=True
             )
@@ -1171,9 +1183,10 @@ class IntegratedPartFeatureService:
         angle_deg: float,
         is_cut: bool,
         timeout: float | None = None,
+        _capture: bool = False,
     ) -> NativeCallResult[FeatureSnapshot]:
         """Verify an uncertain boss/cut Revolve and clear quarantine on success."""
-        local_call_id = uuid.uuid4().hex
+        local_call_id = call_id
         try:
             if self.session is None or self.api is None:
                 raise PartValidationError(
@@ -1357,9 +1370,13 @@ class IntegratedPartFeatureService:
                 suppressed=False,
             )
 
+        identity = (source, name, axis_ref, float(angle_deg), is_cut)
+        if _capture:
+            return identity, verifier
         return self.session.reconcile(
             call_id,
             verifier,
+            identity=identity,
             stage="part_revolve_reconcile",
             timeout=(
                 self.default_timeout
@@ -1377,9 +1394,10 @@ class IntegratedPartFeatureService:
         through_all: bool,
         depth_mm: float | None = None,
         timeout: float | None = None,
+        _capture: bool = False,
     ) -> NativeCallResult[FeatureSnapshot]:
         """Verify an uncertain Cut mutation and clear dispatcher quarantine on success."""
-        local_call_id = uuid.uuid4().hex
+        local_call_id = call_id
         try:
             if self.session is None or self.api is None:
                 raise PartValidationError(
@@ -1527,9 +1545,13 @@ class IntegratedPartFeatureService:
                 suppressed=False,
             )
 
+        identity = (source, name, through_all, depth_mm)
+        if _capture:
+            return identity, verifier
         return self.session.reconcile(
             call_id,
             verifier,
+            identity=identity,
             stage="part_cut_reconcile",
             timeout=self.default_timeout if timeout is None else max(0.0, float(timeout)),
         )
@@ -1690,14 +1712,51 @@ class IntegratedPartFeatureService:
             raise PartValidationError("expected_revision must be a non-negative integer")
         return DocumentTarget(source, expected_revision, "mm")
 
+    @contextmanager
+    def _recoverable(self, family: str, **kwargs):
+        plan = None
+        if self.session is not None:
+            prepared = getattr(self, "reconcile_" + family)(call_id="prepare",
+                                                           _capture=True, **kwargs)
+            if isinstance(prepared, NativeCallResult):
+                raise _NativeResultInterrupt(prepared)
+            identity, verifier = prepared
+            plan = (identity, "part_" + ("simple_hole" if family == "simple_hole" else family) + "_reconcile", verifier)
+        token = self._recovery.set(plan)
+        try:
+            yield
+        finally:
+            self._recovery.reset(token)
+
     def _execute(self, operation: Any, *, stage: str, mutation: bool) -> Any:
         assert self.session is not None
-        result = self.session.execute(
-            operation,
-            stage=stage,
-            timeout=self.default_timeout,
-            mutation=mutation,
-        )
+        plan = self._recovery.get() if mutation else None
+        options = {}
+        if plan is not None:
+            identity, recovery_stage, verifier = plan
+            # Captured on the STA before the mutation; the operation may change revision,
+            # but recovery may not silently switch configuration.
+            original_configuration = []
+            original_operation = operation
+
+            def operation(app):
+                model = self.api.get_open_document(app, identity[0])
+                if model is None:
+                    raise NativeRuntimeError("document_not_open", stage, "Recovery target is not open.")
+                original_configuration.append(self.api.active_configuration(model))
+                return original_operation(app)
+
+            def verify_original(app):
+                model = self.api.get_open_document(app, identity[0])
+                if model is None or not original_configuration or self.api.active_configuration(model) != original_configuration[0]:
+                    raise NativeRuntimeError("reconciliation_mismatch", recovery_stage,
+                                             "Original document configuration is unavailable or changed.")
+                return verifier(app)
+
+            options = dict(recovery_identity=identity, recovery_stage=recovery_stage,
+                           recovery_verifier=verify_original)
+        result = self.session.execute(operation, stage=stage, timeout=self.default_timeout,
+                                      mutation=mutation, **options)
         if result.state is NativeCallState.SUCCESS:
             return result.value
         raise _NativeResultInterrupt(result)

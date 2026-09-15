@@ -55,6 +55,8 @@ class DocumentService:
         except Exception as exc:
             return self._local_failure(exc, "document_open")
 
+        observed_configuration: list[str | None] = [configuration or None]
+
         def operation(app: Any) -> DocumentContext:
             model = self.api.get_open_document(app, canonical)
             if model is None:
@@ -81,6 +83,7 @@ class DocumentService:
                     "document_open",
                     "Opened document configuration does not match the requested configuration.",
                 )
+            observed_configuration[0] = context.configuration
             return context
 
         return self.session.execute(
@@ -88,6 +91,14 @@ class DocumentService:
             stage="document_open",
             timeout=self._timeout(timeout),
             mutation=True,
+            recovery_identity=(canonical, int(document_type), True),
+            recovery_stage="document_reconcile",
+            recovery_verifier=self._document_state_verifier(
+                canonical,
+                document_type,
+                True,
+                lambda: observed_configuration[0],
+            ),
         )
 
     def adopt_open_document(
@@ -239,6 +250,9 @@ class DocumentService:
             stage="document_close",
             timeout=self._timeout(timeout),
             mutation=True,
+            recovery_identity=(context.path, int(context.document_type), False),
+            recovery_stage="document_reconcile",
+            recovery_verifier=self._document_state_verifier(context.path, context.document_type, False, context.configuration),
         )
 
     def reopen(self, context: DocumentContext, *, timeout: float | None = None) -> NativeCallResult[DocumentContext]:
@@ -406,32 +420,33 @@ class DocumentService:
         except Exception as exc:
             return self._local_failure(exc, "document_reconcile")
 
-        def verifier(app: Any) -> DocumentContext | bool:
+        return self.session.reconcile(
+            call_id, stage="document_reconcile", timeout=self._timeout(timeout),
+            identity=(candidate, int(expected_type), should_be_open),
+        )
+
+    def _document_state_verifier(self, candidate, expected_type, should_be_open, configuration):
+        def verifier(app):
+            expected_configuration = configuration() if callable(configuration) else configuration
             model = self.api.get_open_document(app, candidate)
             if should_be_open:
                 if model is None:
-                    raise NativeRuntimeError(
-                        "reconciliation_mismatch",
-                        "document_reconcile",
-                        "Expected document is not open after uncertain native call.",
-                    )
+                    raise NativeRuntimeError("reconciliation_mismatch", "document_reconcile",
+                                             "Original document is not open.")
                 context = self._context_from_doc(model)
                 self._require_document_type(context, expected_type)
+                if not self._same_path(context.path, candidate) or (
+                    expected_configuration is not None
+                    and context.configuration != expected_configuration
+                ):
+                    raise NativeRuntimeError("reconciliation_mismatch", "document_reconcile",
+                                             "Original document identity or configuration changed.")
                 return context
             if model is not None:
-                raise NativeRuntimeError(
-                    "reconciliation_mismatch",
-                    "document_reconcile",
-                    "Document is still open after an uncertain close-like native call.",
-                )
+                raise NativeRuntimeError("reconciliation_mismatch", "document_reconcile",
+                                         "Original document is still open.")
             return True
-
-        return self.session.reconcile(
-            call_id,
-            verifier,
-            stage="document_reconcile",
-            timeout=self._timeout(timeout),
-        )
+        return verifier
 
     def _resolve_context(self, app: Any, context: DocumentContext) -> Any:
         self._require_session(context)

@@ -114,6 +114,7 @@ class MateSnapshot:
     state: MateState
     component_ids: tuple[str, ...]
     degrees_of_freedom: int | None
+    reference_component_ids: tuple[str | None, ...] = ()
     rebuild_errors: tuple[str, ...] = ()
     kind: MateKind | None = None
     value: float | None = None
@@ -418,6 +419,7 @@ class AssemblyService:
             raise AssemblyPostconditionError(
                 "mate_kind_readback_mismatch", mate.kind.value
             )
+        self._require_mate_reference_pairing(mate, normalized)
         return mate
 
     def list_mates(self, assembly_id: str) -> tuple[MateSnapshot, ...]:
@@ -535,10 +537,26 @@ class AssemblyService:
         )
 
     @staticmethod
+    def _require_mate_reference_pairing(mate: MateSnapshot, request: MateRequest) -> None:
+        expected: list[str | None] = []
+        for reference in request.selection_refs:
+            if reference.startswith("assembly:"):
+                expected.append(None)
+            elif reference.startswith("component:"):
+                expected.append(reference.split(":", 1)[1])
+            else:
+                expected.append(reference.split(":", 1)[0])
+        if mate.reference_component_ids != tuple(expected):
+            raise AssemblyPostconditionError(
+                "mate_reference_pairing_mismatch",
+                f"expected={tuple(expected)!r}, actual={mate.reference_component_ids!r}",
+            )
+
+    @staticmethod
     def _require_solved_mate(mate: MateSnapshot) -> None:
         if mate.state is not MateState.SOLVED:
             raise AssemblyPostconditionError("mate_not_solved", mate.state.value)
-        if mate.error_status not in (None, 0, 1):
+        if mate.error_status not in (0, 1):
             raise AssemblyPostconditionError(
                 "mate_error_status", str(mate.error_status)
             )

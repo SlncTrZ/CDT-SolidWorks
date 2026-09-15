@@ -187,7 +187,10 @@ class FakeMateSpecific:
     Type = 5
 
     def GetMateEntityCount(self):
-        return 0
+        return 2
+
+    def MateEntity(self, index):
+        return type("MateEntity", (), {"ReferenceComponent": None})()
 
 
 class FakeDistanceMateFeature:
@@ -396,7 +399,7 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
 
     def test_mate_warning_does_not_map_to_dangling(self):
         feature = FakeDistanceMateFeature()
-        feature.definition = None
+        feature.definition.ErrorStatus = 0
         self.session.api.feature_name = lambda value: value.Name
         self.session.api.feature_error = lambda value: (51, True)
         snapshot = self.adapter._mate_snapshot(feature)
@@ -459,6 +462,91 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
 
         self.assertEqual(0.03, feature.definition.Distance)
         self.assertIs(_NULL_DISPATCH, feature.modify_component)
+
+    def test_created_mate_references_require_exact_component_and_persistent_pairing(self):
+        expected = (object(), object())
+        actual = (object(), object())
+        base = FakeComponent(name="Base-1")
+        bracket = FakeComponent(name="Bracket-1")
+
+        class MateEntity:
+            def __init__(self, component, reference):
+                self.ReferenceComponent = component
+                self.Reference = reference
+
+        class MateSpecific:
+            def __init__(self, entities):
+                self.entities = entities
+
+            def GetMateEntityCount(self):
+                return len(self.entities)
+
+            def MateEntity(self, index):
+                return self.entities[index]
+
+        class Feature:
+            def __init__(self, specific):
+                self.specific = specific
+
+            def GetSpecificFeature2(self):
+                return self.specific
+
+        feature = Feature(
+            MateSpecific(
+                (MateEntity(base, actual[0]), MateEntity(bracket, actual[1]))
+            )
+        )
+        tokens = {
+            id(expected[0]): (1, 2, 3),
+            id(expected[1]): (4, 5, 6),
+            id(actual[0]): (1, 2, 3),
+            id(actual[1]): (4, 5, 6),
+        }
+        self.adapter._persistent_reference = lambda model, entity: tokens[id(entity)]
+        refs = ("Base-1:face:left", "Bracket-1:face:right")
+        self.adapter._require_created_mate_references(
+            self.session.model, feature, expected, refs
+        )
+
+        tokens[id(actual[1])] = (9, 9, 9)
+        with self.assertRaisesRegex(Exception, "mate_reference_readback_mismatch"):
+            self.adapter._require_created_mate_references(
+                self.session.model, feature, expected, refs
+            )
+
+    def test_created_mate_references_reject_component_pairing_substitution(self):
+        expected = (object(), object())
+        actual = (object(), object())
+        wrong = FakeComponent(name="Wrong-1")
+        bracket = FakeComponent(name="Bracket-1")
+
+        class MateEntity:
+            def __init__(self, component, reference):
+                self.ReferenceComponent = component
+                self.Reference = reference
+
+        class MateSpecific:
+            def __init__(self):
+                self.entities = (MateEntity(wrong, actual[0]), MateEntity(bracket, actual[1]))
+
+            def GetMateEntityCount(self):
+                return 2
+
+            def MateEntity(self, index):
+                return self.entities[index]
+
+        class Feature:
+            def GetSpecificFeature2(self):
+                return MateSpecific()
+
+        self.adapter._persistent_reference = lambda model, entity: (1,)
+        with self.assertRaisesRegex(Exception, "mate_reference_component_mismatch"):
+            self.adapter._require_created_mate_references(
+                self.session.model,
+                Feature(),
+                expected,
+                ("Base-1:face:left", "Bracket-1:face:right"),
+            )
 
     def test_mate_type_mapping_is_explicit_and_no_dynamic_method_name(self):
         self.assertEqual(0, self.adapter._mate_type(MateKind.COINCIDENT))

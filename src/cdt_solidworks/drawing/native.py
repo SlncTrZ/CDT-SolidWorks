@@ -829,8 +829,8 @@ class SolidWorksDrawingAdapter:
             values = self._as_tuple(
                 self._api._member(annotation, "GetAttachedEntityTypes")
             )
-        except Exception:
-            return False
+        except Exception as exc:
+            raise DrawingPostconditionError("attachment_read_failed") from exc
         return any(int(value) == 0 for value in values)
 
     def _center_mark_snapshots(

@@ -410,6 +410,12 @@ class AssemblyNativeAdapter:
             feature = self.api._member(assembly, "CreateMate", mate_data)
             if feature is None:
                 raise _AssemblyNativeError("mate_create_failed", kind.value)
+            self._require_created_mate_references(
+                assembly,
+                feature,
+                entities,
+                request.selection_refs,
+            )
             return self.api.feature_name(feature)
 
         return self._run("assembly_mate_add", True, operation)
@@ -806,15 +812,17 @@ class AssemblyNativeAdapter:
                 if definition is not None
                 else None
             )
-        except Exception:
-            error_status = None
+        except Exception as exc:
+            raise _AssemblyNativeError("mate_status_read_failed") from exc
+        if error_status is None:
+            raise _AssemblyNativeError("mate_status_read_failed")
         if suppressed:
             state = MateState.SUPPRESSED
         elif error_status == 5:
             state = MateState.OVER_DEFINED
         elif int(code) != 0 and not warning:
             state = MateState.DANGLING
-        elif error_status in (None, 0, 1):
+        elif error_status in (0, 1):
             state = MateState.SOLVED
         else:
             state = MateState.UNKNOWN
@@ -823,41 +831,124 @@ class AssemblyNativeAdapter:
             attr = "Distance" if kind is MateKind.DISTANCE else "Angle"
             try:
                 value = float(self.api._member(definition, attr))
-            except Exception:
-                value = None
+            except Exception as exc:
+                raise _AssemblyNativeError("mate_parameter_read_failed") from exc
         component_ids: list[str] = []
+        reference_component_ids: list[str | None] = []
         try:
             count = int(self.api._member(mate, "GetMateEntityCount"))
+            if count < 2 or count > 4:
+                raise _AssemblyNativeError("mate_entity_count_invalid")
             for index in range(count):
                 entity = self.api._member(mate, "MateEntity", index)
                 component = self.api._member(entity, "ReferenceComponent")
-                if component is not None:
-                    identity = self.api.component_name(component)
-                    if identity and identity not in component_ids:
-                        component_ids.append(identity)
-        except Exception:
-            pass
+                identity = None if component is None else self.api.component_name(component)
+                reference_component_ids.append(identity)
+                if identity and identity not in component_ids:
+                    component_ids.append(identity)
+        except Exception as exc:
+            raise _AssemblyNativeError("mate_entity_read_failed") from exc
         errors = () if int(code) == 0 or warning else (f"feature_error:{int(code)}",)
         return MateSnapshot(
             identity=self.api.feature_name(feature),
             state=state,
             component_ids=tuple(component_ids),
             degrees_of_freedom=None,
+            reference_component_ids=tuple(reference_component_ids),
             rebuild_errors=errors,
             kind=kind,
             value=value,
             error_status=error_status,
         )
 
+    def _require_created_mate_references(
+        self,
+        assembly: Any,
+        feature: Any,
+        expected_entities: tuple[Any, ...],
+        expected_refs: tuple[str, ...],
+    ) -> None:
+        mate = self.api._member(feature, "GetSpecificFeature2")
+        if mate is None:
+            raise _AssemblyNativeError("mate_specific_feature_missing")
+        try:
+            count = int(self.api._member(mate, "GetMateEntityCount"))
+        except Exception as exc:
+            raise _AssemblyNativeError("mate_entity_read_failed") from exc
+        if count != len(expected_entities) or count != len(expected_refs):
+            raise _AssemblyNativeError(
+                "mate_reference_count_mismatch",
+                f"expected={len(expected_entities)}; actual={count}",
+            )
+
+        for index, (expected_entity, expected_ref) in enumerate(
+            zip(expected_entities, expected_refs, strict=True)
+        ):
+            try:
+                mate_entity = self.api._member(mate, "MateEntity", index)
+                actual_component = self.api._member(mate_entity, "ReferenceComponent")
+                actual_reference = self.api._member(mate_entity, "Reference")
+            except Exception as exc:
+                raise _AssemblyNativeError("mate_entity_read_failed", str(index)) from exc
+
+            component_id, reference_kind, _name = self._parse_selection_ref(expected_ref)
+            expected_component_id = component_id
+            if reference_kind == "component":
+                expected_component_id = component_id
+            actual_component_id = (
+                None
+                if actual_component is None
+                else self.api.component_name(actual_component)
+            )
+            if actual_component_id != expected_component_id:
+                raise _AssemblyNativeError(
+                    "mate_reference_component_mismatch",
+                    f"index={index}; expected={expected_component_id!r}; actual={actual_component_id!r}",
+                )
+
+            if reference_kind == "component":
+                continue
+            expected_token = self._persistent_reference(assembly, expected_entity)
+            actual_token = self._persistent_reference(assembly, actual_reference)
+            if not expected_token or not actual_token:
+                raise _AssemblyNativeError(
+                    "mate_reference_readback_missing", f"index={index}"
+                )
+            if actual_token != expected_token:
+                raise _AssemblyNativeError(
+                    "mate_reference_readback_mismatch", f"index={index}"
+                )
+
+    def _persistent_reference(self, model: Any, entity: Any) -> tuple[int, ...]:
+        try:
+            extension = self.api._member(model, "Extension")
+            value = self.api._member(extension, "GetPersistReference3", entity)
+        except Exception as exc:
+            raise _AssemblyNativeError("persistent_reference_read_failed") from exc
+        if value is None:
+            return ()
+        if isinstance(value, (bytes, bytearray)):
+            return tuple(value)
+        if isinstance(value, (tuple, list)):
+            return tuple(int(item) for item in value)
+        try:
+            return tuple(int(item) for item in value)
+        except TypeError:
+            return (int(value),)
+
     def _feature_suppressed_current(self, feature: Any) -> bool:
         try:
             value = self.api._member(
                 feature, "IsSuppressed2", _SW_THIS_CONFIGURATION, None
             )
-        except Exception:
-            return False
+        except Exception as exc:
+            raise _AssemblyNativeError("mate_suppression_read_failed") from exc
         if isinstance(value, (tuple, list)):
-            return bool(value[0]) if value else False
+            if len(value) != 1:
+                raise _AssemblyNativeError("mate_suppression_read_failed")
+            value = value[0]
+        if value is None:
+            raise _AssemblyNativeError("mate_suppression_read_failed")
         return bool(value)
 
     @staticmethod

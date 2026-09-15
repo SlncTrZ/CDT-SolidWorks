@@ -1,13 +1,16 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from cdt_solidworks.document.models import DocumentType
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.document.service import DocumentService
+from cdt_solidworks.native.dispatcher import SerializedNativeDispatcher
 from cdt_solidworks.native.errors import failure_from_exception
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState
+from cdt_solidworks.native.session import SolidWorksSession
 
 
 class FakeDocument:
@@ -95,7 +98,7 @@ class FakeSession:
         self.session_id = "session-test"
         self.calls = 0
 
-    def execute(self, operation, *, stage: str, timeout: float, mutation: bool = False):
+    def execute(self, operation, *, stage: str, timeout: float, mutation: bool = False, **recovery):
         self.calls += 1
         call_id = f"call-{self.calls}"
         try:
@@ -219,16 +222,132 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(before_calls + 1, self.session.calls)
         self.assertEqual(1, self.api.close_calls)
 
-    def test_document_level_reconciliation_verifies_observed_state(self) -> None:
+    def test_registered_document_verifier_checks_observed_state(self) -> None:
         opened = self.service.open(self.part_path).value
-        result = self.service.reconcile_document_state(
-            "uncertain-call",
-            path=opened.path,
-            expected_type=DocumentType.PART,
-            should_be_open=True,
-        )
-        self.assertEqual(NativeCallState.SUCCESS, result.state)
-        self.assertEqual(opened.path, result.value.path)
+        verifier = self.service._document_state_verifier(opened.path, DocumentType.PART, True, opened.configuration)
+        self.assertEqual(opened.path, verifier(self.app).path)
+
+    def test_document_reconcile_cannot_unlock_unregistered_assembly_mutation(self) -> None:
+        dispatcher = SerializedNativeDispatcher()
+        session = object.__new__(SolidWorksSession)
+        session.api = self.api
+        session.session_id = "session-test"
+        session._application = self.app
+        session._dispatcher = dispatcher
+        service = DocumentService(session, path_policy=DocumentPathPolicy((self.root,)))
+        started = threading.Event()
+        release = threading.Event()
+
+        def assembly_mutation(app):
+            started.set()
+            self.assertTrue(release.wait(3))
+            return True
+
+        try:
+            uncertain = session.execute(
+                assembly_mutation,
+                stage="assembly_mate_create",
+                timeout=0.05,
+                mutation=True,
+            )
+            self.assertTrue(started.is_set())
+            self.assertEqual(NativeCallState.UNCERTAIN_AFTER_DISPATCH, uncertain.state)
+            release.set()
+            self.assertEqual(
+                NativeCallState.SUCCESS,
+                session.execute(lambda app: None, stage="barrier", timeout=1).state,
+            )
+
+            unrelated = self.root / "unrelated.SLDPRT"
+            result = service.reconcile_document_state(
+                uncertain.call_id,
+                path=unrelated,
+                expected_type=DocumentType.PART,
+                should_be_open=False,
+                timeout=1,
+            )
+            self.assertEqual(NativeCallState.FAILURE, result.state)
+            self.assertEqual("recovery_unsupported", result.failure.code)
+            self.assertEqual(uncertain.call_id, result.call_id)
+            self.assertEqual(uncertain.call_id, dispatcher.quarantined_call_id)
+        finally:
+            release.set()
+            dispatcher.close()
+
+    def test_document_open_recovery_requires_original_target_and_configuration(self) -> None:
+        dispatcher = SerializedNativeDispatcher()
+        session = object.__new__(SolidWorksSession)
+        session.api = self.api
+        session.session_id = "session-test"
+        session._application = self.app
+        session._dispatcher = dispatcher
+        service = DocumentService(session, path_policy=DocumentPathPolicy((self.root,)))
+        original_open = self.api.open_document
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_open(app, path, doc_type, *, read_only, silent, configuration):
+            result = original_open(
+                app,
+                path,
+                doc_type,
+                read_only=read_only,
+                silent=silent,
+                configuration=configuration,
+            )
+            started.set()
+            self.assertTrue(release.wait(3))
+            return result
+
+        self.api.open_document = slow_open
+        try:
+            uncertain = service.open(self.part_path, timeout=0.05)
+            self.assertTrue(started.is_set())
+            self.assertEqual(NativeCallState.UNCERTAIN_AFTER_DISPATCH, uncertain.state)
+            release.set()
+            self.assertEqual(
+                NativeCallState.SUCCESS,
+                session.execute(lambda app: None, stage="barrier", timeout=1).state,
+            )
+
+            unrelated = self.root / "unrelated.SLDPRT"
+            mismatch = service.reconcile_document_state(
+                uncertain.call_id,
+                path=unrelated,
+                expected_type=DocumentType.PART,
+                should_be_open=False,
+                timeout=1,
+            )
+            self.assertEqual("reconciliation_mismatch", mismatch.failure.code)
+            self.assertEqual(uncertain.call_id, dispatcher.quarantined_call_id)
+
+            model = self.api.get_open_document(self.app, self.part_path)
+            model.configuration = "Changed"
+            wrong_configuration = service.reconcile_document_state(
+                uncertain.call_id,
+                path=self.part_path,
+                expected_type=DocumentType.PART,
+                should_be_open=True,
+                timeout=1,
+            )
+            self.assertEqual(NativeCallState.FAILURE, wrong_configuration.state)
+            self.assertEqual(uncertain.call_id, dispatcher.quarantined_call_id)
+
+            model.configuration = "Default"
+            recovered = service.reconcile_document_state(
+                uncertain.call_id,
+                path=self.part_path,
+                expected_type=DocumentType.PART,
+                should_be_open=True,
+                timeout=1,
+            )
+            self.assertEqual(NativeCallState.SUCCESS, recovered.state)
+            self.assertEqual(uncertain.call_id, recovered.call_id)
+            self.assertIsNone(dispatcher.quarantined_call_id)
+        finally:
+            self.api.open_document = original_open
+            release.set()
+            dispatcher.close()
 
 
 if __name__ == "__main__":

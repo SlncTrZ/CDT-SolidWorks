@@ -70,6 +70,7 @@ class ExtendedAssemblyAdapter:
                 state=MateState.SOLVED,
                 component_ids=("Base-1", "Bracket-1"),
                 degrees_of_freedom=1,
+                error_status=0,
                 kind=MateKind.COINCIDENT,
                 value=None,
             )
@@ -172,11 +173,23 @@ class ExtendedAssemblyAdapter:
 
     def add_mate(self, assembly_id, request):
         mate_id = f"Mate{request.kind.value.title()}2"
+        reference_components = tuple(
+            None
+            if ref.startswith("assembly:")
+            else ref.split(":", 1)[1]
+            if ref.startswith("component:")
+            else ref.split(":", 1)[0]
+            for ref in request.selection_refs
+        )
         self.mates[mate_id] = MateSnapshot(
             identity=mate_id,
             state=MateState.SOLVED,
-            component_ids=("Base-1", "Bracket-1"),
+            component_ids=tuple(
+                dict.fromkeys(item for item in reference_components if item is not None)
+            ),
             degrees_of_freedom=1,
+            reference_component_ids=reference_components,
+            error_status=0,
             kind=request.kind,
             value=request.value,
         )
@@ -197,6 +210,8 @@ class ExtendedAssemblyAdapter:
             state=MateState.SUPPRESSED if suppressed else MateState.SOLVED,
             component_ids=current.component_ids,
             degrees_of_freedom=current.degrees_of_freedom,
+            reference_component_ids=current.reference_component_ids,
+            error_status=current.error_status,
             kind=current.kind,
             value=current.value,
         )
@@ -208,6 +223,8 @@ class ExtendedAssemblyAdapter:
             state=current.state,
             component_ids=current.component_ids,
             degrees_of_freedom=current.degrees_of_freedom,
+            reference_component_ids=current.reference_component_ids,
+            error_status=current.error_status,
             kind=current.kind,
             value=value,
         )
@@ -323,6 +340,34 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
             mate = self.service.add_mate("asm-1", request)
             self.assertEqual(request.kind, mate.kind)
 
+    def test_mate_reference_pairing_must_match_request(self):
+        original_add_mate = self.adapter.add_mate
+
+        def add_mate_with_swapped_pairing(assembly_id, request):
+            mate_id = original_add_mate(assembly_id, request)
+            current = self.adapter.mates[mate_id]
+            self.adapter.mates[mate_id] = MateSnapshot(
+                identity=current.identity,
+                state=current.state,
+                component_ids=current.component_ids,
+                degrees_of_freedom=current.degrees_of_freedom,
+                reference_component_ids=tuple(reversed(current.reference_component_ids)),
+                error_status=current.error_status,
+                kind=current.kind,
+                value=current.value,
+            )
+            return mate_id
+
+        self.adapter.add_mate = add_mate_with_swapped_pairing
+        with self.assertRaisesRegex(AssemblyPostconditionError, "mate_reference_pairing_mismatch"):
+            self.service.add_mate(
+                "asm-1",
+                MateRequest(
+                    MateKind.CONCENTRIC,
+                    ("Base-1:face:bore", "Bracket-1:face:shaft"),
+                ),
+            )
+
     def test_width_and_slot_shape_fail_closed_before_dispatch(self):
         before = tuple(self.adapter.mates)
         with self.assertRaisesRegex(AssemblyRefusal, "invalid_width_mate_selection"):
@@ -356,6 +401,7 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
                 state=current.state,
                 component_ids=current.component_ids,
                 degrees_of_freedom=current.degrees_of_freedom,
+                reference_component_ids=current.reference_component_ids,
                 kind=current.kind,
                 value=current.value,
                 error_status=0,
@@ -421,6 +467,8 @@ class ExtendedAssemblyServiceTests(unittest.TestCase):
             state=MateState.DANGLING,
             component_ids=current.component_ids,
             degrees_of_freedom=current.degrees_of_freedom,
+            reference_component_ids=current.reference_component_ids,
+            error_status=current.error_status,
             kind=current.kind,
             value=current.value,
         )

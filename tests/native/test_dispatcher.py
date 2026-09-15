@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from cdt_solidworks.native.dispatcher import SerializedNativeDispatcher
+from cdt_solidworks.native.dispatcher import RecoveryPlan, SerializedNativeDispatcher
 from cdt_solidworks.native.models import NativeCallState
 
 
@@ -48,6 +48,7 @@ class SerializedNativeDispatcherTests(unittest.TestCase):
         first = self.dispatcher.run(
             uncertain_mutation,
             stage="save",
+            recovery=RecoveryPlan(("original-save",), "reconcile_save", lambda: "verified"),
             timeout=0.02,
             mutation=True,
         )
@@ -72,7 +73,7 @@ class SerializedNativeDispatcherTests(unittest.TestCase):
 
         reconciled = self.dispatcher.reconcile(
             first.call_id,
-            lambda: "verified",
+            identity=("original-save",),
             stage="reconcile_save",
             timeout=0.2,
         )

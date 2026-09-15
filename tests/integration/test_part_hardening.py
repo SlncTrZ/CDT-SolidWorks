@@ -185,7 +185,7 @@ class _TimeoutSession:
         self.api = _TimeoutApi(model)
         self.stages = []
 
-    def execute(self, operation, *, stage, timeout, mutation):
+    def execute(self, operation, *, stage, timeout, mutation, **recovery):
         self.stages.append((stage, mutation))
         if stage == "part_resolve_document":
             return NativeCallResult.success(operation(object()), call_id="resolve-1", dispatched=True)
@@ -612,7 +612,10 @@ class _RevolveReconcileSession:
         self.api = api
         self.calls = []
 
-    def reconcile(self, call_id, verifier, *, stage, timeout):
+    def reconcile(self, call_id, verifier, *, stage, timeout, identity):
+        # This fake exercises verifier semantics only; real dispatcher identity gates
+        # are covered in test_r0_dispatcher and test_r0_recovery.
+        assert identity[0] == self.api.model.path
         from cdt_solidworks.native.errors import failure_from_exception
 
         self.calls.append((call_id, stage, timeout))

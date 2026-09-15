@@ -87,6 +87,8 @@ class FakeAssemblyAdapter:
             state=self.mate_state,
             component_ids=("base", "inserted"),
             degrees_of_freedom=1,
+            reference_component_ids=("base", "inserted"),
+            error_status=0,
             rebuild_errors=(),
         )
         return mate_id

@@ -347,12 +347,12 @@ class SolidWorksImporter:
             detail = result.state.value
             if result.failure is not None:
                 detail = f"{result.failure.code}@{result.failure.stage}"
-            raise ImportPostconditionError("native_state_uncertain", detail)
+            raise ImportPostconditionError("native_state_uncertain", detail, native_result=result)
         if result.state is not NativeCallState.SUCCESS or result.value is None:
             detail = result.state.value
             if result.failure is not None:
                 detail = f"{result.failure.code}@{result.failure.stage}"
-            raise ImportPostconditionError("native_import_failed", detail)
+            raise ImportPostconditionError("native_import_failed", detail, native_result=result)
         return result.value
 
 
