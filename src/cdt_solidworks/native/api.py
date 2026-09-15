@@ -241,6 +241,47 @@ class WindowsComApi:
         except Exception:
             return str(self._member(body, "GetName"))
 
+    def persistent_reference(self, model: Any, entity: Any) -> bytes:
+        extension = self._member(model, "Extension")
+        value = self._member(extension, "GetPersistReference3", entity)
+        if value is None:
+            return b""
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, bytearray):
+            return bytes(value)
+        if isinstance(value, (tuple, list)):
+            return bytes(int(item) & 0xFF for item in value)
+        try:
+            return bytes(value)
+        except Exception as exc:
+            raise NativeRuntimeError(
+                "topology_reference_read_failed",
+                "topology_reference",
+                "SOLIDWORKS returned an unsupported persistent-reference payload.",
+            ) from exc
+
+    def object_by_persistent_reference(self, model: Any, reference: bytes) -> tuple[Any | None, int]:
+        self._require_client()
+        extension = self._member(model, "Extension")
+        payload = self._client.VARIANT(
+            self._pythoncom.VT_ARRAY | self._pythoncom.VT_UI1,
+            tuple(int(value) for value in reference),
+        )
+        error = self._client.VARIANT(
+            self._pythoncom.VT_BYREF | self._pythoncom.VT_I4, 0
+        )
+        try:
+            value = extension.GetObjectByPersistReference3(payload, error)
+        except TypeError:
+            value = extension.GetObjectByPersistReference3(payload)
+        if isinstance(value, (tuple, list)):
+            values = list(value)
+            entity = values[0] if values else None
+            state = int(values[1]) if len(values) > 1 and values[1] is not None else int(error.value)
+            return entity, state
+        return value, int(error.value)
+
     def sketch_reference_entity(self, sketch: Any) -> tuple[Any | None, int]:
         """Return a sketch reference entity and its swSelectType_e value."""
         self._require_client()

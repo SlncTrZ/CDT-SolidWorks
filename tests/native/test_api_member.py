@@ -67,3 +67,88 @@ def test_sketch_reference_entity_uses_typed_byref_integer() -> None:
     assert reference == "plane-object"
     assert entity_type == 4
     assert created == [(PythonCom.VT_BYREF | PythonCom.VT_I4, 0)]
+
+
+def test_persistent_reference_normalizes_byte_array_payload() -> None:
+    class Extension:
+        @staticmethod
+        def GetPersistReference3(entity):
+            assert entity == "face"
+            return (0, 127, 255)
+
+    model = type("Model", (), {})()
+    model.Extension = Extension()
+
+    api = WindowsComApi()
+    assert api.persistent_reference(model, "face") == bytes((0, 127, 255))
+
+
+def test_object_by_persistent_reference_uses_ui1_array_and_byref_status() -> None:
+    created = []
+
+    class Ref:
+        def __init__(self, value):
+            self.value = value
+
+    class Client:
+        @staticmethod
+        def VARIANT(flags, value):
+            created.append((flags, value))
+            return Ref(value)
+
+    class PythonCom:
+        VT_ARRAY = 0x2000
+        VT_UI1 = 17
+        VT_BYREF = 0x4000
+        VT_I4 = 3
+
+    class Extension:
+        @staticmethod
+        def GetObjectByPersistReference3(payload, error):
+            assert payload.value == (1, 2, 3)
+            error.value = 2
+            return "entity"
+
+    model = type("Model", (), {})()
+    model.Extension = Extension()
+
+    api = WindowsComApi()
+    api._client = Client()
+    api._pythoncom = PythonCom()
+    api._initialized = True
+    entity, state = api.object_by_persistent_reference(model, bytes((1, 2, 3)))
+    assert entity == "entity"
+    assert state == 2
+    assert created == [
+        (PythonCom.VT_ARRAY | PythonCom.VT_UI1, (1, 2, 3)),
+        (PythonCom.VT_BYREF | PythonCom.VT_I4, 0),
+    ]
+
+
+def test_object_by_persistent_reference_accepts_tuple_return_shape() -> None:
+    class Ref:
+        def __init__(self, value): self.value = value
+
+    class Client:
+        @staticmethod
+        def VARIANT(flags, value): return Ref(value)
+
+    class PythonCom:
+        VT_ARRAY = 0x2000
+        VT_UI1 = 17
+        VT_BYREF = 0x4000
+        VT_I4 = 3
+
+    class Extension:
+        @staticmethod
+        def GetObjectByPersistReference3(payload, error):
+            return ("entity", 4)
+
+    model = type("Model", (), {})()
+    model.Extension = Extension()
+
+    api = WindowsComApi()
+    api._client = Client()
+    api._pythoncom = PythonCom()
+    api._initialized = True
+    assert api.object_by_persistent_reference(model, b"abc") == ("entity", 4)
