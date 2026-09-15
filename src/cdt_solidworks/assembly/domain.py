@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 import math
-from typing import Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
 
 class AssemblyRefusal(RuntimeError):
@@ -106,6 +106,12 @@ class MateRequest:
     value: float | None = None
     alignment: str | None = None
     constraint: str | None = None
+    # Production callers pass opaque ``swref1.`` identities and inject the
+    # topology port before native dispatch.  The native entities stay internal
+    # to this request and are never serialized back to the MCP surface.
+    resolved_entities: tuple[Any, ...] = ()
+    resolved_reference_component_ids: tuple[str | None, ...] = ()
+    topology_resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,8 @@ class AssemblyAdapter(Protocol):
 
     def set_mate_value(self, assembly_id: str, mate_id: str, value: float) -> None: ...
 
+    def delete_mate(self, assembly_id: str, mate_id: str) -> None: ...
+
     def rebuild_assembly(self, assembly_id: str) -> RebuildReport: ...
 
 
@@ -201,16 +209,28 @@ class AssemblyService:
         return components
 
     def insert_component(
-        self, assembly_id: str, source_path: str, configuration: str | None = None
+        self,
+        assembly_id: str,
+        source_path: str,
+        configuration: str | None = None,
+        *,
+        transform: Sequence[float] | None = None,
     ) -> ComponentSnapshot:
         self._require_identity("assembly_id", assembly_id)
         self._require_path(source_path)
         if configuration is not None:
             self._require_identity("configuration", configuration)
+        normalized_transform = (
+            None if transform is None else self._validate_transform(transform)
+        )
         component_id = self._adapter.insert_component(
             assembly_id, source_path, configuration
         )
         self._require_identity("component_id", component_id)
+        if normalized_transform is not None:
+            self._adapter.set_component_transform(
+                assembly_id, component_id, normalized_transform
+            )
         self._require_rebuild(assembly_id)
         component = self._adapter.read_component(assembly_id, component_id)
         if component.source_path != source_path:
@@ -222,6 +242,10 @@ class AssemblyService:
                 "component_configuration_readback_mismatch",
                 str(component.configuration),
             )
+        if normalized_transform is not None and not self._transforms_match(
+            component.transform, normalized_transform
+        ):
+            raise AssemblyPostconditionError("transform_readback_mismatch")
         return component
 
     def replace_component(
@@ -463,6 +487,15 @@ class AssemblyService:
         self._require_solved_mate(mate)
         return mate
 
+    def delete_mate(self, assembly_id: str, mate_id: str) -> None:
+        self._require_identity("assembly_id", assembly_id)
+        self._require_identity("mate_id", mate_id)
+        self.read_mate(assembly_id, mate_id)
+        self._adapter.delete_mate(assembly_id, mate_id)
+        self._require_rebuild(assembly_id)
+        if mate_id in {mate.identity for mate in self.list_mates(assembly_id)}:
+            raise AssemblyPostconditionError("mate_delete_readback_present", mate_id)
+
     def set_mate_value(
         self, assembly_id: str, mate_id: str, value: float
     ) -> MateSnapshot:
@@ -528,24 +561,57 @@ class AssemblyService:
                 raise AssemblyRefusal("invalid_mate_alignment", request.alignment)
             if kind not in _MATE_ALIGNMENT_KINDS:
                 raise AssemblyRefusal("mate_alignment_not_supported", kind.value)
+        resolved_entities = tuple(request.resolved_entities)
+        if resolved_entities and len(resolved_entities) != len(refs):
+            raise AssemblyRefusal("topology_resolution_count_mismatch")
+        resolved_component_ids = tuple(request.resolved_reference_component_ids)
+        if resolved_component_ids and len(resolved_component_ids) != len(refs):
+            raise AssemblyRefusal("topology_component_pairing_count_mismatch")
+        if any(
+            item is not None and (not isinstance(item, str) or not item.strip())
+            for item in resolved_component_ids
+        ):
+            raise AssemblyRefusal("invalid_topology_component_identity")
+        if not isinstance(request.topology_resolved, bool):
+            raise AssemblyRefusal("invalid_topology_resolution_state")
+        if request.topology_resolved and len(resolved_entities) != len(refs):
+            raise AssemblyRefusal("topology_resolution_count_mismatch")
         return replace(
             request,
             kind=kind,
             selection_refs=refs,
             value=value,
             constraint=constraint,
+            resolved_entities=resolved_entities,
+            resolved_reference_component_ids=resolved_component_ids,
+            topology_resolved=request.topology_resolved,
         )
 
     @staticmethod
     def _require_mate_reference_pairing(mate: MateSnapshot, request: MateRequest) -> None:
-        expected: list[str | None] = []
-        for reference in request.selection_refs:
-            if reference.startswith("assembly:"):
-                expected.append(None)
-            elif reference.startswith("component:"):
-                expected.append(reference.split(":", 1)[1])
-            else:
-                expected.append(reference.split(":", 1)[0])
+        if request.resolved_reference_component_ids:
+            expected = request.resolved_reference_component_ids
+        elif request.topology_resolved:
+            # The native adapter verifies exact persistent-reference pairing.
+            # Some topology implementations intentionally do not expose an
+            # assembly component identity for an entity; in that case there is
+            # no component-id assertion to duplicate at the domain layer.
+            return
+        else:
+            # Legacy test/native fixtures from the frozen base use bounded
+            # component/name strings.  Production ``swref1.`` callers are
+            # resolved by the injected topology port and never enter this path.
+            legacy_expected: list[str | None] = []
+            for reference in request.selection_refs:
+                if reference.startswith("swref1."):
+                    raise AssemblyRefusal("topology_resolution_required")
+                if reference.startswith("assembly:"):
+                    legacy_expected.append(None)
+                elif reference.startswith("component:"):
+                    legacy_expected.append(reference.split(":", 1)[1])
+                else:
+                    legacy_expected.append(reference.split(":", 1)[0])
+            expected = tuple(legacy_expected)
         if mate.reference_component_ids != tuple(expected):
             raise AssemblyPostconditionError(
                 "mate_reference_pairing_mismatch",

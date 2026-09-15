@@ -397,10 +397,22 @@ class AssemblyNativeAdapter:
 
         def operation(app: Any) -> str:
             assembly = self._assembly(app, assembly_id)
-            entities = tuple(
-                self._resolve_selection_reference(assembly, selection_ref)
-                for selection_ref in request.selection_refs
-            )
+            if request.resolved_entities:
+                if len(request.resolved_entities) != len(request.selection_refs):
+                    raise _AssemblyNativeError("topology_resolution_count_mismatch")
+                entities = tuple(request.resolved_entities)
+            else:
+                if any(ref.startswith("swref1.") for ref in request.selection_refs):
+                    raise _AssemblyNativeError("topology_resolution_required")
+                # Frozen-base compatibility for direct native fixtures only.
+                # Public production calls accept opaque swref1 identities and
+                # arrive here with entities resolved by the topology port.
+                entities = tuple(
+                    self._resolve_selection_reference(assembly, selection_ref)
+                    for selection_ref in request.selection_refs
+                )
+            if any(entity is None for entity in entities):
+                raise _AssemblyNativeError("topology_resolution_missing_entity")
             mate_data = self.api._member(
                 assembly, "CreateMateData", self._mate_type(kind)
             )
@@ -415,6 +427,7 @@ class AssemblyNativeAdapter:
                 feature,
                 entities,
                 request.selection_refs,
+                request.resolved_reference_component_ids,
             )
             return self.api.feature_name(feature)
 
@@ -482,6 +495,23 @@ class AssemblyNativeAdapter:
                 raise _AssemblyNativeError("mate_suppression_failed", mate_id)
 
         self._run("assembly_mate_suppression", True, operation)
+
+    def delete_mate(self, assembly_id: str, mate_id: str) -> None:
+        def operation(app: Any) -> None:
+            assembly = self._assembly(app, assembly_id)
+            feature = self._mate_feature(assembly, mate_id)
+            self.api._member(assembly, "ClearSelection2", True)
+            try:
+                selected = bool(self.api._member(feature, "Select2", False, 0))
+                if not selected:
+                    raise _AssemblyNativeError("mate_selection_failed", mate_id)
+                result = self.api._member(assembly, "DeleteSelections", 0)
+            finally:
+                self.api._member(assembly, "ClearSelection2", True)
+            if result is False:
+                raise _AssemblyNativeError("mate_delete_failed", mate_id)
+
+        self._run("assembly_mate_delete", True, operation)
 
     def set_mate_value(self, assembly_id: str, mate_id: str, value: float) -> None:
         def operation(app: Any) -> None:
@@ -900,6 +930,7 @@ class AssemblyNativeAdapter:
         feature: Any,
         expected_entities: tuple[Any, ...],
         expected_refs: tuple[str, ...],
+        expected_component_ids: tuple[str | None, ...] = (),
     ) -> None:
         mate = self.api._member(feature, "GetSpecificFeature2")
         if mate is None:
@@ -924,16 +955,31 @@ class AssemblyNativeAdapter:
             except Exception as exc:
                 raise _AssemblyNativeError("mate_entity_read_failed", str(index)) from exc
 
-            component_id, reference_kind, _name = self._parse_selection_ref(expected_ref)
-            expected_component_id = component_id
-            if reference_kind == "component":
+            check_component_identity = True
+            if expected_component_ids:
+                if len(expected_component_ids) != len(expected_refs):
+                    raise _AssemblyNativeError(
+                        "topology_component_pairing_count_mismatch"
+                    )
+                expected_component_id = expected_component_ids[index]
+                reference_kind = "topology"
+                check_component_identity = expected_component_id is not None
+            elif expected_ref.startswith("swref1."):
+                # Opaque topology ports are not required to reveal component
+                # identity. Exact entity pairing is still verified below using
+                # SOLIDWORKS persistent-reference bytes.
+                expected_component_id = None
+                reference_kind = "topology"
+                check_component_identity = False
+            else:
+                component_id, reference_kind, _name = self._parse_selection_ref(expected_ref)
                 expected_component_id = component_id
             actual_component_id = (
                 None
                 if actual_component is None
                 else self.api.component_name(actual_component)
             )
-            if actual_component_id != expected_component_id:
+            if check_component_identity and actual_component_id != expected_component_id:
                 raise _AssemblyNativeError(
                     "mate_reference_component_mismatch",
                     f"index={index}; expected={expected_component_id!r}; actual={actual_component_id!r}",

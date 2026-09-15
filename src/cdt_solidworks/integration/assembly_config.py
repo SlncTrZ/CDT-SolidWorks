@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import re
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 import uuid
 
 from cdt_solidworks.assembly.domain import (
@@ -55,10 +55,16 @@ _CALL_ID_PATTERN = re.compile(r"(?:^|\s)call_id=([^;\s]+)")
 
 
 def _local_failure(stage: str, message: str) -> NativeCallResult[Any]:
+    return _typed_local_failure(stage, "cad_validation_error", message)
+
+
+def _typed_local_failure(
+    stage: str, code: str, message: str
+) -> NativeCallResult[Any]:
     call_id = uuid.uuid4().hex
     return NativeCallResult.failed(
         NativeFailure(
-            code="cad_validation_error",
+            code=code,
             stage=stage,
             message=message,
             retryable=False,
@@ -158,6 +164,7 @@ class IntegratedAssemblyService(_EvidenceGatedService):
         *,
         path_policy: DocumentPathPolicy,
         service: Any | None = None,
+        topology_service: Any | None = None,
         timeout: float = 60.0,
     ) -> None:
         super().__init__(path_policy=path_policy)
@@ -166,6 +173,15 @@ class IntegratedAssemblyService(_EvidenceGatedService):
                 raise ValueError("session is required when assembly service is not injected")
             service = AssemblyService(AssemblyNativeAdapter(session, timeout=timeout))
         self.service = service
+        self.topology_service = topology_service
+        self._topology_required = topology_service is not None
+
+    def bind_topology_service(
+        self, topology_service: Any | None, *, required: bool = True
+    ) -> None:
+        """Bind Agent-1's opaque topology port without importing its implementation."""
+        self.topology_service = topology_service
+        self._topology_required = bool(required)
 
     def list_components(self, path: str, *, recursive: bool = False) -> NativeCallResult[Any]:
         return self._call(
@@ -174,6 +190,54 @@ class IntegratedAssemblyService(_EvidenceGatedService):
             extensions=_ASSEMBLY_EXTENSIONS,
             mutation=False,
             operation=lambda target: self.service.list_components(target, recursive=recursive),
+        )
+
+    def insert_component(
+        self,
+        path: str,
+        source_path: str,
+        configuration: str | None = None,
+        transform: Sequence[float] | None = None,
+    ) -> NativeCallResult[Any]:
+        stage = "assembly_component_insert"
+        try:
+            source = self.path_policy.validate_open(source_path)
+            if Path(source).suffix.lower() not in _COMPONENT_SOURCE_EXTENSIONS:
+                raise NativeRuntimeError(
+                    "document_type_mismatch",
+                    stage,
+                    "Component source must be a SOLIDWORKS part or assembly.",
+                )
+        except Exception as exc:
+            return NativeCallResult.failed(
+                failure_from_exception(exc, stage),
+                call_id=uuid.uuid4().hex,
+                dispatched=False,
+            )
+        normalized_transform: tuple[float, ...] | None = None
+        if transform is not None:
+            if isinstance(transform, (str, bytes)):
+                return _local_failure(stage, "transform must contain exactly 16 finite numeric values.")
+            values = tuple(transform)
+            if len(values) != 16 or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in values
+            ):
+                return _local_failure(stage, "transform must contain exactly 16 finite numeric values.")
+            normalized_transform = tuple(float(value) for value in values)
+        return self._call(
+            stage=stage,
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.insert_component(
+                target,
+                source,
+                configuration,
+                transform=normalized_transform,
+            ),
         )
 
     def set_component_fixed(
@@ -440,12 +504,55 @@ class IntegratedAssemblyService(_EvidenceGatedService):
                 "assembly_mate_create",
                 "constraint is only valid for width or slot mates.",
             )
+        resolved_entities: tuple[Any, ...] = ()
+        resolved_component_ids: tuple[str | None, ...] = ()
+        topology_resolved = False
+        if self._topology_required:
+            if any(not ref.startswith("swref1.") for ref in refs):
+                return _local_failure(
+                    "assembly_mate_create",
+                    "topology-driven mates require opaque swref1 references.",
+                )
+            if self.topology_service is None:
+                return _typed_local_failure(
+                    "assembly_mate_create",
+                    "topology_service_unavailable",
+                    "topology.resolve is required for production mate creation.",
+                )
+            try:
+                topology_target = self.path_policy.validate_open(path)
+                if Path(topology_target).suffix.lower() not in _ASSEMBLY_EXTENSIONS:
+                    raise NativeRuntimeError(
+                        "document_type_mismatch",
+                        "assembly_mate_create",
+                        "Mate target must be a SOLIDWORKS assembly.",
+                    )
+                resolved = tuple(
+                    self._resolve_topology_reference(topology_target, ref) for ref in refs
+                )
+            except (AssemblyRefusal, NativeRuntimeError) as exc:
+                code = exc.reason if isinstance(exc, AssemblyRefusal) else exc.code
+                return _typed_local_failure(
+                    "assembly_mate_create", code, str(exc)
+                )
+            except Exception as exc:
+                return _typed_local_failure(
+                    "assembly_mate_create",
+                    "topology_resolution_failed",
+                    f"topology.resolve failed: {type(exc).__name__}: {exc}",
+                )
+            resolved_entities = tuple(item[0] for item in resolved)
+            resolved_component_ids = tuple(item[1] for item in resolved)
+            topology_resolved = True
         request = MateRequest(
             kind=mate_kind,
             selection_refs=refs,
             value=value,
             alignment=alignment,
             constraint=constraint,
+            resolved_entities=resolved_entities,
+            resolved_reference_component_ids=resolved_component_ids,
+            topology_resolved=topology_resolved,
         )
         return self._call(
             stage="assembly_mate_create",
@@ -455,6 +562,61 @@ class IntegratedAssemblyService(_EvidenceGatedService):
             operation=lambda target: self.service.add_mate(target, request),
         )
 
+    def _resolve_topology_reference(
+        self, document_id: str, reference: str
+    ) -> tuple[Any, str | None]:
+        resolver = getattr(self.topology_service, "resolve", None)
+        if not callable(resolver):
+            raise AssemblyRefusal("topology_service_unavailable")
+        result = resolver(document_id, reference)
+        if isinstance(result, NativeCallResult):
+            if result.state is not NativeCallState.SUCCESS:
+                failure = result.failure
+                raise AssemblyRefusal(
+                    failure.code if failure is not None else "topology_resolution_failed",
+                    failure.message if failure is not None else result.state.value,
+                )
+            result = result.value
+        elif isinstance(result, Mapping) and "state" in result:
+            if result.get("state") != "success":
+                error = result.get("error")
+                if isinstance(error, Mapping):
+                    raise AssemblyRefusal(
+                        str(error.get("native_code") or error.get("code") or "topology_resolution_failed"),
+                        str(error.get("message") or "topology resolution failed"),
+                    )
+                raise AssemblyRefusal("topology_resolution_failed")
+            result = result.get("value")
+
+        entity: Any = None
+        component_id: str | None = None
+        if isinstance(result, Mapping):
+            entity = result.get("native_entity", result.get("entity", result.get("value")))
+            raw_component = result.get(
+                "component_id", result.get("reference_component_id")
+            )
+            component_id = None if raw_component is None else str(raw_component)
+        elif isinstance(result, tuple) and len(result) == 2:
+            entity, raw_component = result
+            component_id = None if raw_component is None else str(raw_component)
+        else:
+            entity = getattr(
+                result,
+                "native_entity",
+                getattr(result, "entity", result),
+            )
+            raw_component = getattr(
+                result,
+                "component_id",
+                getattr(result, "reference_component_id", None),
+            )
+            component_id = None if raw_component is None else str(raw_component)
+        if entity is None:
+            raise AssemblyRefusal("topology_resolution_missing_entity", reference)
+        if component_id is not None and not component_id.strip():
+            raise AssemblyRefusal("invalid_topology_component_identity", reference)
+        return entity, component_id
+
     def list_mates(self, path: str) -> NativeCallResult[Any]:
         return self._call(
             stage="assembly_mates_list",
@@ -462,6 +624,24 @@ class IntegratedAssemblyService(_EvidenceGatedService):
             extensions=_ASSEMBLY_EXTENSIONS,
             mutation=False,
             operation=lambda target: self.service.list_mates(target),
+        )
+
+    def read_mate(self, path: str, mate_id: str) -> NativeCallResult[Any]:
+        return self._call(
+            stage="assembly_mate_get",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=False,
+            operation=lambda target: self.service.read_mate(target, mate_id),
+        )
+
+    def delete_mate(self, path: str, mate_id: str) -> NativeCallResult[Any]:
+        return self._call(
+            stage="assembly_mate_delete",
+            path=path,
+            extensions=_ASSEMBLY_EXTENSIONS,
+            mutation=True,
+            operation=lambda target: self.service.delete_mate(target, mate_id),
         )
 
     def set_mate_suppressed(
@@ -685,6 +865,63 @@ class IntegratedConfigurationService(_EvidenceGatedService):
                 target, configuration, feature_id, suppressed
             ),
             mutation=True,
+        )
+
+    def set_component_suppressed(
+        self,
+        path: str,
+        configuration: str,
+        component_id: str,
+        suppressed: bool,
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_component_set_suppressed",
+            path,
+            lambda target: self.service.set_component_suppressed(
+                target, configuration, component_id, suppressed
+            ),
+            mutation=True,
+        )
+
+    def set_component_configuration(
+        self,
+        path: str,
+        configuration: str,
+        component_id: str,
+        referenced_configuration: str,
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_component_set_configuration",
+            path,
+            lambda target: self.service.set_component_configuration(
+                target,
+                configuration,
+                component_id,
+                referenced_configuration,
+            ),
+            mutation=True,
+        )
+
+    def query_state(
+        self,
+        path: str,
+        name: str,
+        *,
+        dimensions: Sequence[str] = (),
+        properties: Sequence[str] = (),
+        component_ids: Sequence[str] = (),
+    ) -> NativeCallResult[Any]:
+        return self._configuration_call(
+            "configuration_state_query",
+            path,
+            lambda target: self.service.query_state(
+                target,
+                name,
+                dimensions=tuple(dimensions),
+                properties=tuple(properties),
+                component_ids=tuple(component_ids),
+            ),
+            mutation=False,
         )
 
     def set_material(
