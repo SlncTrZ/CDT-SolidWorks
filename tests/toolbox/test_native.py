@@ -134,8 +134,8 @@ def _fixture(root: Path) -> Path:
 
 def _sqlite_fixture(root: Path) -> None:
     browser = root / "Browser"
-    bolt = browser / "Ansi Inch" / "Bolts And Screws" / "Hex Bolt_AI.SLDPRT"
-    washer = browser / "Ansi Inch" / "washers" / "Flat Washer Type B Regular_AI.sldprt"
+    bolt = browser / "Ansi Inch" / "Bolts And Screws" / "Hex Head" / "Hex Bolt_AI.SLDPRT"
+    washer = browser / "Ansi Inch" / "washers" / "Plain Washers" / "Flat Washer Type B Regular_AI.sldprt"
     bolt.parent.mkdir(parents=True)
     washer.parent.mkdir(parents=True)
     bolt.write_bytes(b"bolt-master")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 import shutil
 import sqlite3
@@ -80,13 +81,7 @@ class ToolboxNativeAdapter:
             browser = Path(probe.root_path) / "Browser"
             if not browser.is_dir():
                 raise _ToolboxNativeError("toolbox_browser_missing", str(browser))
-            files = tuple(
-                path
-                for path in sorted(browser.rglob("*.sldprt"), key=lambda item: str(item).casefold())
-                if path.is_file()
-            )
-            if len(files) > self.max_files:
-                files = files[: self.max_files]
+            files = self._bounded_part_files(browser)
             results: list[ToolboxCatalogItem] = []
             for path in files:
                 relative = path.relative_to(browser)
@@ -213,12 +208,13 @@ class ToolboxNativeAdapter:
                     )
                     if size_template is None:
                         continue
-                    source = (
-                        Path(probe.root_path)
-                        / "Browser"
-                        / Path(*relative_parts)
-                    ).resolve(strict=False)
-                    if not source.is_file():
+                    source = self._resolve_database_source(
+                        root_path=Path(probe.root_path),
+                        standard=str(standard_row["Name"]),
+                        relative_parts=relative_parts,
+                        family=item_family,
+                    )
+                    if source is None:
                         continue
                     units = str(row["DataTableUnits"] or standard_row["DefaultUnits"] or "")
                     results = self._database_size_items(
@@ -239,6 +235,46 @@ class ToolboxNativeAdapter:
             raise _ToolboxNativeError("toolbox_database_read_failed", str(exc)) from exc
         finally:
             connection.close()
+
+    def _resolve_database_source(
+        self,
+        *,
+        root_path: Path,
+        standard: str,
+        relative_parts: tuple[str, ...],
+        family: str,
+    ) -> Path | None:
+        browser = root_path / "Browser"
+        candidate = (browser / Path(*relative_parts)).resolve(strict=False)
+        if candidate.is_file():
+            return candidate
+        standard_root = browser / standard
+        if not standard_root.is_dir():
+            return None
+        matches: list[Path] = []
+        for path in self._bounded_part_files(standard_root):
+            if path.stem.casefold() == family.casefold():
+                matches.append(path.resolve(strict=False))
+                if len(matches) > 1:
+                    raise _ToolboxNativeError(
+                        "toolbox_database_source_ambiguous", family
+                    )
+        return matches[0] if matches else None
+
+    def _bounded_part_files(self, root: Path) -> tuple[Path, ...]:
+        results: list[Path] = []
+        for directory, directory_names, file_names in os.walk(root):
+            directory_names.sort(key=str.casefold)
+            for name in sorted(file_names, key=str.casefold):
+                if Path(name).suffix.casefold() != ".sldprt":
+                    continue
+                path = Path(directory) / name
+                if not path.is_file():
+                    continue
+                results.append(path)
+                if len(results) >= self.max_files:
+                    return tuple(results)
+        return tuple(results)
 
     @staticmethod
     def _database_table_name(prefix: str, reference: str) -> str:
