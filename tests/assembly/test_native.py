@@ -415,6 +415,67 @@ class AssemblyNativeAdapterTests(unittest.TestCase):
         self.assertEqual(MateState.SOLVED, snapshot.state)
         self.assertEqual(0, snapshot.error_status)
 
+    def test_width_mate_late_bound_status_collision_uses_clean_feature_status(self):
+        class OleDispatch:
+            _oleobj_ = object()
+
+        class WidthDefinition:
+            ErrorStatus = (OleDispatch(), OleDispatch())
+
+        class WidthSpecific:
+            Type = 11
+
+            @staticmethod
+            def GetMateEntityCount():
+                return 4
+
+            @staticmethod
+            def MateEntity(index):
+                return type("MateEntity", (), {"ReferenceComponent": None})()
+
+        class WidthFeature:
+            Name = "Width1"
+            definition = WidthDefinition()
+            specific = WidthSpecific()
+
+            def GetDefinition(self):
+                return self.definition
+
+            def GetSpecificFeature2(self):
+                return self.specific
+
+            @staticmethod
+            def IsSuppressed2(option, config_names):
+                return False
+
+        self.session.api.feature_name = lambda value: value.Name
+        self.session.api.feature_error = lambda value: (0, False)
+        snapshot = self.adapter._mate_snapshot(WidthFeature())
+        self.assertEqual(MateKind.WIDTH, snapshot.kind)
+        self.assertEqual(MateState.SOLVED, snapshot.state)
+        self.assertEqual(0, snapshot.error_status)
+        self.assertEqual(4, len(snapshot.reference_component_ids))
+
+    def test_width_mate_status_collision_does_not_mask_warning_or_error(self):
+        class OleDispatch:
+            _oleobj_ = object()
+
+        raw_status = (OleDispatch(), OleDispatch())
+        with self.assertRaisesRegex(Exception, "mate_status_read_failed"):
+            self.adapter._normalize_mate_error_status(
+                MateKind.WIDTH,
+                raw_status,
+                feature_error_code=51,
+                warning=True,
+            )
+        with self.assertRaisesRegex(Exception, "mate_status_read_failed"):
+            self.adapter._normalize_mate_error_status(
+                MateKind.SLOT,
+                raw_status,
+                feature_error_code=0,
+                warning=False,
+            )
+
     def test_linear_component_pattern_uses_native_feature_data_and_readback(self):
         manager = FakeFeatureManager()
         self.session.model.FeatureManager = manager

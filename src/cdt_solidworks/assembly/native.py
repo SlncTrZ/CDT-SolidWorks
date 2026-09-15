@@ -807,15 +807,19 @@ class AssemblyNativeAdapter:
         code, warning = self.api.feature_error(feature)
         definition = self.api._member(feature, "GetDefinition")
         try:
-            error_status = (
-                int(self.api._member(definition, "ErrorStatus"))
+            raw_error_status = (
+                self.api._member(definition, "ErrorStatus")
                 if definition is not None
                 else None
             )
         except Exception as exc:
             raise _AssemblyNativeError("mate_status_read_failed") from exc
-        if error_status is None:
-            raise _AssemblyNativeError("mate_status_read_failed")
+        error_status = self._normalize_mate_error_status(
+            kind,
+            raw_error_status,
+            feature_error_code=int(code),
+            warning=bool(warning),
+        )
         if suppressed:
             state = MateState.SUPPRESSED
         elif error_status == 5:
@@ -860,6 +864,35 @@ class AssemblyNativeAdapter:
             value=value,
             error_status=error_status,
         )
+
+    @staticmethod
+    def _normalize_mate_error_status(
+        kind: MateKind,
+        raw_status: Any,
+        *,
+        feature_error_code: int,
+        warning: bool,
+    ) -> int:
+        if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+            return int(raw_status)
+
+        # SOLIDWORKS 2024 exposes IWidthMateFeatureData through late-bound COM with
+        # an inherited-DISPID collision: asking for IMateFeatureData.ErrorStatus
+        # returns the two WidthSelection dispatch objects instead of the integer
+        # status. Native evidence at revision 32.0.1 proves this exact shape. Only
+        # normalize the clean Width case; any warning/error or any other malformed
+        # status remains fail-closed.
+        if (
+            kind is MateKind.WIDTH
+            and isinstance(raw_status, (tuple, list))
+            and len(raw_status) == 2
+            and all(hasattr(item, "_oleobj_") for item in raw_status)
+            and int(feature_error_code) == 0
+            and not warning
+        ):
+            return 0
+
+        raise _AssemblyNativeError("mate_status_read_failed")
 
     def _require_created_mate_references(
         self,
