@@ -587,10 +587,26 @@ class PartService:
     ) -> FeatureSnapshot:
         self._validate_target(target)
         self._validate_identity(feature_id, "feature identity")
-        if parameter != "radius_mm":
+        if parameter not in {"depth_mm", "radius_mm"}:
             raise PartValidationError(f"unsupported feature parameter edit: {parameter!r}")
-        self._require_positive_finite(value, "radius_mm")
+        self._require_positive_finite(value, parameter)
         document = self._resolve_part_document(target)
+        expected_kind: FeatureKind
+        if parameter == "radius_mm":
+            # Preserve the historical fillet call contract; the native runtime itself
+            # verifies that the target is a promoted constant-radius fillet before write.
+            expected_kind = FeatureKind.FILLET
+        else:
+            current = self._runtime.get_feature(document, feature_id)
+            if current is None:
+                raise PartMutationError(f"feature read-back failed: {feature_id!r} was not found")
+            if current.kind not in {FeatureKind.EXTRUDE, FeatureKind.CUT}:
+                raise PartValidationError(
+                    f"unsupported feature parameter edit: {current.kind.value}.{parameter}"
+                )
+            if current.kind is FeatureKind.CUT and bool(current.parameters.get("through_all")):
+                raise PartValidationError("through-all cut does not expose a finite depth_mm parameter")
+            expected_kind = current.kind
         receipt = self._runtime.set_feature_parameter(document, feature_id, parameter, float(value))
         if receipt.object_id != feature_id:
             raise PartMutationError("feature parameter mutation returned the wrong identity")
@@ -598,6 +614,8 @@ class PartService:
         feature = self._runtime.get_feature(document, feature_id)
         if feature is None:
             raise PartMutationError("feature parameter read-back failed: feature was not found")
+        if feature.feature_id != feature_id or feature.kind is not expected_kind:
+            raise PartMutationError("feature parameter read-back identity/type mismatch")
         actual = feature.parameters.get(parameter)
         if not isinstance(actual, (float, int)) or isinstance(actual, bool) or not math.isclose(
             float(actual), float(value), rel_tol=0.0, abs_tol=_PARAMETER_TOLERANCE
@@ -606,6 +624,13 @@ class PartService:
                 f"feature parameter read-back mismatch for {parameter!r}: expected {value}, got {actual}"
             )
         return feature
+
+    def get_feature_parameters(
+        self, target: DocumentTarget, feature_id: str
+    ) -> dict[str, float | str | bool | int]:
+        """Return the bounded parameter map from an identity-validated feature snapshot."""
+        feature = self.get_feature(target, feature_id)
+        return dict(feature.parameters)
 
     def get_feature(self, target: DocumentTarget, feature_id: str) -> FeatureSnapshot:
         self._validate_target(target)
@@ -662,6 +687,8 @@ class PartService:
             raise PartValidationError("document revision must be non-negative")
         if target.expected_units != "mm":
             raise PartValidationError("Mechanical-90 part dimensions currently require millimeter document units")
+        if target.expected_configuration is not None and not target.expected_configuration.strip():
+            raise PartValidationError("expected configuration must not be empty when supplied")
 
     @classmethod
     def _validate_revolve_like(
@@ -733,6 +760,14 @@ class PartService:
         if document.units != target.expected_units:
             raise PartContextError(
                 f"document units changed from {target.expected_units!r} to {document.units!r}"
+            )
+        if (
+            target.expected_configuration is not None
+            and document.configuration != target.expected_configuration
+        ):
+            raise PartContextError(
+                "document configuration changed from "
+                f"{target.expected_configuration!r} to {document.configuration!r}"
             )
         return document
 

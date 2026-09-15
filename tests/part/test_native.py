@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cdt_solidworks.part.models import CutSpec, FeatureKind, ProfileRef
+from cdt_solidworks.part.models import CutSpec, ExtrudeSpec, FeatureKind, ProfileRef
 from cdt_solidworks.part.native import NativePartBinding, PartNativeRuntime
 from cdt_solidworks.part.runtime import DocumentTarget, RebuildResult
 
@@ -86,6 +86,19 @@ class FakeFeatureManager:
             "ICE",
             FakeFeatureDefinition(end_condition, depth_m),
             underlying_type="Cut",
+        )
+        self.model.features[feature.Name] = feature
+        self.model.relink_features()
+        return feature
+
+    def FeatureExtrusion3(self, *args):
+        self.args = args
+        depth_m = float(args[5])
+        feature = FakeFeature(
+            "Boss-Extrude1",
+            "ICE",
+            FakeFeatureDefinition(0, depth_m),
+            underlying_type="Boss",
         )
         self.model.features[feature.Name] = feature
         self.model.relink_features()
@@ -184,6 +197,24 @@ def native_runtime():
     )
     return runtime, model, executor
 
+
+
+def test_profile_extrude_reuses_featureextrusion3_and_reads_depth(native_runtime):
+    runtime, model, executor = native_runtime
+    document = runtime.resolve_document(DocumentTarget("part.SLDPRT", 9, "mm"))
+    receipt = runtime.create_extrude(
+        document,
+        ExtrudeSpec("GearBlank", ProfileRef("HoleSketch"), depth_mm=12.0),
+    )
+    feature = runtime.get_feature(document, receipt.object_id)
+
+    assert receipt.object_id == "GearBlank"
+    assert feature is not None
+    assert feature.kind is FeatureKind.EXTRUDE
+    assert feature.parameters["depth_mm"] == pytest.approx(12.0)
+    assert model.FeatureManager.args is not None
+    assert model.FeatureManager.args[5] == pytest.approx(0.012)
+    assert executor.calls[1] == ("part_extrude_native", True)
 
 def test_cut_through_all_uses_featurecut3_and_native_readback(native_runtime):
     runtime, model, executor = native_runtime

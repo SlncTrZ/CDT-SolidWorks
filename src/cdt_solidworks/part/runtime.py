@@ -48,6 +48,7 @@ class DocumentTarget:
     document_id: str
     expected_revision: int
     expected_units: str = "mm"
+    expected_configuration: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
