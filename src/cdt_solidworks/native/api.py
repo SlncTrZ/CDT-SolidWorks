@@ -132,6 +132,22 @@ class WindowsComApi:
                 warnings.value = int(values[2])
         return model, int(errors.value), int(warnings.value)
 
+    def activate_document(self, app: Any, model: Any) -> tuple[Any | None, int]:
+        self._require_client()
+        title = self.document_title(model)
+        if not title:
+            return None, -1
+        errors = self._client.VARIANT(
+            self._pythoncom.VT_BYREF | self._pythoncom.VT_I4, 0
+        )
+        active = app.ActivateDoc3(title, False, 0, errors)
+        if isinstance(active, (tuple, list)):
+            values = list(active)
+            active = values[0] if values else None
+            if len(values) > 1 and values[1] is not None:
+                errors.value = int(values[1])
+        return active, int(errors.value)
+
     def save_document(self, model: Any) -> tuple[bool, int, int]:
         self._require_client()
         errors = self._client.VARIANT(self._pythoncom.VT_BYREF | self._pythoncom.VT_I4, 0)

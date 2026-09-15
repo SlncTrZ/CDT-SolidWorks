@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import uuid
 from typing import Any, Sequence
@@ -163,6 +164,7 @@ class CadCoreService:
         def operation(app: Any) -> dict[str, Any]:
             model, owned = self._open_document(app, source, 1)
             try:
+                self._activate_document(app, model, source, "part_add_rect_extrude")
                 sketch = self._create_rectangle_sketch(
                     model, plane_key, width, height, cx, cy
                 )
@@ -715,6 +717,27 @@ class CadCoreService:
                 details={"errors": int(errors), "warnings": int(warnings)},
             )
         return model, True
+
+    def _activate_document(
+        self, app: Any, model: Any, expected_path: str, stage: str
+    ) -> None:
+        active, errors = self.api.activate_document(app, model)
+        if active is None or int(errors) != 0:
+            raise NativeRuntimeError(
+                "document_activation_failed",
+                stage,
+                "SOLIDWORKS could not activate the explicit mutation target.",
+                details={"errors": int(errors)},
+            )
+        active_path = str(self.api.document_path(active) or "")
+        if not active_path or os.path.normcase(os.path.abspath(active_path)) != os.path.normcase(
+            os.path.abspath(expected_path)
+        ):
+            raise NativeRuntimeError(
+                "document_context_mismatch",
+                stage,
+                "Activated SOLIDWORKS document does not match the explicit mutation target.",
+            )
 
     def _create_rectangle_sketch(
         self,
