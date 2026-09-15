@@ -1,7 +1,9 @@
 """R0 dispatcher regressions for quarantine, trusted recovery and bounded retention."""
 
 from concurrent.futures import ThreadPoolExecutor
+import gc
 import threading
+import weakref
 
 from cdt_solidworks.native.dispatcher import RecoveryPlan, SerializedNativeDispatcher
 from cdt_solidworks.native.models import NativeCallState
@@ -224,6 +226,31 @@ def test_completed_history_remains_within_limit():
         metrics = dispatcher.metrics
         assert metrics["history_count"] <= 17
         assert metrics["outstanding"] == 0
+        assert len(dispatcher._jobs) == 0
+    finally:
+        dispatcher.close()
+
+
+def test_completed_operations_release_captured_objects():
+    dispatcher = SerializedNativeDispatcher(history_limit=3)
+
+    class Payload:
+        pass
+
+    payload = Payload()
+    retained = weakref.ref(payload)
+    try:
+        result = dispatcher.run(
+            lambda captured=payload: captured,
+            stage="read",
+            timeout=1,
+        )
+        assert result.state is NativeCallState.SUCCESS
+        del result
+        del payload
+        gc.collect()
+        assert retained() is None
+        assert dispatcher.metrics["history_count"] <= 3
         assert len(dispatcher._jobs) == 0
     finally:
         dispatcher.close()
