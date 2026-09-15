@@ -28,7 +28,9 @@ from cdt_solidworks.sketch.models import (
     RadiusDimension,
     SketchDefinition,
     SketchDimensionSnapshot,
+    SketchEntitySnapshot,
     SketchPlane,
+    SketchProfileSnapshot,
     SketchPoint,
     SketchRelationSnapshot,
     SketchSnapshot,
@@ -92,6 +94,60 @@ class SketchService:
         if snapshot is None:
             raise SketchMutationError(f"sketch read-back failed: {sketch_id!r} was not found")
         return snapshot
+
+    def query_entities(
+        self,
+        target: DocumentTarget,
+        sketch_id: str,
+        *,
+        max_items: int = 256,
+    ) -> tuple[SketchEntitySnapshot, ...]:
+        self._validate_target(target)
+        self._validate_identity(sketch_id, "sketch identity")
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1 or max_items > 4096:
+            raise SketchValidationError("max_items must be an integer in [1, 4096]")
+        document = self._resolve_part_document(target)
+        return self._runtime.list_sketch_entities(document, sketch_id, max_items=max_items)
+
+    def inspect_profile(self, target: DocumentTarget, sketch_id: str) -> SketchProfileSnapshot:
+        self._validate_target(target)
+        self._validate_identity(sketch_id, "sketch identity")
+        document = self._resolve_part_document(target)
+        return self._runtime.inspect_sketch_profile(document, sketch_id)
+
+    def add_relation(
+        self,
+        target: DocumentTarget,
+        sketch_id: str,
+        relation_type: str,
+        entity_ids: tuple[str, ...],
+    ) -> tuple[SketchRelationSnapshot, ...]:
+        self._validate_target(target)
+        self._validate_identity(sketch_id, "sketch identity")
+        normalized = relation_type.strip().lower()
+        arity = {
+            "horizontal": 1, "vertical": 1, "fix": 1,
+            "coincident": 2, "concentric": 2, "tangent": 2, "parallel": 2,
+            "perpendicular": 2, "equal": 2, "midpoint": 2,
+            "symmetric": 3,
+        }
+        if normalized not in arity:
+            raise SketchValidationError("unsupported sketch relation type")
+        if len(entity_ids) != arity[normalized]:
+            raise SketchValidationError(f"{normalized} relation requires {arity[normalized]} entity identities")
+        if any(not isinstance(value, str) or not value.strip() for value in entity_ids):
+            raise SketchValidationError("relation entity identities must be non-empty strings")
+        if len(set(entity_ids)) != len(entity_ids):
+            raise SketchValidationError("relation requires distinct entity identities")
+        document = self._resolve_part_document(target)
+        receipt = self._runtime.add_sketch_relation(document, sketch_id, normalized, entity_ids)
+        if not receipt.object_id.strip():
+            raise SketchMutationError("relation mutation returned an empty identity")
+        self._require_clean_rebuild(document, "relation addition")
+        relations = self._runtime.list_sketch_relations(document, sketch_id)
+        if not any(item.relation_id == receipt.object_id for item in relations):
+            raise SketchMutationError("relation addition read-back did not contain the created relation")
+        return relations
 
     def list_relations(self, target: DocumentTarget, sketch_id: str) -> tuple[SketchRelationSnapshot, ...]:
         self._validate_target(target)

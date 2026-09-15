@@ -371,6 +371,7 @@ class DocumentService:
                     name=self.api.component_name(component),
                     path=self.api.component_path(component),
                     suppressed=bool(self.api.component_suppressed(component)),
+                    component_id=self.api.component_name(component),
                 )
                 for component in components
             )

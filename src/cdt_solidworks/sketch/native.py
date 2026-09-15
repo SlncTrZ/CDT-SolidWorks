@@ -32,11 +32,15 @@ from cdt_solidworks.sketch.models import (
     ParallelConstraint,
     PerpendicularConstraint,
     PlaneKind,
+    ProfileState,
     RadiusDimension,
+    SketchContourSnapshot,
     SketchDefinition,
     SketchDimensionSnapshot,
+    SketchEntitySnapshot,
     SketchPlane,
     SketchPoint,
+    SketchProfileSnapshot,
     SketchRelationSnapshot,
     SketchSnapshot,
     Spline,
@@ -282,6 +286,162 @@ class SketchNativeRuntime:
             )
 
         return self._execute(operation, stage="sketch_get_native", mutation=False)
+
+    def list_sketch_entities(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        *,
+        max_items: int = 256,
+    ) -> tuple[SketchEntitySnapshot, ...]:
+        if max_items < 1:
+            raise NativeSketchUnsupportedError("sketch entity query max_items must be positive")
+
+        def operation(app: Any) -> tuple[SketchEntitySnapshot, ...]:
+            binding = self._binding_from_document(app, document)
+            feature = self._member(binding.model, "FeatureByName", sketch_id)
+            if feature is None:
+                raise NativeSketchUnsupportedError(f"sketch {sketch_id!r} was not found")
+            sketch = self._member(feature, "GetSpecificFeature2")
+            if sketch is None:
+                raise NativeSketchUnsupportedError(f"feature {sketch_id!r} is not a sketch")
+            segments = self._as_tuple(self._member(sketch, "GetSketchSegments"))
+            points = tuple(
+                point for point in self._as_tuple(self._member(sketch, "GetSketchPoints2"))
+                if self._is_user_sketch_point(point)
+            )
+            if len(segments) + len(points) > max_items:
+                raise NativeSketchUnsupportedError(
+                    f"sketch entity query exceeds bounded max_items={max_items}; partial results are refused"
+                )
+            result: list[SketchEntitySnapshot] = []
+            labels = {0: "line", 1: "arc", 2: "ellipse", 3: "spline", 4: "text", 5: "parabola"}
+            for segment in segments:
+                entity_id = self._entity_id(segment)
+                if not entity_id:
+                    raise NativeSketchUnsupportedError("sketch segment lacks stable entity identity")
+                segment_type = int(self._member(segment, "GetType"))
+                construction = bool(self._member(segment, "ConstructionGeometry"))
+                try:
+                    length = float(self._member(segment, "GetLength"))
+                except (AttributeError, TypeError, ValueError):
+                    length = math.nan
+                length_mm = length * 1000.0 if math.isfinite(length) and length >= 0 else None
+                result.append(
+                    SketchEntitySnapshot(
+                        entity_id=entity_id,
+                        entity_type=labels.get(segment_type, "unknown"),
+                        construction=construction,
+                        length_mm=length_mm,
+                    )
+                )
+            for point in points:
+                entity_id = self._entity_id(point)
+                if not entity_id:
+                    raise NativeSketchUnsupportedError("sketch point lacks stable entity identity")
+                result.append(SketchEntitySnapshot(entity_id, "point", False, None))
+            return tuple(result)
+
+        return self._execute(operation, stage="sketch_entity_query_native", mutation=False)
+
+    def inspect_sketch_profile(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        *,
+        max_contours: int = 256,
+        max_entities: int = 1024,
+    ) -> SketchProfileSnapshot:
+        def operation(app: Any) -> SketchProfileSnapshot:
+            binding = self._binding_from_document(app, document)
+            feature = self._member(binding.model, "FeatureByName", sketch_id)
+            if feature is None:
+                raise NativeSketchUnsupportedError(f"sketch {sketch_id!r} was not found")
+            sketch = self._member(feature, "GetSpecificFeature2")
+            if sketch is None:
+                raise NativeSketchUnsupportedError(f"feature {sketch_id!r} is not a sketch")
+            native_contours = self._as_tuple(self._member(sketch, "GetSketchContours"))
+            if len(native_contours) > max_contours:
+                raise NativeSketchUnsupportedError("sketch profile contour bound exceeded; partial results are refused")
+            contours: list[SketchContourSnapshot] = []
+            total_entities = 0
+            for contour in native_contours:
+                segments = self._as_tuple(self._member(contour, "GetSketchSegments"))
+                total_entities += len(segments)
+                if total_entities > max_entities:
+                    raise NativeSketchUnsupportedError("sketch profile entity bound exceeded; partial results are refused")
+                entity_ids = tuple(self._entity_id(segment) for segment in segments)
+                if not entity_ids or any(not value for value in entity_ids):
+                    raise NativeSketchUnsupportedError("sketch contour lacks stable entity identity")
+                closed = bool(self._member(contour, "IsClosed"))
+                digest = hashlib.sha256("|".join(entity_ids).encode("utf-8")).hexdigest()[:16]
+                contours.append(SketchContourSnapshot(f"contour:{digest}", closed, entity_ids))
+            if not contours:
+                state = ProfileState.AMBIGUOUS
+            elif all(item.closed for item in contours):
+                state = ProfileState.CLOSED
+            elif all(not item.closed for item in contours):
+                state = ProfileState.OPEN
+            else:
+                state = ProfileState.AMBIGUOUS
+            return SketchProfileSnapshot(sketch_id=sketch_id, state=state, contours=tuple(contours))
+
+        return self._execute(operation, stage="sketch_profile_inspect_native", mutation=False)
+
+    def add_sketch_relation(
+        self,
+        document: ResolvedDocument,
+        sketch_id: str,
+        relation_type: str,
+        entity_ids: tuple[str, ...],
+    ) -> MutationReceipt:
+        relation_code = next((code for code, label in _RELATION_LABELS.items() if label == relation_type), None)
+        if relation_code is None:
+            raise NativeSketchUnsupportedError(f"unsupported native sketch relation: {relation_type}")
+
+        def operation(app: Any) -> MutationReceipt:
+            binding = self._binding_from_document(app, document)
+            model = binding.model
+            feature = self._member(model, "FeatureByName", sketch_id)
+            if feature is None:
+                raise NativeSketchUnsupportedError(f"sketch {sketch_id!r} was not found")
+            sketch = self._member(feature, "GetSpecificFeature2")
+            if sketch is None:
+                raise NativeSketchUnsupportedError(f"feature {sketch_id!r} is not a sketch")
+            candidates = (
+                *self._as_tuple(self._member(sketch, "GetSketchSegments")),
+                *self._as_tuple(self._member(sketch, "GetSketchPoints2")),
+            )
+            by_id = {self._entity_id(entity): entity for entity in candidates if self._entity_id(entity)}
+            if any(entity_id not in by_id for entity_id in entity_ids):
+                raise NativeSketchUnsupportedError("relation target entity identity was not found in the sketch")
+            manager = self._member(model, "SketchManager")
+            self._member(model, "ClearSelection2", True)
+            if not bool(self._member(feature, "Select2", False, 0)):
+                raise NativeSketchUnsupportedError("could not select sketch for relation mutation")
+            self._member(manager, "InsertSketch", True)
+            try:
+                relation_manager = self._member(sketch, "RelationManager")
+                relation = self._member(
+                    relation_manager,
+                    "AddRelation",
+                    self._dispatch_array(tuple(by_id[entity_id] for entity_id in entity_ids)),
+                    relation_code,
+                )
+                if relation is None:
+                    raise NativeSketchUnsupportedError("SOLIDWORKS refused the requested sketch relation")
+                entries = self._relation_entries(relation_manager)
+                matching = [
+                    snapshot for native_relation, snapshot in entries
+                    if native_relation is relation
+                ]
+                if len(matching) != 1:
+                    raise NativeSketchUnsupportedError("added sketch relation could not be identified uniquely")
+                return MutationReceipt(matching[0].relation_id)
+            finally:
+                self._member(manager, "InsertSketch", True)
+
+        return self._execute(operation, stage="sketch_add_relation_native", mutation=True)
 
     def rebuild(self, document: ResolvedDocument) -> RebuildResult:
         def operation(app: Any) -> RebuildResult:
