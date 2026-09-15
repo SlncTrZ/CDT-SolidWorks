@@ -130,19 +130,20 @@ class IntegratedDrawingService:
     ) -> None:
         self.path_policy = path_policy
         injected_service = service is not None
+        native_adapter: SolidWorksDrawingAdapter | None = None
         if service is None:
             if session is None:
                 raise ValueError("session is required when drawing service is not injected")
-            service = DrawingService(
-                SolidWorksDrawingAdapter(
-                    session,
-                    path_policy=path_policy,
-                    default_timeout=timeout,
-                    bom_template_path=bom_template_path,
-                    reference_selector=reference_selector,
-                )
+            native_adapter = SolidWorksDrawingAdapter(
+                session,
+                path_policy=path_policy,
+                default_timeout=timeout,
+                bom_template_path=bom_template_path,
+                reference_selector=reference_selector,
             )
+            service = DrawingService(native_adapter)
         self.service = service
+        self._native_adapter = native_adapter
         self.dimension_available = (
             bool(getattr(service, "dimension_available", True))
             if injected_service
@@ -153,6 +154,18 @@ class IntegratedDrawingService:
             if injected_service
             else bom_template_path is not None
         )
+
+    def bind_topology_service(self, topology_service: Any | None) -> bool:
+        """Bind topology-backed drawing selection without importing another lane implementation."""
+        if self._native_adapter is None:
+            binder = getattr(self.service, "bind_topology_service", None)
+            if not callable(binder):
+                return False
+            binder(topology_service)
+        else:
+            self._native_adapter.bind_topology_service(topology_service)
+        self.dimension_available = topology_service is not None
+        return self.dimension_available
 
     def create(self, output_path: str) -> NativeCallResult[Any]:
         stage = "drawing_create"

@@ -86,8 +86,17 @@ def _result_payload(result: NativeCallResult[Any]) -> dict[str, Any]:
     }
 
 
+def _bind_topology(runtime: Any) -> None:
+    drawing = getattr(runtime, "drawing_service", None)
+    topology = getattr(runtime, "topology_service", None)
+    binder = getattr(drawing, "bind_topology_service", None) if drawing is not None else None
+    if callable(binder):
+        binder(topology)
+
+
 def register_tools(server: Any, runtime: Any) -> None:
     """Register Agent-4-only public additions without editing the shared registrar."""
+    _bind_topology(runtime)
     drawing = getattr(runtime, "drawing_service", None)
     if drawing is None:
         return
@@ -172,6 +181,7 @@ def register_tools(server: Any, runtime: Any) -> None:
 
 def capability_descriptors(runtime: Any) -> tuple[dict[str, Any], ...]:
     """Return strict capability mappings consumed by Agent 6 composition."""
+    _bind_topology(runtime)
     drawing = getattr(runtime, "drawing_service", None)
     service_available = drawing is not None
     dimension_available = service_available and bool(

@@ -92,7 +92,7 @@ def _service(runtime: Any) -> Any | None:
         return service
     session = getattr(runtime, "session", None)
     documents = getattr(runtime, "document_service", None)
-    if session is None or documents is None:
+    if session is None or documents is None or not hasattr(session, "api"):
         return None
     return TopologyNativeAdapter(session, document_service=documents)
 
@@ -115,6 +115,9 @@ def _kinds(values: list[str] | None) -> tuple[str, ...] | None:
 
 def register_tools(server: Any, runtime: Any) -> None:
     """Register only Agent-1's three new public topology tools."""
+    service = _service(runtime)
+    if service is not None and getattr(runtime, "topology_service", None) is None:
+        setattr(runtime, "topology_service", service)
 
     @server.tool(
         name="topology_query",
@@ -198,7 +201,7 @@ def capability_descriptors(runtime: Any) -> tuple[dict[str, Any], ...]:
     """Describe Agent-1 service availability without implying native acceptance."""
     available = _service(runtime) is not None
     reason = None if available else "requires bound SolidWorks session and document service"
-    dependencies = ("session", "document_service")
+    dependencies = ("solidworks", "session", "document_service")
     return tuple(
         {
             "name": name,

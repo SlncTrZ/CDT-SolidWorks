@@ -30,6 +30,36 @@ class DrawingPathPolicy(Protocol):
     def validate_save(self, path: str) -> str: ...
 
 
+class _TopologyDrawingReferenceSelector:
+    """Select a topology-resolved source entity inside one drawing view."""
+
+    def __init__(self, topology_service: Any, api: Any) -> None:
+        self._topology_service = topology_service
+        self._api = api
+
+    def select_for_drawing(
+        self,
+        *,
+        model: Any,
+        view: Any,
+        source_model_path: str,
+        source_configuration: str | None,
+        source_ref: str,
+    ) -> bool:
+        resolver = getattr(self._topology_service, "resolve_native_for_document", None)
+        if not callable(resolver):
+            raise DrawingRefusal("topology_reference_unavailable", source_ref)
+        result = resolver(source_model_path, source_ref)
+        if getattr(result, "state", None) is not NativeCallState.SUCCESS:
+            raise DrawingRefusal("topology_reference_unavailable", source_ref)
+        payload = getattr(result, "value", None)
+        entity = payload.get("native_entity") if isinstance(payload, dict) else None
+        if entity is None:
+            raise DrawingRefusal("topology_reference_unavailable", source_ref)
+        self._api._member(model, "ClearSelection2", True)
+        return bool(self._api._member(view, "SelectEntity", entity, False))
+
+
 class SolidWorksDrawingAdapter:
     """Native drawing adapter with explicit source-path and view identity read-back."""
 
@@ -75,6 +105,14 @@ class SolidWorksDrawingAdapter:
         ] = {}
         self._dimension_metadata: dict[tuple[str, str], DimensionSnapshot] = {}
         self._bom_metadata: dict[tuple[str, str], BomSnapshot] = {}
+
+    def bind_topology_service(self, topology_service: Any | None) -> None:
+        """Bind the opaque topology port used by source-linked drawing dimensions."""
+        self._reference_selector = (
+            None
+            if topology_service is None
+            else _TopologyDrawingReferenceSelector(topology_service, self._api)
+        )
 
     def create_drawing(self, drawing_id: str, template_path: str | None) -> None:
         target = self._path_policy.validate_save(drawing_id)

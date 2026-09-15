@@ -565,7 +565,9 @@ class IntegratedAssemblyService(_EvidenceGatedService):
     def _resolve_topology_reference(
         self, document_id: str, reference: str
     ) -> tuple[Any, str | None]:
-        resolver = getattr(self.topology_service, "resolve", None)
+        resolver = getattr(self.topology_service, "resolve_native_for_document", None)
+        if not callable(resolver):
+            resolver = getattr(self.topology_service, "resolve", None)
         if not callable(resolver):
             raise AssemblyRefusal("topology_service_unavailable")
         result = resolver(document_id, reference)

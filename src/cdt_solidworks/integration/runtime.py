@@ -212,6 +212,60 @@ class IntegratedProviderRuntime:
             resolved.append(capability.model_copy(update={"available": available, "reason": reason}))
         return tuple(resolved)
 
+    def _internal_dependency_states(self) -> tuple[DependencyState, ...]:
+        """Expose composed service ports as explicit capability dependencies."""
+
+        def state(name: str, available: bool, reason: str) -> DependencyState:
+            return DependencyState(
+                name=name,
+                available=available,
+                reason=None if available else reason,
+            )
+
+        topology = getattr(self, "topology_service", None)
+        sketch = getattr(self, "sketch_service", None)
+        part = getattr(self, "part_feature_service", None)
+        toolbox = getattr(self, "toolbox_service", None)
+        drawing = getattr(self, "drawing_service", None)
+        topology_resolver = (
+            getattr(topology, "resolve_native_for_document", None)
+            if topology is not None
+            else None
+        )
+        if not callable(topology_resolver) and topology is not None:
+            topology_resolver = getattr(topology, "resolve", None)
+
+        return (
+            state("session", self.session is not None, "session_unavailable"),
+            state(
+                "document_service",
+                self.document_service is not None,
+                "document_service_unavailable",
+            ),
+            state(
+                "topology.resolve",
+                callable(topology_resolver),
+                "topology_service_unavailable",
+            ),
+            state(
+                "sketch.profile.inspect",
+                callable(getattr(sketch, "inspect_profile", None)),
+                "sketch_profile_inspection_unavailable",
+            ),
+            state("sketch", sketch is not None, "sketch_service_unavailable"),
+            state("part", part is not None, "part_service_unavailable"),
+            state(
+                "solidworks.toolbox",
+                toolbox is not None,
+                "toolbox_service_unavailable",
+            ),
+            state(
+                "bom_template",
+                bool(getattr(drawing, "bom_available", False)),
+                "bom_template_unavailable",
+            ),
+        )
+
     def runtime_context(self) -> RuntimeContext:
         result = self.session.probe(version=self.version, timeout=3.0)
         available = False
@@ -518,13 +572,19 @@ class IntegratedProviderRuntime:
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
-            CapabilityState(
-                name="solidworks.sheet_metal.edge_flange",
-                implemented=False,
-                available=False,
-                reason="persistent_edge_identity_not_integrated",
-                backend="solidworks_com",
-                dependencies=("solidworks",),
+            *(
+                ()
+                if "solidworks.sheet_metal.edge_flange" in self._plugin_capabilities
+                else (
+                    CapabilityState(
+                        name="solidworks.sheet_metal.edge_flange",
+                        implemented=False,
+                        available=False,
+                        reason="persistent_edge_identity_not_integrated",
+                        backend="solidworks_com",
+                        dependencies=("solidworks",),
+                    ),
+                )
             ),
             CapabilityState(
                 name="solidworks.weldment.cut_list",
@@ -878,7 +938,8 @@ class IntegratedProviderRuntime:
                 dependencies=("solidworks",),
             ),
         )
-        plugin_capabilities = self._resolved_plugin_capabilities((dependency,))
+        dependencies = (dependency, *self._internal_dependency_states())
+        plugin_capabilities = self._resolved_plugin_capabilities(dependencies)
         built_in_names = {item.name for item in capabilities}
         duplicate_names = sorted(
             item.name for item in plugin_capabilities if item.name in built_in_names
@@ -887,7 +948,7 @@ class IntegratedProviderRuntime:
             raise ValueError(f"duplicate capability: {duplicate_names[0]}")
         return RuntimeContext(
             backend="solidworks_com",
-            dependencies=(dependency,),
+            dependencies=dependencies,
             capabilities=(*capabilities, *plugin_capabilities),
         )
 

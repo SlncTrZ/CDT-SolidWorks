@@ -271,6 +271,50 @@ def test_plugin_contract_validation_fails_typed(modules, code: str) -> None:
     assert exc_info.value.code == code
 
 
+def test_unavailable_capability_without_registered_tool_is_allowed() -> None:
+    module = ModuleType("cdt_solidworks.integration.plugins.agent2_unavailable")
+    module.PLUGIN_CONTRACT_VERSION = 1
+    module.PLUGIN_ID = "unavailable"
+    module.PLUGIN_ORDER = 2
+    module.register_tools = lambda server, runtime: None
+    module.capability_descriptors = lambda runtime: (
+        {
+            "name": "solidworks.test.unavailable",
+            "implemented": True,
+            "available": False,
+            "reason": "dependency_unavailable",
+            "backend": "solidworks_com",
+            "dependencies": ("solidworks",),
+        },
+    )
+
+    server = MCPServer("agent6-test")
+    register_plugins(server, _runtime(), plugins=validate_plugin_modules((module,)))
+
+
+def test_available_capability_without_registered_tool_is_rejected() -> None:
+    module = ModuleType("cdt_solidworks.integration.plugins.agent2_invalid_available")
+    module.PLUGIN_CONTRACT_VERSION = 1
+    module.PLUGIN_ID = "invalid-available"
+    module.PLUGIN_ORDER = 2
+    module.register_tools = lambda server, runtime: None
+    module.capability_descriptors = lambda runtime: (
+        {
+            "name": "solidworks.test.invalid_available",
+            "implemented": True,
+            "available": True,
+            "reason": None,
+            "backend": "solidworks_com",
+            "dependencies": ("solidworks",),
+        },
+    )
+
+    server = MCPServer("agent6-test")
+    with pytest.raises(PluginCompositionError) as exc_info:
+        register_plugins(server, _runtime(), plugins=validate_plugin_modules((module,)))
+    assert exc_info.value.code == "plugin_capability_without_tools"
+
+
 def test_plugin_registration_failure_is_typed_and_fail_closed() -> None:
     module = _plugin(
         "cdt_solidworks.integration.plugins.agent1_broken",
@@ -399,6 +443,31 @@ def test_unavailable_dependency_forces_plugin_capability_unavailable() -> None:
     assert plugin_state.implemented is True
     assert plugin_state.available is False
     assert plugin_state.reason == "solidworks_not_registered"
+
+
+def test_internal_service_dependency_can_satisfy_plugin_capability() -> None:
+    runtime = _runtime(available=True)
+    runtime.topology_service = SimpleNamespace(resolve_native_for_document=lambda *args: None)
+    runtime.register_capability_descriptors(
+        (
+            {
+                "name": "solidworks.test.topology_consumer",
+                "implemented": True,
+                "available": True,
+                "reason": None,
+                "backend": "solidworks_com",
+                "dependencies": ("solidworks", "topology.resolve"),
+            },
+        ),
+        source="integration-test",
+    )
+
+    context = runtime.runtime_context()
+    dependencies = {item.name: item for item in context.dependencies}
+    states = {item.name: item for item in context.capabilities}
+
+    assert dependencies["topology.resolve"].available is True
+    assert states["solidworks.test.topology_consumer"].available is True
 
 
 def test_plugin_mutation_preserves_uncertain_call_id_without_composition_retry() -> None:

@@ -162,6 +162,49 @@ class TopologyNativeAdapter:
             mutation=False,
         )
 
+    def resolve_native_for_document(
+        self,
+        document_id: str,
+        reference: str,
+        *,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Resolve an opaque reference to a native entity for trusted in-provider consumers."""
+        stage = "topology_resolve_native"
+        try:
+            canonical = self.documents.path_policy.validate_open(document_id)
+        except Exception as exc:
+            return self._local_failure(exc, stage)
+
+        def operation(app: Any) -> dict[str, Any]:
+            document = self.api.get_open_document(app, canonical)
+            if document is None:
+                raise NativeRuntimeError(
+                    "document_not_open",
+                    stage,
+                    "Topology native resolution requires the target document to be open.",
+                )
+            context = self.documents._context_from_doc(document)
+            payload = self._decode_reference(reference)
+            kind = str(payload["kind"])
+            self._require_binding(context, payload, component_id=None, stage=stage)
+            pid = self._decode_pid(str(payload["pid"]))
+            entity, _, _ = self._resolve_native(app, context, payload, kind, pid)
+            component_id = payload.get("component")
+            return {
+                "native_entity": entity,
+                "component_id": component_id if isinstance(component_id, str) else None,
+                "kind": kind,
+                "reference": reference,
+            }
+
+        return self.session.execute(
+            operation,
+            stage=stage,
+            timeout=self._timeout(timeout),
+            mutation=False,
+        )
+
     def inspect(
         self,
         context: DocumentContext,

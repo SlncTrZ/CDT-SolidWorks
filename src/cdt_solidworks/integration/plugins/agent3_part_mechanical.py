@@ -86,6 +86,19 @@ def _payload(result: NativeCallResult[Any]) -> dict[str, Any]:
     }
 
 
+def _bind_profile_port(runtime: Any) -> None:
+    part = getattr(runtime, "part_feature_service", None)
+    sketch = getattr(runtime, "sketch_service", None)
+    if (
+        part is not None
+        and sketch is not None
+        and hasattr(part, "profile_port")
+        and getattr(part, "profile_port", None) is None
+        and callable(getattr(sketch, "inspect_profile", None))
+    ):
+        part.profile_port = sketch
+
+
 def _mechanical(runtime: Any) -> IntegratedMechanicalService | None:
     sketch = getattr(runtime, "sketch_service", None)
     part = getattr(runtime, "part_feature_service", None)
@@ -104,6 +117,7 @@ def _mechanical(runtime: Any) -> IntegratedMechanicalService | None:
 
 def register_tools(server: Any, runtime: Any) -> None:
     """Register only Agent-3 public additions; shared registrar remains untouched."""
+    _bind_profile_port(runtime)
     part = getattr(runtime, "part_feature_service", None)
     mechanical = _mechanical(runtime)
 
@@ -139,6 +153,7 @@ def register_tools(server: Any, runtime: Any) -> None:
 
 
 def capability_descriptors(runtime: Any) -> tuple[dict[str, Any], ...]:
+    _bind_profile_port(runtime)
     part = getattr(runtime, "part_feature_service", None)
     profile_port = getattr(part, "profile_port", None) if part is not None else None
     mechanical = _mechanical(runtime)

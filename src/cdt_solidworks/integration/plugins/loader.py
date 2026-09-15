@@ -222,7 +222,7 @@ def _record_observation(
 
 
 def _observed_tool(func: Callable[..., Any], *, tool_name: str, observer: SafeObserver):
-    signature = inspect.signature(func)
+    signature = inspect.signature(func, eval_str=True)
     if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
         raise PluginCompositionError(
             "open_tool_schema",
@@ -360,10 +360,14 @@ def register_plugins(
                 plugin_id=plugin.plugin_id,
             ) from exc
 
-        if raw_descriptors and not proxy.registered_names:
+        if (
+            raw_descriptors
+            and not proxy.registered_names
+            and any(bool(item.get("available")) for item in raw_descriptors)
+        ):
             raise PluginCompositionError(
                 "plugin_capability_without_tools",
-                f"Plugin {plugin.plugin_id} declared capabilities without registering public tools.",
+                f"Plugin {plugin.plugin_id} declared available capabilities without registering public tools.",
                 plugin_id=plugin.plugin_id,
             )
         try:

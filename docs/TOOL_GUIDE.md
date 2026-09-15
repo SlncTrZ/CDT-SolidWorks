@@ -42,6 +42,16 @@ Every advertised tool, including plugin tools, receives a closed input schema wi
 
 Plugin-discovered lane capabilities remain implementation claims only until Agent 7 validates the exact integrated wheel on Linux and Windows with native SOLIDWORKS evidence. This guide does not pre-award acceptance for parallel lane features.
 
+### Integration-candidate plugin tools — native acceptance pending
+
+These names are part of the composed tool catalog, but listing them here is **not** a native-acceptance claim. Runtime capability state remains fail-closed until the required services, licenses, templates, and Agent-7 evidence are present.
+
+- Agent 1: `topology_query`, `topology_resolve`, `topology_inspect`.
+- Agent 2: `assembly_component_insert`, `assembly_mate_get`, `assembly_mate_delete`, `configuration_state_query`, `configuration_component_set_suppressed`, `configuration_component_set_configuration`, `toolbox_probe`, `toolbox_catalog_query`, `toolbox_component_resolve`, `toolbox_component_properties`, `toolbox_component_insert`.
+- Agent 3: `part_profile_extrude`, `part_profile_cut`, `part_feature_parameters_get`, `part_feature_parameter_set`, `part_gear_create_spur`, `part_gear_parameters_get`, `part_gear_parameters_set`.
+- Agent 4: `drawing_dimension_create`, `drawing_dimensions_list`, `drawing_bom_create`, `drawing_bom_read`, `drawing_update`.
+- Agent 5: `body_move_copy`, `body_delete_keep`, `surface_offset`, `sheet_metal_add_edge_flange`, `sheet_metal_add_hem`, `sheet_metal_add_sketched_bend`, `sheet_metal_unfold_bend`, `sheet_metal_fold_bend`, `weldment_trim_extend`, `weldment_set_cut_list_property`, `reconstruction_assess`, `reconstruction_step_to_editable`, `reconstruction_mesh_to_parametric`, `reconstruction_compare`.
+
 ## Native CAD tools
 
 The following bounded operations have native SOLIDWORKS 2024 acceptance evidence:
