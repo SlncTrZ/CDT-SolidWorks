@@ -181,6 +181,7 @@ class QueryTests(unittest.TestCase):
         result = self.service.list_components(context)
         self.assertEqual(NativeCallState.SUCCESS, result.state)
         self.assertEqual("Bracket-1", result.value[0].name)
+        self.assertEqual("Bracket-1", result.value[0].component_id)
         self.assertTrue(result.value[0].suppressed)
 
     def test_rebuild_failure_is_normalized_as_non_success(self) -> None:

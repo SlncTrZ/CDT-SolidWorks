@@ -239,6 +239,34 @@ class DefinitionState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ProfileState(str, Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    AMBIGUOUS = "ambiguous"
+
+
+@dataclass(frozen=True, slots=True)
+class SketchEntitySnapshot:
+    entity_id: str
+    entity_type: str
+    construction: bool
+    length_mm: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SketchContourSnapshot:
+    contour_id: str
+    closed: bool
+    entity_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SketchProfileSnapshot:
+    sketch_id: str
+    state: ProfileState
+    contours: tuple[SketchContourSnapshot, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class SketchDefinition:
     name: str

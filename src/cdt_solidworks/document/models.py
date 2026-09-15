@@ -69,3 +69,4 @@ class ComponentInfo:
     name: str
     path: str
     suppressed: bool
+    component_id: str | None = None

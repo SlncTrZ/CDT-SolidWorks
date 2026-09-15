@@ -20,6 +20,7 @@ from cdt_solidworks.sketch.models import (  # noqa: E402
     ParallelConstraint,
     PlaneKind,
     Point2D,
+    ProfileState,
     RadiusDimension,
     SketchDefinition,
     SketchPlane,
@@ -47,6 +48,12 @@ class FakeSegment:
         if self._select is not None:
             self._select(self, append)
         return True
+
+    def GetType(self) -> int:
+        return 0
+
+    def GetLength(self) -> float:
+        return 0.01
 
 
 class FakePoint:
@@ -121,10 +128,23 @@ class FakeRelationManager:
         return True
 
 
+class FakeContour:
+    def __init__(self, segments: tuple[FakeSegment, ...], closed: bool) -> None:
+        self.segments = segments
+        self.closed = closed
+
+    def GetSketchSegments(self) -> tuple[FakeSegment, ...]:
+        return self.segments
+
+    def IsClosed(self) -> bool:
+        return self.closed
+
+
 class FakeSketch:
     def __init__(self) -> None:
         self.segments: list[FakeSegment] = []
         self.points: list[Any] = []
+        self.contours: list[FakeContour] = []
         self.RelationManager = FakeRelationManager()
 
     def GetSketchSegments(self) -> tuple[FakeSegment, ...]:
@@ -139,6 +159,9 @@ class FakeSketch:
     def GetConstrainedStatus(self) -> int:
         return 2
 
+    def GetSketchContours(self) -> tuple[FakeContour, ...]:
+        return tuple(self.contours)
+
 
 class FakeFeature:
     def __init__(self, sketch: FakeSketch) -> None:
@@ -147,6 +170,9 @@ class FakeFeature:
 
     def GetSpecificFeature2(self) -> FakeSketch:
         return self._sketch
+
+    def Select2(self, append: bool, mark: int) -> bool:
+        return True
 
 
 class FakeSketchManager:
@@ -341,6 +367,57 @@ class SketchNativeRuntimeTests(unittest.TestCase):
             relations[0].relation_id,
         )
         self.assertEqual(("parallel",), tuple(item.relation_type for item in remaining))
+
+    def test_bounded_entity_query_returns_stable_identity_type_and_construction_state(self) -> None:
+        definition = SketchDefinition(
+            name="Query",
+            plane=SketchPlane(PlaneKind.FRONT),
+            entities=(
+                LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 0.0), construction=True),
+                LineSegment(Point2D(10.0, 0.0), Point2D(10.0, 10.0)),
+            ),
+        )
+        snapshot = SketchService(self.runtime).create(self.target, definition)
+        entities = SketchService(self.runtime).query_entities(self.target, snapshot.sketch_id, max_items=2)
+        self.assertEqual(("1:0", "2:0"), tuple(item.entity_id for item in entities))
+        self.assertEqual(("line", "line"), tuple(item.entity_type for item in entities))
+        self.assertEqual((True, False), tuple(item.construction for item in entities))
+        self.assertEqual((10.0, 10.0), tuple(item.length_mm for item in entities))
+        with self.assertRaisesRegex(NativeSketchUnsupportedError, "partial results are refused"):
+            SketchService(self.runtime).query_entities(self.target, snapshot.sketch_id, max_items=1)
+
+    def test_profile_inspection_distinguishes_open_closed_and_ambiguous_sets(self) -> None:
+        self.model.sketch.segments.extend((FakeSegment(1), FakeSegment(2)))
+        document = self.runtime.resolve_document(self.target)
+        self.model.sketch.contours = [FakeContour((self.model.sketch.segments[0],), True)]
+        self.assertEqual(ProfileState.CLOSED, self.runtime.inspect_sketch_profile(document, "Sketch1").state)
+        self.model.sketch.contours = [FakeContour((self.model.sketch.segments[0],), False)]
+        self.assertEqual(ProfileState.OPEN, self.runtime.inspect_sketch_profile(document, "Sketch1").state)
+        self.model.sketch.contours = [
+            FakeContour((self.model.sketch.segments[0],), True),
+            FakeContour((self.model.sketch.segments[1],), False),
+        ]
+        profile = self.runtime.inspect_sketch_profile(document, "Sketch1")
+        self.assertEqual(ProfileState.AMBIGUOUS, profile.state)
+        self.assertEqual(2, len(profile.contours))
+        self.assertTrue(all(item.contour_id.startswith("contour:") for item in profile.contours))
+
+    def test_relation_add_uses_stable_entity_ids_and_readback(self) -> None:
+        definition = SketchDefinition(
+            name="AddRelation",
+            plane=SketchPlane(PlaneKind.FRONT),
+            entities=(
+                LineSegment(Point2D(0.0, 0.0), Point2D(10.0, 0.0)),
+                LineSegment(Point2D(0.0, 5.0), Point2D(10.0, 5.0)),
+            ),
+        )
+        snapshot = SketchService(self.runtime).create(self.target, definition)
+        relations = SketchService(self.runtime).add_relation(
+            self.target, snapshot.sketch_id, "parallel", ("1:0", "2:0")
+        )
+        self.assertEqual(1, len(relations))
+        self.assertEqual("parallel", relations[0].relation_type)
+        self.assertEqual(("1:0", "2:0"), relations[0].entity_ids)
 
     def test_native_relation_failure_is_normalized_and_exits_sketch_edit_mode(self) -> None:
         def reject_relation(entities: tuple[Any, ...], relation_type: int) -> FakeRelation:

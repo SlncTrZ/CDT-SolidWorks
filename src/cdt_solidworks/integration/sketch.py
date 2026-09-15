@@ -237,6 +237,70 @@ class IntegratedSketchService:
                 dispatched=False,
             )
 
+    def query_entities(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        max_items: int = 256,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            target = self._target(path, expected_revision)
+            value = self.service.query_entities(target, sketch_id, max_items=max_items)
+            return NativeCallResult.success(value, call_id=call_id, dispatched=False)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_entity_query"), call_id=call_id, dispatched=False
+            )
+
+    def inspect_profile(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            target = self._target(path, expected_revision)
+            value = self.service.inspect_profile(target, sketch_id)
+            return NativeCallResult.success(value, call_id=call_id, dispatched=False)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_profile_inspect"), call_id=call_id, dispatched=False
+            )
+
+    def add_relation(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        relation_type: str,
+        entity_ids: Sequence[str],
+    ) -> NativeCallResult[Any]:
+        call_id = uuid.uuid4().hex
+        try:
+            if isinstance(entity_ids, (str, bytes)) or not isinstance(entity_ids, Sequence):
+                raise SketchValidationError("entity_ids must be an array of stable sketch entity identities")
+            target = self._target(path, expected_revision)
+            value = self.service.add_relation(target, sketch_id, relation_type, tuple(entity_ids))
+            return NativeCallResult.success(value, call_id=call_id, dispatched=True)
+        except _NativeResultInterrupt as exc:
+            return exc.result
+        except Exception as exc:
+            return NativeCallResult.failed(
+                self._semantic_failure(exc, "sketch_relation_add"),
+                call_id=call_id,
+                dispatched=isinstance(exc, SketchMutationError),
+            )
+
     def _target(self, path: str, expected_revision: int) -> DocumentTarget:
         source = self.path_policy.validate_open(path)
         if Path(source).suffix.lower() != _PART_EXT:
@@ -266,13 +330,20 @@ class IntegratedSketchService:
             raise SketchValidationError("sketch name must be a string")
         if not isinstance(plane, str):
             raise SketchValidationError("plane must be front, top, or right")
-        normalized_plane = plane.strip().lower()
-        try:
-            plane_kind = PlaneKind(normalized_plane)
-        except ValueError as exc:
-            raise SketchValidationError("plane must be front, top, or right") from exc
-        if plane_kind not in _STANDARD_PLANE_INDEX:
-            raise SketchValidationError("plane must be front, top, or right")
+        normalized_plane = plane.strip()
+        if normalized_plane.lower().startswith("reference:"):
+            reference_id = normalized_plane.split(":", 1)[1].strip()
+            if not reference_id:
+                raise SketchValidationError("reference plane requires a non-empty feature identity")
+            sketch_plane = SketchPlane(PlaneKind.REFERENCE, reference_id=reference_id)
+        else:
+            try:
+                plane_kind = PlaneKind(normalized_plane.lower())
+            except ValueError as exc:
+                raise SketchValidationError("plane must be front, top, right, or reference:<feature_id>") from exc
+            if plane_kind not in _STANDARD_PLANE_INDEX:
+                raise SketchValidationError("plane must be front, top, right, or reference:<feature_id>")
+            sketch_plane = SketchPlane(plane_kind)
         constraint_items = () if constraints is None else constraints
         dimension_items = () if dimensions is None else dimensions
         if isinstance(constraint_items, (str, bytes)) or not isinstance(constraint_items, Sequence):
@@ -283,15 +354,45 @@ class IntegratedSketchService:
             raise SketchValidationError(f"sketch supports at most {_MAX_CONSTRAINTS} constraints per call")
         if len(dimension_items) > _MAX_DIMENSIONS:
             raise SketchValidationError(f"sketch supports at most {_MAX_DIMENSIONS} dimensions per call")
-        parsed = tuple(self._entity(item) for item in entities)
+        parsed_items: list[Any] = []
+        for item in entities:
+            if isinstance(item, Mapping) and str(item.get("type", "")).strip().lower() == "rectangle":
+                parsed_items.extend(self._rectangle_entities(item))
+            else:
+                parsed_items.append(self._entity(item))
+        parsed = tuple(parsed_items)
+        if len(parsed) > _MAX_ENTITIES:
+            raise SketchValidationError(f"expanded sketch geometry exceeds {_MAX_ENTITIES} entities")
         parsed_constraints = tuple(self._constraint(item) for item in constraint_items)
         parsed_dimensions = tuple(self._dimension(item) for item in dimension_items)
         return SketchDefinition(
             name=name,
-            plane=SketchPlane(plane_kind),
+            plane=sketch_plane,
             entities=parsed,
             constraints=parsed_constraints,
             dimensions=parsed_dimensions,
+        )
+
+    def _rectangle_entities(self, raw: Mapping[str, Any]) -> tuple[LineSegment, ...]:
+        self._strict_keys(
+            raw,
+            {"type", "corner1_mm", "corner2_mm", "construction"},
+            {"type", "corner1_mm", "corner2_mm"},
+        )
+        first = self._point(raw["corner1_mm"])
+        second = self._point(raw["corner2_mm"])
+        if first.x_mm == second.x_mm or first.y_mm == second.y_mm:
+            raise SketchValidationError("rectangle corners must define non-zero width and height")
+        construction = self._bool(raw.get("construction", False), "construction")
+        p1 = first
+        p2 = Point2D(second.x_mm, first.y_mm)
+        p3 = second
+        p4 = Point2D(first.x_mm, second.y_mm)
+        return (
+            LineSegment(p1, p2, construction),
+            LineSegment(p2, p3, construction),
+            LineSegment(p3, p4, construction),
+            LineSegment(p4, p1, construction),
         )
 
     def _constraint(self, raw: Mapping[str, Any]) -> Any:
@@ -562,11 +663,25 @@ class IntegratedSketchService:
         )
 
     def _select_plane(self, model: Any, plane: SketchPlane) -> None:
+        if plane.kind is PlaneKind.REFERENCE:
+            reference_id = (plane.reference_id or "").strip()
+            feature = self.api._member(model, "FeatureByName", reference_id)
+            if feature is None or self.api.feature_type(feature) != "RefPlane":
+                raise NativeRuntimeError(
+                    "cad_selection_failed", "sketch_plane_select",
+                    "Requested reference-plane feature was not found or is not a reference plane.",
+                )
+            self.api._member(model, "ClearSelection2", True)
+            if not bool(self.api._member(feature, "Select2", False, 0)):
+                raise NativeRuntimeError(
+                    "cad_selection_failed", "sketch_plane_select",
+                    "Requested reference plane could not be selected unambiguously.",
+                )
+            return
         if plane.kind not in _STANDARD_PLANE_INDEX or plane.reference_id is not None:
             raise NativeRuntimeError(
-                "cad_precondition_failed",
-                "sketch_plane_select",
-                "Only front, top, and right reference planes are native-accepted for this tool.",
+                "cad_precondition_failed", "sketch_plane_select",
+                "Sketch plane must be a standard plane or one explicit reference-plane feature.",
             )
         target_index = _STANDARD_PLANE_INDEX[plane.kind]
         current = self.api.first_feature(model)
