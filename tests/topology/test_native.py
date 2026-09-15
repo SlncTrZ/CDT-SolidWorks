@@ -175,6 +175,24 @@ def test_query_returns_deduplicated_opaque_body_face_edge_vertex_refs():
         assert all(context.path not in item.reference for item in value.items)
 
 
+def test_open_document_native_resolve_does_not_enqueue_nested_dispatch():
+    with tempfile.TemporaryDirectory() as tmp:
+        service, context, doc = fixture(Path(tmp))
+        query = service.query(context).value
+        assert query is not None
+        edge = next(item for item in query.items if item.kind == "edge")
+        before = service.session.calls
+
+        result = service.resolve_native_for_open_document(doc, edge.reference)
+
+        assert result.state is NativeCallState.SUCCESS
+        assert result.value is not None
+        assert result.value["native_entity"] is not None
+        assert result.value["kind"] == "edge"
+        assert result.value["reference"] == edge.reference
+        assert service.session.calls == before
+
+
 def test_reference_round_trip_resolves_same_kind():
     with tempfile.TemporaryDirectory() as tmp:
         service, context, _ = fixture(Path(tmp))

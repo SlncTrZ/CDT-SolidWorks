@@ -191,6 +191,10 @@ class FakeView:
     def GetFirstTableAnnotation(self):
         return self._tables[0] if self._tables else None
 
+    def SelectEntity(self, entity, append):
+        self.selected_entity = entity
+        return entity is not None and append is False
+
 
 class FakeExtension:
     def __init__(self, drawing):
@@ -327,6 +331,23 @@ class FakeApi:
         return object()
 
 
+class FakeTopologyService:
+    def __init__(self, entity):
+        self.entity = entity
+        self.calls = []
+
+    def resolve_native_for_open_document(self, document, reference):
+        self.calls.append((document, reference))
+        return NativeCallResult.success(
+            {"native_entity": self.entity, "component_id": None, "kind": "edge", "reference": reference},
+            call_id="topology-open-document",
+            dispatched=False,
+        )
+
+    def resolve_native_for_document(self, *args, **kwargs):
+        raise AssertionError("drawing selection must not enqueue nested topology dispatch")
+
+
 class FakeReferenceSelector:
     def __init__(self):
         self.calls = []
@@ -418,6 +439,27 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(Exception, "attachment_read_failed"):
             self.service.add_note(self.path, self.base.identity, "CHECK")
+
+    def test_topology_bound_dimension_resolves_on_open_view_document_without_nested_dispatch(self):
+        topology = FakeTopologyService(entity=object())
+        self.adapter.bind_topology_service(topology)
+
+        dimension = self.service.add_dimension(
+            self.path,
+            self.base.identity,
+            "swref1.source.edge",
+            source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default",
+            x_mm=40.0,
+            y_mm=30.0,
+        )
+
+        self.assertEqual("swref1.source.edge", dimension.source_ref)
+        self.assertEqual(1, len(topology.calls))
+        self.assertIs(self.base_source_document(), topology.calls[0][0])
+
+    def base_source_document(self):
+        return self.drawing.views[0].ReferencedDocument
 
     def test_topology_port_missing_ambiguous_and_stale_refusals_fail_closed(self):
         for reason in (

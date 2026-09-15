@@ -202,6 +202,12 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
         assert standard.state is NativeCallState.SUCCESS
         assert domain.calls[-1][3] == kind
 
+    assembly_view = service.create_standard_view(
+        str(drawing), "Sheet1", str(assembly), "front"
+    )
+    assert assembly_view.state is NativeCallState.SUCCESS
+    assert domain.calls[-1][4] == str(assembly.resolve())
+
     projected = service.create_projected_view(str(drawing), "Drawing View1", 0.24, 0.10)
     assert projected.state is NativeCallState.SUCCESS
     section = service.create_section_view(
@@ -222,6 +228,16 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
     )
     assert dimension.state is NativeCallState.SUCCESS
     assert service.list_dimensions(str(drawing), "Drawing View1").state is NativeCallState.SUCCESS
+    assembly_dimension = service.create_dimension(
+        str(drawing),
+        "Drawing View1",
+        str(assembly),
+        None,
+        "swref1.opaque.assembly.reference",
+        45.0,
+        35.0,
+    )
+    assert assembly_dimension.state is NativeCallState.SUCCESS
     bom = service.create_bom(str(drawing), "Drawing View1", str(assembly), "Default")
     assert bom.state is NativeCallState.SUCCESS
     assert service.read_bom(str(drawing), "BOM1").state is NativeCallState.SUCCESS
@@ -235,13 +251,36 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
     assert bad_ref.dispatched is False
     assert len(domain.calls) == before
 
-    wrong_source = service.create_front_view(str(drawing), "Sheet1", str(assembly))
-    assert wrong_source.state is NativeCallState.FAILURE
-    assert wrong_source.dispatched is False
+    wrong_source = tmp_path / "foreign.STEP"
+    wrong_source.write_bytes(b"foreign")
+    refused_source = service.create_front_view(str(drawing), "Sheet1", str(wrong_source))
+    assert refused_source.state is NativeCallState.FAILURE
+    assert refused_source.dispatched is False
 
     bad_target = service.create(str(tmp_path / "bad.SLDPRT"))
     assert bad_target.state is NativeCallState.FAILURE
     assert bad_target.dispatched is False
+
+
+def test_native_drawing_bom_capability_requires_real_allowed_template(tmp_path: Path) -> None:
+    class _Session:
+        api = object()
+
+    policy = DocumentPathPolicy((tmp_path,))
+    valid = tmp_path / "bom-standard.sldbomtbt"
+    valid.write_bytes(b"template")
+    wrong_extension = tmp_path / "bom-standard.txt"
+    wrong_extension.write_bytes(b"template")
+
+    configured = IntegratedDrawingService(
+        _Session(), path_policy=policy, bom_template_path=str(valid)
+    )
+    invalid = IntegratedDrawingService(
+        _Session(), path_policy=policy, bom_template_path=str(wrong_extension)
+    )
+
+    assert configured.bom_available is True
+    assert invalid.bom_available is False
 
 
 def test_drawing_wrapper_preserves_uncertain_native_call_id(tmp_path: Path) -> None:

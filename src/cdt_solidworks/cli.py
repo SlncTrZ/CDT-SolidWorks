@@ -16,6 +16,7 @@ from cdt_solidworks.server.factory import ServerConfig
 
 ALLOWED_ROOTS_ENV = "CDT_SOLIDWORKS_ALLOWED_ROOTS"
 WELDMENT_PROFILE_ROOTS_ENV = "CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS"
+BOM_TEMPLATE_PATH_ENV = "CDT_SOLIDWORKS_BOM_TEMPLATE_PATH"
 BIND_HOST_ENV = "CDT_SOLIDWORKS_BIND_HOST"
 PORT_ENV = "CDT_SOLIDWORKS_PORT"
 VERSION_ENV = "CDT_SOLIDWORKS_VERSION"
@@ -29,6 +30,11 @@ def _allowed_roots_from_environ(environ: Mapping[str, str]) -> tuple[str, ...]:
 def _weldment_profile_roots_from_environ(environ: Mapping[str, str]) -> tuple[str, ...]:
     raw = environ.get(WELDMENT_PROFILE_ROOTS_ENV, "")
     return tuple(item.strip() for item in raw.split(os.pathsep) if item.strip())
+
+
+def _bom_template_path_from_environ(environ: Mapping[str, str]) -> str | None:
+    raw = environ.get(BOM_TEMPLATE_PATH_ENV, "").strip()
+    return raw or None
 
 
 def _bind_from_environ(environ: Mapping[str, str]) -> tuple[str, int]:
@@ -60,6 +66,7 @@ def main() -> None:
     runtime = IntegratedProviderRuntime(
         allowed_roots=_allowed_roots_from_environ(os.environ),
         weldment_profile_roots=_weldment_profile_roots_from_environ(os.environ),
+        drawing_bom_template_path=_bom_template_path_from_environ(os.environ),
         version=_version_from_environ(os.environ),
     )
     app = build_integrated_network_app(

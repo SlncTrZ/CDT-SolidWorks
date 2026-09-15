@@ -45,6 +45,7 @@ T = TypeVar("T")
 _CALL_ID_PATTERN = re.compile(r"(?:^|\s)call_id=([^;\s]+)")
 _PART_EXTENSIONS = frozenset({".sldprt"})
 _ASSEMBLY_EXTENSIONS = frozenset({".sldasm"})
+_DRAWING_SOURCE_EXTENSIONS = _PART_EXTENSIONS | _ASSEMBLY_EXTENSIONS
 _DRAWING_EXTENSIONS = frozenset({".slddrw"})
 _GEOMETRY_EXPORTS = {
     "step": ExportFormat.STEP,
@@ -152,7 +153,7 @@ class IntegratedDrawingService:
         self.bom_available = (
             bool(getattr(service, "bom_available", True))
             if injected_service
-            else bom_template_path is not None
+            else bool(native_adapter and native_adapter.supports_bom(""))
         )
 
     def bind_topology_service(self, topology_service: Any | None) -> bool:
@@ -213,7 +214,9 @@ class IntegratedDrawingService:
         drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
         if isinstance(drawing, NativeCallResult):
             return drawing
-        source = self._validate_open(source_part_path, stage, _PART_EXTENSIONS)
+        source = self._validate_open(
+            source_part_path, stage, _DRAWING_SOURCE_EXTENSIONS
+        )
         if isinstance(source, NativeCallResult):
             return source
         if not isinstance(sheet_name, str) or not sheet_name.strip():
@@ -243,7 +246,9 @@ class IntegratedDrawingService:
         drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
         if isinstance(drawing, NativeCallResult):
             return drawing
-        source = self._validate_open(source_part_path, stage, _PART_EXTENSIONS)
+        source = self._validate_open(
+            source_part_path, stage, _DRAWING_SOURCE_EXTENSIONS
+        )
         if isinstance(source, NativeCallResult):
             return source
         if not isinstance(sheet_name, str) or not sheet_name.strip():
@@ -330,7 +335,9 @@ class IntegratedDrawingService:
         drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
         if isinstance(drawing, NativeCallResult):
             return drawing
-        source = self._validate_open(source_model_path, stage, _PART_EXTENSIONS)
+        source = self._validate_open(
+            source_model_path, stage, _DRAWING_SOURCE_EXTENSIONS
+        )
         if isinstance(source, NativeCallResult):
             return source
         if not isinstance(view_id, str) or not view_id.strip():

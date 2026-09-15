@@ -184,19 +184,9 @@ class TopologyNativeAdapter:
                     stage,
                     "Topology native resolution requires the target document to be open.",
                 )
-            context = self.documents._context_from_doc(document)
-            payload = self._decode_reference(reference)
-            kind = str(payload["kind"])
-            self._require_binding(context, payload, component_id=None, stage=stage)
-            pid = self._decode_pid(str(payload["pid"]))
-            entity, _, _ = self._resolve_native(app, context, payload, kind, pid)
-            component_id = payload.get("component")
-            return {
-                "native_entity": entity,
-                "component_id": component_id if isinstance(component_id, str) else None,
-                "kind": kind,
-                "reference": reference,
-            }
+            return self._resolve_native_for_open_document_value(
+                document, reference, stage=stage
+            )
 
         return self.session.execute(
             operation,
@@ -204,6 +194,49 @@ class TopologyNativeAdapter:
             timeout=self._timeout(timeout),
             mutation=False,
         )
+
+    def resolve_native_for_open_document(
+        self,
+        document: Any,
+        reference: str,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Resolve on an already-open model without enqueueing another native dispatcher job."""
+        stage = "topology_resolve_native_open_document"
+        try:
+            value = self._resolve_native_for_open_document_value(
+                document, reference, stage=stage
+            )
+            return NativeCallResult.success(
+                value,
+                call_id=uuid.uuid4().hex,
+                dispatched=False,
+            )
+        except Exception as exc:
+            return self._local_failure(exc, stage)
+
+    def _resolve_native_for_open_document_value(
+        self,
+        document: Any,
+        reference: str,
+        *,
+        stage: str,
+    ) -> dict[str, Any]:
+        context = self.documents._context_from_doc(document)
+        self.documents.path_policy.validate_open(context.path)
+        payload = self._decode_reference(reference)
+        kind = str(payload["kind"])
+        self._require_binding(context, payload, component_id=None, stage=stage)
+        pid = self._decode_pid(str(payload["pid"]))
+        entity, _, _ = self._resolve_native_from_document(
+            document, context, payload, kind, pid
+        )
+        component_id = payload.get("component")
+        return {
+            "native_entity": entity,
+            "component_id": component_id if isinstance(component_id, str) else None,
+            "kind": kind,
+            "reference": reference,
+        }
 
     def inspect(
         self,
@@ -266,6 +299,18 @@ class TopologyNativeAdapter:
         pid: bytes,
     ) -> tuple[Any, Any, Any | None]:
         document = self.documents._resolve_context(app, context)
+        return self._resolve_native_from_document(
+            document, context, payload, kind, pid
+        )
+
+    def _resolve_native_from_document(
+        self,
+        document: Any,
+        context: DocumentContext,
+        payload: dict[str, object],
+        kind: str,
+        pid: bytes,
+    ) -> tuple[Any, Any, Any | None]:
         component_id = payload.get("component") if isinstance(payload.get("component"), str) else None
         source_model, component = self._source_model(document, context, component_id)
         entity, state = self.api.object_by_persistent_reference(source_model, pid)

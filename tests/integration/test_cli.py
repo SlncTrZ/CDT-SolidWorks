@@ -7,6 +7,7 @@ import pytest
 from cdt_solidworks.cli import (
     _allowed_roots_from_environ,
     _bind_from_environ,
+    _bom_template_path_from_environ,
     _weldment_profile_roots_from_environ,
 )
 from cdt_solidworks.platform.errors import StartupConfigError
@@ -26,6 +27,13 @@ def test_bind_defaults_are_loopback_and_bounded_port() -> None:
 def test_bind_rejects_invalid_port(value: str) -> None:
     with pytest.raises(StartupConfigError):
         _bind_from_environ({"CDT_SOLIDWORKS_PORT": value})
+
+
+def test_bom_template_path_is_explicit_single_dependency() -> None:
+    assert _bom_template_path_from_environ({}) is None
+    assert _bom_template_path_from_environ(
+        {"CDT_SOLIDWORKS_BOM_TEMPLATE_PATH": "  /templates/bom-standard.sldbomtbt  "}
+    ) == "/templates/bom-standard.sldbomtbt"
 
 
 def test_weldment_profile_roots_are_independent_from_document_roots() -> None:

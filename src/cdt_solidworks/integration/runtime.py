@@ -38,6 +38,7 @@ class IntegratedProviderRuntime:
         *,
         allowed_roots: Iterable[str | Path],
         weldment_profile_roots: Iterable[str | Path] = (),
+        drawing_bom_template_path: str | Path | None = None,
         version: int | None = None,
         session: Any | None = None,
         document_service: Any | None = None,
@@ -81,6 +82,11 @@ class IntegratedProviderRuntime:
         self.surface_service = surface_service
         self.sheetmetal_service = sheetmetal_service
         self.weldment_profile_roots = tuple(weldment_profile_roots)
+        self.drawing_bom_template_path = (
+            None
+            if drawing_bom_template_path is None
+            else str(drawing_bom_template_path)
+        )
         self.weldment_service = weldment_service
         self.weldment_profiles_configured = bool(self.weldment_profile_roots) or weldment_service is not None
         self.assembly_service = assembly_service
@@ -112,7 +118,9 @@ class IntegratedProviderRuntime:
                 )
             if self.drawing_service is None:
                 self.drawing_service = IntegratedDrawingService(
-                    self.session, path_policy=self.path_policy
+                    self.session,
+                    path_policy=self.path_policy,
+                    bom_template_path=self.drawing_bom_template_path,
                 )
             if self.export_service is None:
                 self.export_service = IntegratedExportService(

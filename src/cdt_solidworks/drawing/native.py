@@ -46,17 +46,23 @@ class _TopologyDrawingReferenceSelector:
         source_configuration: str | None,
         source_ref: str,
     ) -> bool:
-        resolver = getattr(self._topology_service, "resolve_native_for_document", None)
+        resolver = getattr(
+            self._topology_service, "resolve_native_for_open_document", None
+        )
         if not callable(resolver):
             raise DrawingRefusal("topology_reference_unavailable", source_ref)
-        result = resolver(source_model_path, source_ref)
-        if getattr(result, "state", None) is not NativeCallState.SUCCESS:
+        source_document = self._api._member(view, "ReferencedDocument")
+        if source_document is None:
             raise DrawingRefusal("topology_reference_unavailable", source_ref)
+        result = resolver(source_document, source_ref)
+        if getattr(result, "state", None) is not NativeCallState.SUCCESS:
+            failure = getattr(result, "failure", None)
+            reason = getattr(failure, "code", None) or "topology_reference_unavailable"
+            raise DrawingRefusal(str(reason), source_ref)
         payload = getattr(result, "value", None)
         entity = payload.get("native_entity") if isinstance(payload, dict) else None
         if entity is None:
             raise DrawingRefusal("topology_reference_unavailable", source_ref)
-        self._api._member(model, "ClearSelection2", True)
         return bool(self._api._member(view, "SelectEntity", entity, False))
 
 
@@ -669,6 +675,7 @@ class SolidWorksDrawingAdapter:
         def mutate(model: Any) -> DimensionSnapshot:
             if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
                 raise DrawingRefusal("missing_sheet", sheet_name)
+            self._api._member(model, "ClearSelection2", True)
             if not bool(self._api._member(model, "ActivateView", view_id)):
                 raise DrawingPostconditionError("view_activation_failed", view_id)
             view = self._find_view(model, view_id)
