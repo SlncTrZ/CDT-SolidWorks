@@ -203,10 +203,11 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
         assert domain.calls[-1][3] == kind
 
     assembly_view = service.create_standard_view(
-        str(drawing), "Sheet1", str(assembly), "front"
+        str(drawing), "Sheet1", str(assembly), "front", "Default"
     )
     assert assembly_view.state is NativeCallState.SUCCESS
     assert domain.calls[-1][4] == str(assembly.resolve())
+    assert domain.calls[-1][5] == "Default"
 
     projected = service.create_projected_view(str(drawing), "Drawing View1", 0.24, 0.10)
     assert projected.state is NativeCallState.SUCCESS

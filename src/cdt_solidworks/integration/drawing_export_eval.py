@@ -209,6 +209,7 @@ class IntegratedDrawingService:
         path: str,
         sheet_name: str,
         source_part_path: str,
+        source_configuration: str | None = None,
     ) -> NativeCallResult[Any]:
         stage = "drawing_front_view_create"
         drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
@@ -221,6 +222,10 @@ class IntegratedDrawingService:
             return source
         if not isinstance(sheet_name, str) or not sheet_name.strip():
             return _local_failure(stage, "sheet_name must be a non-empty string.")
+        if source_configuration is not None and (
+            not isinstance(source_configuration, str) or not source_configuration.strip()
+        ):
+            return _local_failure(stage, "source_configuration must be non-empty when supplied.")
         return self._call(
             stage,
             lambda: self.service.create_view(
@@ -228,7 +233,7 @@ class IntegratedDrawingService:
                 sheet_name,
                 "front",
                 source,
-                None,
+                source_configuration,
             ),
         )
 
@@ -238,6 +243,7 @@ class IntegratedDrawingService:
         sheet_name: str,
         source_part_path: str,
         view_kind: str,
+        source_configuration: str | None = None,
     ) -> NativeCallResult[Any]:
         stage = "drawing_standard_view_create"
         normalized = str(view_kind).strip().lower()
@@ -253,9 +259,15 @@ class IntegratedDrawingService:
             return source
         if not isinstance(sheet_name, str) or not sheet_name.strip():
             return _local_failure(stage, "sheet_name must be a non-empty string.")
+        if source_configuration is not None and (
+            not isinstance(source_configuration, str) or not source_configuration.strip()
+        ):
+            return _local_failure(stage, "source_configuration must be non-empty when supplied.")
         return self._call(
             stage,
-            lambda: self.service.create_view(drawing, sheet_name, normalized, source, None),
+            lambda: self.service.create_view(
+                drawing, sheet_name, normalized, source, source_configuration
+            ),
         )
 
     def create_projected_view(

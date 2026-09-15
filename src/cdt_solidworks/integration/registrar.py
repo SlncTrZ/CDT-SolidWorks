@@ -1011,22 +1011,25 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             name="drawing_front_view_create",
             description=(
                 "Create the native-accepted Front model view on one explicit drawing sheet from "
-                "one native part source; broader view families remain unavailable."
+                "one native part or assembly source, optionally bound to one configuration."
             ),
         )
         def drawing_front_view_create(
-            path: str, sheet_name: str, source_part_path: str
+            path: str,
+            sheet_name: str,
+            source_part_path: str,
+            source_configuration: str | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.drawing_service.create_front_view(
-                    path, sheet_name, source_part_path
+                    path, sheet_name, source_part_path, source_configuration
                 )
             )
 
         @server.tool(
             name="drawing_standard_view_create",
             description=(
-                "Create one native-accepted Front/Top/Right/Isometric view on an explicit drawing sheet from one native part source."
+                "Create one native-accepted Front/Top/Right/Isometric view on an explicit drawing sheet from one native part or assembly source, optionally bound to one configuration."
             ),
         )
         def drawing_standard_view_create(
@@ -1034,10 +1037,11 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
             sheet_name: str,
             source_part_path: str,
             view_kind: Literal["front", "top", "right", "isometric"],
+            source_configuration: str | None = None,
         ) -> dict[str, Any]:
             return _result_payload(
                 runtime.drawing_service.create_standard_view(
-                    path, sheet_name, source_part_path, view_kind
+                    path, sheet_name, source_part_path, view_kind, source_configuration
                 )
             )
 
