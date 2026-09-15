@@ -59,6 +59,27 @@ def _version_from_environ(environ: Mapping[str, str]) -> int | None:
         raise StartupConfigError(f"{VERSION_ENV} must be a SolidWorks year integer.") from exc
 
 
+def _shutdown_runtime(
+    runtime: IntegratedProviderRuntime,
+    *,
+    suppress_errors: bool,
+) -> None:
+    """Release native ownership without masking an active server/startup exception."""
+
+    first_error: Exception | None = None
+    try:
+        runtime.session.disconnect(timeout=30.0)
+    except Exception as exc:
+        first_error = exc
+    try:
+        runtime.session.close_dispatcher(timeout=5.0)
+    except Exception as exc:
+        if first_error is None:
+            first_error = exc
+    if first_error is not None and not suppress_errors:
+        raise first_error
+
+
 def main() -> None:
     """Build the authenticated integrated provider and serve Streamable HTTP."""
 
@@ -69,9 +90,16 @@ def main() -> None:
         drawing_bom_template_path=_bom_template_path_from_environ(os.environ),
         version=_version_from_environ(os.environ),
     )
-    app = build_integrated_network_app(
-        ServerConfig(network_mode=True, network_auth=auth),
-        runtime=runtime,
-    )
-    host, port = _bind_from_environ(os.environ)
-    uvicorn.run(app, host=host, port=port)
+    failed = False
+    try:
+        app = build_integrated_network_app(
+            ServerConfig(network_mode=True, network_auth=auth),
+            runtime=runtime,
+        )
+        host, port = _bind_from_environ(os.environ)
+        uvicorn.run(app, host=host, port=port)
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        _shutdown_runtime(runtime, suppress_errors=failed)

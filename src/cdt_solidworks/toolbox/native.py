@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import uuid
 from typing import Any, Callable, TypeVar
 
 from cdt_solidworks.native.errors import NativeRuntimeError
@@ -395,10 +396,13 @@ class ToolboxNativeAdapter:
             raise ToolboxRefusal("toolbox_source_missing", str(source))
         if not target.parent.exists() or not target.parent.is_dir():
             raise ToolboxRefusal("project_directory_missing", str(target.parent))
-        if target.exists():
-            raise ToolboxRefusal("project_component_exists", str(target))
+        ownership = self._reserve_project_destination(target)
         try:
             shutil.copy2(source, target)
+            if not self._owns_project_file(target, ownership):
+                raise ToolboxPostconditionError(
+                    "project_copy_ownership_lost", str(target)
+                )
             target.chmod(target.stat().st_mode | stat.S_IWRITE)
             if not target.exists() or target.stat().st_size != source.stat().st_size:
                 raise ToolboxPostconditionError("project_copy_verification_failed", str(target))
@@ -410,15 +414,68 @@ class ToolboxNativeAdapter:
                     configuration=item.configuration,
                     assignments=assignments,
                 )
+            self._release_project_ownership(ownership)
             return str(target)
-        except Exception:
-            if target.exists():
-                try:
-                    target.chmod(target.stat().st_mode | stat.S_IWRITE)
-                    target.unlink()
-                except OSError:
-                    pass
+        except ToolboxPostconditionError as exc:
+            if exc.reason != "native_state_uncertain":
+                self._cleanup_owned_project_file(target, ownership)
+            else:
+                self._release_project_ownership(ownership)
             raise
+        except Exception:
+            self._cleanup_owned_project_file(target, ownership)
+            raise
+
+    @staticmethod
+    def _owns_project_file(target: Path, ownership: Path) -> bool:
+        try:
+            return target.is_file() and ownership.is_file() and os.path.samefile(target, ownership)
+        except OSError:
+            return False
+
+    def _reserve_project_destination(self, target: Path) -> Path:
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        try:
+            descriptor = os.open(str(target), flags, 0o600)
+        except FileExistsError as exc:
+            raise ToolboxRefusal("project_component_exists", str(target)) from exc
+        except OSError as exc:
+            raise ToolboxRefusal(
+                "project_component_reservation_failed", str(target)
+            ) from exc
+        finally:
+            if "descriptor" in locals():
+                os.close(descriptor)
+        witness = target.with_name(
+            f".{target.name}.{uuid.uuid4().hex}.cdt-owner"
+        )
+        try:
+            os.link(target, witness)
+        except OSError as exc:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            raise ToolboxRefusal(
+                "project_component_ownership_witness_failed", str(target)
+            ) from exc
+        return witness
+
+    @staticmethod
+    def _release_project_ownership(ownership: Path) -> None:
+        try:
+            ownership.unlink()
+        except OSError:
+            pass
+
+    def _cleanup_owned_project_file(self, target: Path, ownership: Path) -> None:
+        if self._owns_project_file(target, ownership):
+            try:
+                target.chmod(target.stat().st_mode | stat.S_IWRITE)
+                target.unlink()
+            except OSError:
+                pass
+        self._release_project_ownership(ownership)
 
     @staticmethod
     def _requires_database_materialization(item: ToolboxCatalogItem) -> bool:

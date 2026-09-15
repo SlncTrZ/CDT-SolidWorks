@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.document.service import DocumentService
@@ -143,6 +143,11 @@ class IntegratedProviderRuntime:
             "core.cad_service": self.cad_service,
         }
         self._plugin_capabilities: dict[str, CapabilityState] = {}
+        self._plugin_capability_sources: dict[str, str] = {}
+        self._plugin_capability_resolvers: dict[
+            str,
+            Callable[[], Iterable[Mapping[str, Any] | CapabilityState]],
+        ] = {}
 
     def set_observer(self, observer: SafeObserver) -> None:
         """Bind the observer shared by platform and plugin tool composition."""
@@ -196,14 +201,70 @@ class IntegratedProviderRuntime:
             pending_names.add(capability.name)
         for capability in pending:
             self._plugin_capabilities[capability.name] = capability
+            self._plugin_capability_sources[capability.name] = normalized_source
+
+    def register_capability_resolver(
+        self,
+        resolver: Callable[[], Iterable[Mapping[str, Any] | CapabilityState]],
+        *,
+        source: str,
+    ) -> None:
+        """Register one bounded dynamic availability resolver for an existing plugin source."""
+
+        normalized_source = str(source).strip()
+        if not normalized_source:
+            raise ValueError("capability source must be non-empty")
+        if not callable(resolver):
+            raise TypeError("capability resolver must be callable")
+        if normalized_source in self._plugin_capability_resolvers:
+            raise ValueError(f"duplicate capability resolver: {normalized_source}")
+        if normalized_source not in self._plugin_capability_sources.values():
+            raise ValueError(f"unknown capability source: {normalized_source}")
+        self._plugin_capability_resolvers[normalized_source] = resolver
+
+    def _refreshed_plugin_capabilities(self) -> dict[str, CapabilityState]:
+        refreshed = dict(self._plugin_capabilities)
+        for source, resolver in self._plugin_capability_resolvers.items():
+            expected_names = {
+                name
+                for name, capability_source in self._plugin_capability_sources.items()
+                if capability_source == source
+            }
+            try:
+                dynamic: dict[str, CapabilityState] = {}
+                for descriptor in resolver():
+                    capability = (
+                        descriptor
+                        if isinstance(descriptor, CapabilityState)
+                        else CapabilityState.model_validate(descriptor)
+                    )
+                    if capability.available and not capability.implemented:
+                        raise ValueError(
+                            f"capability {capability.name} from {source} cannot be available when unimplemented"
+                        )
+                    if capability.name in dynamic:
+                        raise ValueError(f"duplicate capability: {capability.name}")
+                    dynamic[capability.name] = capability
+                if set(dynamic) != expected_names:
+                    raise ValueError("dynamic capability names changed after registration")
+            except Exception as exc:
+                reason = f"capability_refresh_failed:{type(exc).__name__}"
+                for name in expected_names:
+                    refreshed[name] = self._plugin_capabilities[name].model_copy(
+                        update={"available": False, "reason": reason}
+                    )
+                continue
+            refreshed.update(dynamic)
+        return refreshed
 
     def _resolved_plugin_capabilities(
         self, dependencies: tuple[DependencyState, ...]
     ) -> tuple[CapabilityState, ...]:
         dependency_states = {item.name: item for item in dependencies}
         resolved: list[CapabilityState] = []
-        for name in sorted(self._plugin_capabilities):
-            capability = self._plugin_capabilities[name]
+        refreshed = self._refreshed_plugin_capabilities()
+        for name in sorted(refreshed):
+            capability = refreshed[name]
             available = capability.available and capability.implemented
             reason = capability.reason
             if available:
@@ -274,12 +335,13 @@ class IntegratedProviderRuntime:
             ),
         )
 
-    def runtime_context(self) -> RuntimeContext:
+    def solidworks_dependency_state(self) -> DependencyState:
+        """Probe current SOLIDWORKS availability without resolving plugin capabilities."""
+
         result = self.session.probe(version=self.version, timeout=3.0)
         available = False
         reason: str | None = None
         version: str | None = None
-
         if result.state is NativeCallState.SUCCESS and result.value is not None:
             probe = result.value
             version = str(probe.version_year) if probe.version_year is not None else probe.revision
@@ -291,14 +353,19 @@ class IntegratedProviderRuntime:
                 available = True
         else:
             reason = result.failure.code if result.failure is not None else "solidworks_probe_failed"
-
-        dependency = DependencyState(
+        return DependencyState(
             name="solidworks",
             available=available,
             reason=reason,
             version=version,
             license=None,
         )
+
+    def runtime_context(self) -> RuntimeContext:
+        dependency = self.solidworks_dependency_state()
+        available = dependency.available
+        reason = dependency.reason
+        version = dependency.version
         integrated_reason = None if available else reason
         deferred_reason = "native_adapter_not_integrated"
         partial_reason = "partial_native_support"

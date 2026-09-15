@@ -305,6 +305,15 @@ def capability_descriptors(runtime: Any) -> tuple[dict[str, Any], ...]:
 
 
 def _solidworks_dependency(runtime: Any) -> tuple[bool, str | None]:
+    direct_probe = getattr(runtime, "solidworks_dependency_state", None)
+    if callable(direct_probe):
+        try:
+            dependency = direct_probe()
+            return bool(getattr(dependency, "available", False)), getattr(
+                dependency, "reason", None
+            )
+        except Exception as exc:
+            return False, f"solidworks_probe_failed:{type(exc).__name__}"
     context_method = getattr(runtime, "runtime_context", None)
     if not callable(context_method):
         return False, "runtime_context_unavailable"

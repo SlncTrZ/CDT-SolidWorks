@@ -445,6 +445,43 @@ def test_unavailable_dependency_forces_plugin_capability_unavailable() -> None:
     assert plugin_state.reason == "solidworks_not_registered"
 
 
+def test_registered_plugin_capability_recovers_when_dependency_recovers() -> None:
+    runtime = _runtime(available=False)
+    module = _plugin(
+        "cdt_solidworks.integration.plugins.agent2_recovering",
+        plugin_id="recovering",
+        order=2,
+        tool_name="recovering_tool",
+        capability_name="solidworks.test.recovering",
+    )
+
+    def capability_descriptors(current_runtime):
+        available = bool(current_runtime.session.available)
+        return (
+            {
+                "name": "solidworks.test.recovering",
+                "implemented": True,
+                "available": available,
+                "reason": None if available else "solidworks_temporarily_unavailable",
+                "backend": "solidworks_com",
+                "dependencies": ("solidworks",),
+            },
+        )
+
+    module.capability_descriptors = capability_descriptors
+    server = MCPServer("agent6-recovery-test")
+    register_plugins(server, runtime, plugins=validate_plugin_modules((module,)))
+
+    initial = {item.name: item for item in runtime.runtime_context().capabilities}
+    assert initial["solidworks.test.recovering"].available is False
+
+    runtime.session.available = True
+    recovered = {item.name: item for item in runtime.runtime_context().capabilities}
+
+    assert recovered["solidworks.test.recovering"].available is True
+    assert recovered["solidworks.test.recovering"].reason is None
+
+
 def test_internal_service_dependency_can_satisfy_plugin_capability() -> None:
     runtime = _runtime(available=True)
     runtime.topology_service = SimpleNamespace(resolve_native_for_document=lambda *args: None)

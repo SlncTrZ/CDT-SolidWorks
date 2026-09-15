@@ -372,6 +372,12 @@ def register_plugins(
             )
         try:
             runtime.register_capability_descriptors(raw_descriptors, source=plugin.plugin_id)
+            register_resolver = getattr(runtime, "register_capability_resolver", None)
+            if callable(register_resolver) and raw_descriptors:
+                register_resolver(
+                    lambda provider=plugin.capability_descriptors: provider(runtime),
+                    source=plugin.plugin_id,
+                )
         except (TypeError, ValueError) as exc:
             raise PluginCompositionError(
                 "invalid_plugin_capability",

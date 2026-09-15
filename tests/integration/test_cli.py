@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+import cdt_solidworks.cli as cli
 from cdt_solidworks.cli import (
     _allowed_roots_from_environ,
     _bind_from_environ,
@@ -43,3 +44,85 @@ def test_weldment_profile_roots_are_independent_from_document_roots() -> None:
     }
     assert _allowed_roots_from_environ(env) == ("/docs-a", "/docs-b")
     assert _weldment_profile_roots_from_environ(env) == ("/profiles-a", "/profiles-b")
+
+
+def _install_main_fakes(monkeypatch, events: list[tuple[str, object]], *, run_error=None):
+    class Session:
+        def disconnect(self, *, timeout):
+            events.append(("disconnect", timeout))
+            return object()
+
+        def close_dispatcher(self, *, timeout):
+            events.append(("close_dispatcher", timeout))
+            return True
+
+    class Runtime:
+        def __init__(self, **kwargs):
+            events.append(("runtime", kwargs))
+            self.session = Session()
+
+    monkeypatch.setattr(cli, "IntegratedProviderRuntime", Runtime)
+    monkeypatch.setattr(
+        cli.NetworkAuthConfig,
+        "from_environ",
+        classmethod(lambda cls, environ: object()),
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_integrated_network_app",
+        lambda config, *, runtime: object(),
+    )
+
+    def run(app, *, host, port):
+        events.append(("uvicorn", (host, port)))
+        if run_error is not None:
+            raise run_error
+
+    monkeypatch.setattr(cli.uvicorn, "run", run)
+
+
+def test_main_cleans_up_native_runtime_after_normal_server_return(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    _install_main_fakes(monkeypatch, events)
+
+    cli.main()
+
+    assert events[-3:] == [
+        ("uvicorn", ("127.0.0.1", 8000)),
+        ("disconnect", 30.0),
+        ("close_dispatcher", 5.0),
+    ]
+
+
+def test_main_cleans_up_native_runtime_without_masking_server_failure(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    failure = RuntimeError("server failed")
+    _install_main_fakes(monkeypatch, events, run_error=failure)
+
+    with pytest.raises(RuntimeError, match="server failed"):
+        cli.main()
+
+    assert events[-3:] == [
+        ("uvicorn", ("127.0.0.1", 8000)),
+        ("disconnect", 30.0),
+        ("close_dispatcher", 5.0),
+    ]
+
+
+def test_main_cleans_up_native_runtime_when_app_construction_fails(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    _install_main_fakes(monkeypatch, events)
+
+    def fail_build(config, *, runtime):
+        raise RuntimeError("app build failed")
+
+    monkeypatch.setattr(cli, "build_integrated_network_app", fail_build)
+
+    with pytest.raises(RuntimeError, match="app build failed"):
+        cli.main()
+
+    assert ("uvicorn", ("127.0.0.1", 8000)) not in events
+    assert events[-2:] == [
+        ("disconnect", 30.0),
+        ("close_dispatcher", 5.0),
+    ]

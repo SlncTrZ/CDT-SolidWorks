@@ -1,10 +1,20 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sqlite3
 import stat
+import threading
+import time
 from types import SimpleNamespace
 
+import pytest
+
 from cdt_solidworks.native.models import ApplicationOwnership, NativeCallResult
-from cdt_solidworks.toolbox.domain import ToolboxCatalogItem
+from cdt_solidworks.toolbox import native as toolbox_native
+from cdt_solidworks.toolbox.domain import (
+    ToolboxCatalogItem,
+    ToolboxPostconditionError,
+    ToolboxRefusal,
+)
 from cdt_solidworks.toolbox.native import ToolboxNativeAdapter
 
 
@@ -273,6 +283,110 @@ def test_copy_component_makes_project_copy_writable_without_changing_vendor_mode
 
     assert source.stat().st_mode & stat.S_IWUSR == 0
     assert copied.stat().st_mode & stat.S_IWUSR
+
+
+def test_copy_component_preserves_artifact_when_native_state_is_uncertain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+    item = adapter.catalog_query(
+        "Ansi Inch", "flat washer type b regular_ai", "1/4", 10
+    )[0]
+    destination = tmp_path / "project" / "washer.SLDPRT"
+    destination.parent.mkdir()
+
+    def uncertain_materialize(target, *, configuration, assignments):
+        raise ToolboxPostconditionError("native_state_uncertain", "call_id=uncertain-call")
+
+    monkeypatch.setattr(adapter, "_materialize_project_copy", uncertain_materialize)
+
+    with pytest.raises(ToolboxPostconditionError) as caught:
+        adapter.copy_component(item, destination)
+
+    assert caught.value.reason == "native_state_uncertain"
+    assert destination.is_file()
+    assert destination.stat().st_size > 0
+
+
+def test_copy_component_reserves_destination_atomically_under_concurrency(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "Toolbox"
+    source = _fixture(root)
+    destination = tmp_path / "project" / "copy.SLDPRT"
+    destination.parent.mkdir()
+    item = ToolboxCatalogItem(
+        standard="ANSI Inch",
+        family="hex bolt",
+        size="1/4-20 x 1",
+        source_path=str(source),
+        configuration="1/4-20 x 1",
+    )
+    adapters = (ToolboxNativeAdapter(_Session(root)), ToolboxNativeAdapter(_Session(root)))
+    first_copy_entered = threading.Event()
+    release_copy = threading.Event()
+    copy_calls = 0
+    copy_calls_lock = threading.Lock()
+    original_copy2 = toolbox_native.shutil.copy2
+
+    def blocked_copy2(src, dst, *args, **kwargs):
+        nonlocal copy_calls
+        with copy_calls_lock:
+            copy_calls += 1
+            current = copy_calls
+        if current == 1:
+            first_copy_entered.set()
+            release_copy.wait(timeout=2.0)
+        return original_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(toolbox_native.shutil, "copy2", blocked_copy2)
+
+    def run(adapter):
+        try:
+            return ("success", adapter.copy_component(item, destination))
+        except ToolboxRefusal as exc:
+            return (exc.reason, None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(run, adapters[0])
+        assert first_copy_entered.wait(timeout=1.0)
+        second = executor.submit(run, adapters[1])
+        time.sleep(0.05)
+        release_copy.set()
+        outcomes = (first.result(timeout=2.0), second.result(timeout=2.0))
+
+    assert [state for state, _ in outcomes].count("success") == 1
+    assert [state for state, _ in outcomes].count("project_component_exists") == 1
+    assert copy_calls == 1
+    assert destination.read_bytes() == source.read_bytes()
+
+
+def test_copy_component_cleanup_does_not_delete_foreign_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "Toolbox"
+    _sqlite_fixture(root)
+    adapter = ToolboxNativeAdapter(_Session(root))
+    item = adapter.catalog_query(
+        "Ansi Inch", "flat washer type b regular_ai", "1/4", 10
+    )[0]
+    destination = tmp_path / "project" / "washer.SLDPRT"
+    destination.parent.mkdir()
+
+    def replace_then_fail(target, *, configuration, assignments):
+        target.unlink()
+        target.write_bytes(b"foreign-owner")
+        raise ToolboxRefusal("forced_materialization_failure")
+
+    monkeypatch.setattr(adapter, "_materialize_project_copy", replace_then_fail)
+
+    with pytest.raises(ToolboxRefusal) as caught:
+        adapter.copy_component(item, destination)
+
+    assert caught.value.reason == "forced_materialization_failure"
+    assert destination.read_bytes() == b"foreign-owner"
 
 
 def test_database_catalog_copy_invokes_materialization_hook(tmp_path: Path, monkeypatch) -> None:
