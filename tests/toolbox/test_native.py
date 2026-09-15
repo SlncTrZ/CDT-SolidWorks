@@ -176,7 +176,7 @@ def _sqlite_fixture(root: Path) -> None:
             "INSERT INTO AI_DATA_HBOLT VALUES ('1/4','28','0.2500','0.438','0.188',1,2)"
         )
         con.execute(
-            "CREATE TABLE AI_CFG_WASHERS_FW (Grid_Item_Number INTEGER, Grid_Item_Name TEXT, Grid_Item_Type TEXT, Controller INTEGER, Dimension TEXT, NoUnitConversion INTEGER, AltDataSource TEXT, ValueList TEXT, RelationField TEXT)"
+            "CREATE TABLE AI_Cfg_WASHERS_FW (Grid_Item_Number INTEGER, Grid_Item_Name TEXT, Grid_Item_Type TEXT, Controller INTEGER, Dimension TEXT, NoUnitConversion INTEGER, AltDataSource TEXT, ValueList TEXT, RelationField TEXT)"
         )
         con.execute(
             "INSERT INTO AI_CFG_WASHERS_FW VALUES (1,'Size','STRING_COMBO',1,'',0,'','{[size]}','')"

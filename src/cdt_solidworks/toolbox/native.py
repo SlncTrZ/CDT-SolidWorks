@@ -158,6 +158,9 @@ class ToolboxNativeAdapter:
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 )
             )
+            table_names_by_casefold = {
+                name.casefold(): name for name in table_names
+            }
             type_prefix = f"{prefix}TYPE_".casefold()
             type_tables = tuple(
                 name
@@ -193,13 +196,19 @@ class ToolboxNativeAdapter:
                     item_family = Path(relative_parts[-1]).stem
                     if item_family.casefold() != family.casefold():
                         continue
-                    data_table = self._database_table_name(
+                    data_table_reference = self._database_table_name(
                         prefix, str(row["DataTable"] or "")
                     )
-                    config_table = self._database_table_name(
+                    config_table_reference = self._database_table_name(
                         prefix, str(row["ConfigurationTable"] or "")
                     )
-                    if data_table not in table_names or config_table not in table_names:
+                    data_table = table_names_by_casefold.get(
+                        data_table_reference.casefold()
+                    )
+                    config_table = table_names_by_casefold.get(
+                        config_table_reference.casefold()
+                    )
+                    if data_table is None or config_table is None:
                         raise _ToolboxNativeError(
                             "toolbox_database_metadata_invalid", item_family
                         )
