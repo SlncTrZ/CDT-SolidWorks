@@ -51,20 +51,29 @@ class SolidWorksDrawingAdapter:
         default_timeout: float = 60.0,
         max_features: int = 100_000,
         bom_template_path: str | None = None,
+        reference_selector: Any | None = None,
+        max_table_rows: int = 512,
+        max_table_columns: int = 64,
     ) -> None:
         self._session = session
         self._api = session.api
         self._path_policy = path_policy
         self._default_timeout = float(default_timeout)
         self._max_features = int(max_features)
+        self._max_table_rows = int(max_table_rows)
+        self._max_table_columns = int(max_table_columns)
+        if self._max_table_rows < 1 or self._max_table_columns < 1:
+            raise ValueError("table traversal limits must be positive")
         self._templates: dict[str, str | None] = {}
         self._bom_template_path = bom_template_path
+        self._reference_selector = reference_selector
         self._view_metadata: dict[
             tuple[str, str], tuple[str, str, str, str | None, str | None]
         ] = {}
         self._annotation_metadata: dict[
             tuple[str, str], AnnotationSnapshot
         ] = {}
+        self._dimension_metadata: dict[tuple[str, str], DimensionSnapshot] = {}
         self._bom_metadata: dict[tuple[str, str], BomSnapshot] = {}
 
     def create_drawing(self, drawing_id: str, template_path: str | None) -> None:
@@ -595,16 +604,132 @@ class SolidWorksDrawingAdapter:
             self._annotation_metadata.get((source, annotation_id)),
         )
 
-    def add_dimension(self, drawing_id: str, view_id: str, source_ref: str) -> str:
-        raise DrawingRefusal(
-            "unsupported_capability",
-            "solidworks.drawing.dimension_requires_entity_identity_binding",
+    def supports_dimensions(self) -> bool:
+        return self._reference_selector is not None
+
+    def add_dimension(
+        self,
+        drawing_id: str,
+        view_id: str,
+        source_ref: str,
+        x_mm: float = 0.0,
+        y_mm: float = 0.0,
+    ) -> str:
+        if self._reference_selector is None:
+            raise DrawingRefusal(
+                "unsupported_capability",
+                "solidworks.drawing.dimension_reference_selector_unavailable",
+            )
+        source = self._path_policy.validate_open(drawing_id)
+        metadata = self._view_metadata.get(
+            (drawing_id, view_id), self._view_metadata.get((source, view_id))
         )
+        if metadata is None:
+            raise DrawingRefusal("invalid_dimension_view", view_id)
+        sheet_name, _, source_model_path, source_configuration, _ = metadata
+
+        def mutate(model: Any) -> DimensionSnapshot:
+            if not bool(self._api._member(model, "ActivateSheet", sheet_name)):
+                raise DrawingRefusal("missing_sheet", sheet_name)
+            if not bool(self._api._member(model, "ActivateView", view_id)):
+                raise DrawingPostconditionError("view_activation_failed", view_id)
+            view = self._find_view(model, view_id)
+            if view is None:
+                raise DrawingRefusal("invalid_dimension_view", view_id)
+            try:
+                selected = bool(
+                    self._reference_selector.select_for_drawing(
+                        model=model,
+                        view=view,
+                        source_model_path=source_model_path,
+                        source_configuration=source_configuration,
+                        source_ref=source_ref,
+                    )
+                )
+            except DrawingRefusal:
+                raise
+            except Exception as exc:
+                raise DrawingRefusal("topology_reference_unavailable", source_ref) from exc
+            if not selected:
+                raise DrawingRefusal("topology_reference_unavailable", source_ref)
+            display_dimension = self._api._member(
+                model,
+                "AddDimension2",
+                float(x_mm) / 1000.0,
+                float(y_mm) / 1000.0,
+                0.0,
+            )
+            if display_dimension is None:
+                raise DrawingPostconditionError("dimension_create_failed", source_ref)
+            snapshot = self._dimension_snapshot(
+                display_dimension, view_id, source_ref
+            )
+            self._persist(model, "dimension_create")
+            return snapshot
+
+        snapshot = self._with_drawing(
+            source, stage="drawing_add_dimension", reader=mutate, mutation=True
+        )
+        self._dimension_metadata[(drawing_id, snapshot.identity)] = snapshot
+        if source != drawing_id:
+            self._dimension_metadata[(source, snapshot.identity)] = snapshot
+        return snapshot.identity
 
     def read_dimension(
         self, drawing_id: str, dimension_id: str
     ) -> DimensionSnapshot | None:
-        return None
+        source = self._path_policy.validate_open(drawing_id)
+        cached = self._dimension_metadata.get(
+            (drawing_id, dimension_id),
+            self._dimension_metadata.get((source, dimension_id)),
+        )
+        if cached is not None:
+            return cached
+        return next(
+            (
+                item
+                for item in self.list_dimensions(drawing_id)
+                if item.identity == dimension_id
+            ),
+            None,
+        )
+
+    def list_dimensions(self, drawing_id: str) -> tuple[DimensionSnapshot, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+
+        def read(model: Any) -> tuple[DimensionSnapshot, ...]:
+            result: list[DimensionSnapshot] = []
+            seen: set[str] = set()
+            for view_id, view in self._iter_model_views(model):
+                display = self._first_display_dimension(view)
+                while display is not None:
+                    cached_ref = None
+                    try:
+                        annotation = self._api._member(display, "GetAnnotation")
+                        identity = self._annotation_identity(annotation)
+                        cached = self._dimension_metadata.get(
+                            (drawing_id, identity),
+                            self._dimension_metadata.get((source, identity)),
+                        )
+                        cached_ref = cached.source_ref if cached is not None else None
+                    except Exception:
+                        identity = ""
+                    snapshot = self._dimension_snapshot(
+                        display,
+                        view_id,
+                        cached_ref or f"native:{identity or view_id}",
+                    )
+                    if snapshot.identity not in seen:
+                        seen.add(snapshot.identity)
+                        result.append(snapshot)
+                    display = self._next_display_dimension(display)
+            for (key_drawing, _), snapshot in self._dimension_metadata.items():
+                if key_drawing in {drawing_id, source} and snapshot.identity not in seen:
+                    seen.add(snapshot.identity)
+                    result.append(snapshot)
+            return tuple(result)
+
+        return self._with_drawing(source, stage="drawing_list_dimensions", reader=read)
 
     def supports_bom(self, drawing_id: str) -> bool:
         if self._bom_template_path is None:
@@ -656,6 +781,9 @@ class SolidWorksDrawingAdapter:
             rows = self._table_rows(table)
             if not rows or not rows[0]:
                 raise DrawingPostconditionError("bom_empty_readback", bom_id)
+            component_ids = self._table_component_ids(
+                table, len(rows), source_configuration
+            )
             snapshot = BomSnapshot(
                 identity=bom_id,
                 view_id=view_id,
@@ -663,6 +791,7 @@ class SolidWorksDrawingAdapter:
                 row_count=len(rows),
                 column_count=len(rows[0]),
                 rows=rows,
+                component_ids=component_ids,
             )
             self._persist(model, "bom_create")
             return snapshot
@@ -677,9 +806,104 @@ class SolidWorksDrawingAdapter:
 
     def read_bom(self, drawing_id: str, bom_id: str) -> BomSnapshot | None:
         source = self._path_policy.validate_open(drawing_id)
-        return self._bom_metadata.get(
+        cached = self._bom_metadata.get(
             (drawing_id, bom_id), self._bom_metadata.get((source, bom_id))
         )
+        if cached is not None:
+            return cached
+        return next(
+            (item for item in self.list_boms(drawing_id) if item.identity == bom_id),
+            None,
+        )
+
+    def list_boms(self, drawing_id: str) -> tuple[BomSnapshot, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+
+        def read(model: Any) -> tuple[BomSnapshot, ...]:
+            result: list[BomSnapshot] = []
+            seen: set[str] = set()
+            for view_id, view in self._iter_model_views(model):
+                table = self._first_table_annotation(view)
+                while table is not None:
+                    try:
+                        bom_id = self._table_identity(table)
+                        rows = self._table_rows(table)
+                    except DrawingPostconditionError:
+                        raise
+                    except Exception:
+                        table = self._next_table_annotation(table)
+                        continue
+                    if bom_id not in seen and rows and rows[0]:
+                        seen.add(bom_id)
+                        configuration = str(
+                            self._api._member(view, "ReferencedConfiguration") or ""
+                        ) or None
+                        component_ids = self._table_component_ids(
+                            table, len(rows), configuration
+                        )
+                        result.append(
+                            BomSnapshot(
+                                identity=bom_id,
+                                view_id=view_id,
+                                source_configuration=configuration,
+                                row_count=len(rows),
+                                column_count=len(rows[0]),
+                                rows=rows,
+                                component_ids=component_ids,
+                            )
+                        )
+                    table = self._next_table_annotation(table)
+            for (key_drawing, _), snapshot in self._bom_metadata.items():
+                if key_drawing in {drawing_id, source} and snapshot.identity not in seen:
+                    seen.add(snapshot.identity)
+                    result.append(snapshot)
+            return tuple(result)
+
+        return self._with_drawing(source, stage="drawing_list_boms", reader=read)
+
+    def list_views(self, drawing_id: str) -> tuple[ViewSnapshot, ...]:
+        source = self._path_policy.validate_open(drawing_id)
+
+        def read(model: Any) -> tuple[ViewSnapshot, ...]:
+            snapshots: list[ViewSnapshot] = []
+            for view_id, view in self._iter_model_views(model):
+                referenced = self._api._member(view, "ReferencedDocument")
+                native_source = "" if referenced is None else str(
+                    self._api.document_path(referenced) or ""
+                )
+                metadata = self._view_metadata.get(
+                    (drawing_id, view_id), self._view_metadata.get((source, view_id))
+                )
+                sheet_name = metadata[0] if metadata is not None else self._view_sheet_name(view)
+                view_kind = metadata[1] if metadata is not None else "unknown"
+                parent_view_id = metadata[4] if metadata is not None else None
+                dangling = referenced is None or not native_source
+                source_model_path = (
+                    metadata[2] if dangling and metadata is not None else native_source
+                )
+                if dangling and metadata is not None:
+                    configuration = metadata[3]
+                else:
+                    configuration = str(
+                        self._api._member(view, "ReferencedConfiguration") or ""
+                    ) or None
+                snapshots.append(
+                    ViewSnapshot(
+                        identity=view_id,
+                        sheet_name=sheet_name,
+                        view_kind=view_kind,
+                        source_model_path=source_model_path,
+                        source_configuration=configuration,
+                        dangling=dangling,
+                        position=self._view_position(view),
+                        scale_decimal=self._float_member(view, "ScaleDecimal"),
+                        display_style=self._int_member(view, "GetDisplayMode2"),
+                        parent_view_id=parent_view_id,
+                    )
+                )
+            return tuple(snapshots)
+
+        return self._with_drawing(source, stage="drawing_list_views", reader=read)
 
     def rebuild_drawing(self, drawing_id: str) -> RebuildReport:
         source = self._path_policy.validate_open(drawing_id)
@@ -777,14 +1001,35 @@ class SolidWorksDrawingAdapter:
                 "drawing_save_failed", f"errors={errors}, warnings={warnings}"
             )
 
-    def _annotation_snapshot(
-        self, annotation: Any, view_id: str, forced_kind: str | None
-    ) -> AnnotationSnapshot:
+    def _dimension_snapshot(
+        self, display_dimension: Any, view_id: str, source_ref: str
+    ) -> DimensionSnapshot:
+        annotation = self._api._member(display_dimension, "GetAnnotation")
+        identity = self._annotation_identity(annotation)
+        text = self._annotation_text(annotation, identity)
+        dangling = self._annotation_dangling(annotation)
+        return DimensionSnapshot(
+            identity=identity,
+            view_id=view_id,
+            source_ref=source_ref,
+            display_text=text,
+            dangling=dangling,
+        )
+
+    def _annotation_identity(self, annotation: Any) -> str:
         if annotation is None:
             raise DrawingPostconditionError("annotation_readback_missing")
         identity = str(self._api._member(annotation, "GetName") or "")
         if not identity:
             raise DrawingPostconditionError("annotation_identity_missing")
+        return identity
+
+    def _annotation_snapshot(
+        self, annotation: Any, view_id: str, forced_kind: str | None
+    ) -> AnnotationSnapshot:
+        if annotation is None:
+            raise DrawingPostconditionError("annotation_readback_missing")
+        identity = self._annotation_identity(annotation)
         try:
             annotation_type = int(self._api._member(annotation, "GetType"))
         except Exception:
@@ -872,6 +1117,11 @@ class SolidWorksDrawingAdapter:
         column_count = self._int_member(table, "ColumnCount") or 0
         if row_count < 1 or column_count < 1:
             return ()
+        if row_count > self._max_table_rows or column_count > self._max_table_columns:
+            raise DrawingPostconditionError(
+                "bom_table_limit_exceeded",
+                f"rows={row_count}, columns={column_count}",
+            )
         rows: list[tuple[str, ...]] = []
         for row_index in range(row_count):
             row: list[str] = []
@@ -891,6 +1141,76 @@ class SolidWorksDrawingAdapter:
                 row.append(text)
             rows.append(tuple(row))
         return tuple(rows)
+
+    def _table_component_ids(
+        self,
+        table: Any,
+        row_count: int,
+        source_configuration: str | None,
+    ) -> tuple[tuple[str, ...], ...]:
+        specific = table
+        if getattr(specific, "GetComponents2", None) is None:
+            try:
+                specific = self._api._member(table, "GetSpecificAnnotation")
+            except Exception:
+                specific = None
+        rows: list[tuple[str, ...]] = []
+        any_component = False
+        for row_index in range(row_count):
+            if row_index == 0:
+                rows.append(())
+                continue
+            try:
+                components = self._as_tuple(
+                    self._api._member(
+                        specific,
+                        "GetComponents2",
+                        row_index,
+                        source_configuration or "",
+                    )
+                )
+            except Exception as exc:
+                raise DrawingPostconditionError(
+                    "bom_component_identity_read_failed", f"row={row_index}"
+                ) from exc
+            identities = tuple(
+                identity
+                for component in components
+                if component is not None
+                for identity in (self._component_identity(component),)
+                if identity
+            )
+            if not identities:
+                raise DrawingPostconditionError(
+                    "bom_component_identity_missing", f"row={row_index}"
+                )
+            any_component = True
+            rows.append(identities)
+        if row_count > 1 and not any_component:
+            raise DrawingPostconditionError("bom_component_identity_missing")
+        return tuple(rows)
+
+    def _component_identity(self, component: Any) -> str:
+        for name in ("GetSelectByIDString", "Name2", "Name"):
+            try:
+                value = str(self._api._member(component, name) or "").strip()
+            except Exception:
+                continue
+            if value:
+                return value
+        try:
+            path = str(self._api._member(component, "GetPathName") or "").strip()
+        except Exception:
+            path = ""
+        try:
+            configuration = str(
+                self._api._member(component, "ReferencedConfiguration") or ""
+            ).strip()
+        except Exception:
+            configuration = ""
+        if path:
+            return f"{path}|{configuration}" if configuration else path
+        return ""
 
     def _view_position(self, view: Any) -> tuple[float, float] | None:
         try:
@@ -922,12 +1242,65 @@ class SolidWorksDrawingAdapter:
         return (value,)
 
     def _find_view(self, model: Any, view_id: str) -> Any | None:
-        view = self._api._member(model, "GetFirstView")
-        while view is not None:
-            if str(self._api._member(view, "Name") or "") == view_id:
+        for current_id, view in self._iter_model_views(model):
+            if current_id == view_id:
                 return view
-            view = self._api._member(view, "GetNextView")
         return None
+
+    def _iter_model_views(self, model: Any):
+        view = self._api._member(model, "GetFirstView")
+        seen = 0
+        first = True
+        while view is not None:
+            if seen >= self._max_features:
+                raise DrawingPostconditionError("view_traversal_limit")
+            if first:
+                first = False
+            else:
+                view_id = str(self._api._member(view, "Name") or "")
+                if view_id:
+                    yield view_id, view
+            view = self._api._member(view, "GetNextView")
+            seen += 1
+
+    def _first_display_dimension(self, view: Any) -> Any | None:
+        for name in ("GetFirstDisplayDimension5", "GetFirstDisplayDimension"):
+            try:
+                return self._api._member(view, name)
+            except Exception:
+                continue
+        return None
+
+    def _next_display_dimension(self, display: Any) -> Any | None:
+        for name in ("GetNext5", "GetNext"):
+            try:
+                return self._api._member(display, name)
+            except Exception:
+                continue
+        return None
+
+    def _first_table_annotation(self, view: Any) -> Any | None:
+        try:
+            return self._api._member(view, "GetFirstTableAnnotation")
+        except Exception:
+            return None
+
+    def _next_table_annotation(self, table: Any) -> Any | None:
+        for name in ("GetNext", "GetNextTableAnnotation"):
+            try:
+                return self._api._member(table, name)
+            except Exception:
+                continue
+        return None
+
+    def _view_sheet_name(self, view: Any) -> str:
+        try:
+            sheet = self._api._member(view, "GetSheet")
+            if sheet is not None:
+                return str(self._api._member(sheet, "GetName") or "")
+        except Exception:
+            pass
+        return ""
 
     def _sheet_names(self, model: Any) -> tuple[str, ...]:
         value = self._api._member(model, "GetSheetNames")

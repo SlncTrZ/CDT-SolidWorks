@@ -5,8 +5,11 @@ from pathlib import Path
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.drawing.domain import (
     AnnotationSnapshot,
+    BomSnapshot,
+    DimensionSnapshot,
     DrawingPostconditionError,
     DrawingSnapshot,
+    DrawingUpdateSnapshot,
     SheetSnapshot,
     ViewSnapshot,
 )
@@ -66,6 +69,43 @@ class _DrawingDomain:
         return (
             AnnotationSnapshot("DetailItem2", view_id, "center_mark", "DetailItem2", False),
         )
+
+    def add_dimension(
+        self,
+        path: str,
+        view_id: str,
+        source_ref: str,
+        *,
+        source_model_path: str,
+        source_configuration: str | None,
+        x_mm: float,
+        y_mm: float,
+    ):
+        self.calls.append(("dimension", path, view_id, source_model_path, source_configuration, source_ref, x_mm, y_mm))
+        return DimensionSnapshot("D1@Drawing View1", view_id, source_ref, "10.00", False)
+
+    def list_dimensions(self, path: str, view_id: str | None = None):
+        self.calls.append(("dimensions", path, view_id))
+        return (DimensionSnapshot("D1@Drawing View1", view_id or "Drawing View1", "swref1.opaque.reference", "10.00", False),)
+
+    def create_bom(
+        self,
+        path: str,
+        view_id: str,
+        source_configuration: str,
+        *,
+        source_model_path: str,
+    ):
+        self.calls.append(("bom_create", path, view_id, source_model_path, source_configuration))
+        return BomSnapshot("BOM1", view_id, source_configuration, 2, 2, (("ITEM", "QTY"), ("1", "2")))
+
+    def read_bom(self, path: str, bom_id: str):
+        self.calls.append(("bom_read", path, bom_id))
+        return BomSnapshot(bom_id, "Drawing View1", "Default", 2, 2, (("ITEM", "QTY"), ("1", "2")))
+
+    def update_drawing(self, path: str, *, source_model_path: str, source_configuration: str | None):
+        self.calls.append(("update", path, source_model_path, source_configuration))
+        return DrawingUpdateSnapshot(1, 1, 1, True)
 
 
 class _ExportDomain:
@@ -170,6 +210,30 @@ def test_drawing_wrapper_promotes_native_accepted_views_and_annotations(tmp_path
     assert section.state is NativeCallState.SUCCESS
     assert service.add_note(str(drawing), "Drawing View1", "CHECK").state is NativeCallState.SUCCESS
     assert service.auto_insert_center_marks(str(drawing), "Drawing View1").state is NativeCallState.SUCCESS
+
+    dimension = service.create_dimension(
+        str(drawing),
+        "Drawing View1",
+        str(part),
+        None,
+        "swref1.opaque.reference",
+        40.0,
+        30.0,
+    )
+    assert dimension.state is NativeCallState.SUCCESS
+    assert service.list_dimensions(str(drawing), "Drawing View1").state is NativeCallState.SUCCESS
+    bom = service.create_bom(str(drawing), "Drawing View1", str(assembly), "Default")
+    assert bom.state is NativeCallState.SUCCESS
+    assert service.read_bom(str(drawing), "BOM1").state is NativeCallState.SUCCESS
+    assert service.update(str(drawing), str(part)).state is NativeCallState.SUCCESS
+
+    before = len(domain.calls)
+    bad_ref = service.create_dimension(
+        str(drawing), "Drawing View1", str(part), None, "Edge1", 40.0, 30.0
+    )
+    assert bad_ref.state is NativeCallState.FAILURE
+    assert bad_ref.dispatched is False
+    assert len(domain.calls) == before
 
     wrong_source = service.create_front_view(str(drawing), "Sheet1", str(assembly))
     assert wrong_source.state is NativeCallState.FAILURE
