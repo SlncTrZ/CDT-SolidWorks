@@ -17,3 +17,6 @@ def test_packaging_includes_root_namespace_cli_and_runtime_guide() -> None:
     assert scripts["cdt-solidworks"] == "cdt_solidworks.cli:main"
     assert (ROOT / "src" / "cdt_solidworks" / "cli.py").is_file()
     assert (ROOT / "src" / "cdt_solidworks" / "platform" / "PROVIDER_GUIDE.md").is_file()
+    plugin_root = ROOT / "src" / "cdt_solidworks" / "integration" / "plugins"
+    assert (plugin_root / "__init__.py").is_file()
+    assert (plugin_root / "loader.py").is_file()

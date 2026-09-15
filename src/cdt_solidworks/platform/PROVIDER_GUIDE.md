@@ -30,6 +30,18 @@ The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD prim
 
 Document access is disabled unless deployment configuration supplies at least one allowed filesystem root. Explicit document identity/revision is required for document mutations; stale identity is rejected.
 
+## Provider composition contract
+
+Parallel domain lanes compose through the packaged `cdt_solidworks.integration.plugins` namespace. Discovery is intentionally bounded to modules named `agent1_*` through `agent6_*`; there is no environment variable, filesystem path, entry-point, or arbitrary import hook that can expand the plugin search surface.
+
+Every plugin must declare `PLUGIN_CONTRACT_VERSION = 1`, a unique `PLUGIN_ID`, a unique `PLUGIN_ORDER`, `register_tools(server, runtime)`, and `capability_descriptors(runtime)`. Startup fails closed on malformed contracts, duplicate plugin IDs/orders, duplicate public tool names, duplicate service/capability keys, import failures, or registration failures. Plugin order is deterministic.
+
+The shared runtime exposes `core.session`, `core.path_policy`, `core.document_service`, and `core.cad_service` service ports plus duplicate-safe lane service registration. Plugin capability availability is dependency-aware: loading a module never makes its capabilities available by itself, and an unavailable declared dependency forces the capability unavailable.
+
+Every advertised tool, including plugin tools, receives a closed input schema with `additionalProperties=false`; plugin tools using `**kwargs` are rejected at startup. Plugin calls share bounded provider observability for call/operation ID, latency, failure class, timeout/uncertainty, and reconciliation counts without retaining raw request or COM payloads. Mutation results preserve the original native call ID and are never retried by the composition layer.
+
+Plugin-discovered lane capabilities remain implementation claims only until Agent 7 validates the exact integrated wheel on Linux and Windows with native SOLIDWORKS evidence. This guide does not pre-award acceptance for parallel lane features.
+
 ## Native CAD tools
 
 The following bounded operations have native SOLIDWORKS 2024 acceptance evidence:
@@ -188,7 +200,9 @@ Network mode requires a Bearer token sourced from deployment-managed runtime sec
 
 ## Launch
 
-Install the package and run `cdt-solidworks`. Network startup reads runtime configuration from these environment variable names only:
+Install the package and run `cdt-solidworks`. Agent 6 does not perform production deployment. The W-DEPLOY acceptance hook for Agent 7 is: build one wheel from the exact integrated SHA, hash it, install it non-editably outside the checkout, start the authenticated `/mcp` endpoint from that installed artifact, verify unauthenticated requests fail closed, compare `tools/list` with closed schemas and the capability map, execute one provider-owned native call on Windows with `AttachPolicy.START_NEW`, verify bounded telemetry, then perform a clean provider-owned shutdown. Linux startup/help/catalog smoke must not require SOLIDWORKS.
+
+Network startup reads runtime configuration from these environment variable names only:
 
 - `CDT_SOLIDWORKS_BEARER_TOKEN`
 - `CDT_SOLIDWORKS_AUTH_ISSUER_URL`

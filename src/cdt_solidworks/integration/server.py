@@ -13,7 +13,13 @@ from .runtime import IntegratedProviderRuntime
 
 
 def _config(config: ServerConfig, runtime: IntegratedProviderRuntime) -> ServerConfig:
-    return replace(config, runtime_context_provider=runtime.runtime_context)
+    observer = config.observer or runtime.observer
+    runtime.set_observer(observer)
+    return replace(
+        config,
+        runtime_context_provider=runtime.runtime_context,
+        observer=observer,
+    )
 
 
 def build_integrated_server(
