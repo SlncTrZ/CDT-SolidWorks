@@ -7,7 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import math
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,7 @@ from cdt_solidworks.part.models import (
     CircularPatternSpec,
     CutSpec,
     DraftSpec,
+    ExtrudeSpec,
     FeatureKind,
     FeatureSnapshot,
     FilletSpec,
@@ -235,11 +236,13 @@ class IntegratedPartFeatureService:
         *,
         path_policy: DocumentPathPolicy,
         service: Any | None = None,
+        profile_port: Any | None = None,
         default_timeout: float = 60.0,
     ) -> None:
         self._recovery = ContextVar("part_recovery", default=None)
         self.session = session
         self.path_policy = path_policy
+        self.profile_port = profile_port
         self.default_timeout = float(default_timeout)
         self.api = None if session is None else session.api
         if service is None:
@@ -273,6 +276,65 @@ class IntegratedPartFeatureService:
             )
             service = PartService(runtime)
         self.service = service
+
+    def profile_extrude(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        depth_mm: float,
+        configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision, configuration)
+            profile_id = self._identity(sketch_id, "sketch_id")
+            self._require_profile(target, profile_id)
+            return self.service.extrude(
+                target,
+                ExtrudeSpec(
+                    name=self._name(name, "name"),
+                    profile=ProfileRef(profile_id),
+                    depth_mm=self._positive_number(depth_mm, "depth_mm"),
+                ),
+            )
+
+        return self._call_service("part_profile_extrude", operation, mutation=True)
+
+    def profile_cut(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        sketch_id: str,
+        name: str,
+        through_all: bool,
+        depth_mm: float | None = None,
+        configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            target = self._target(path, expected_revision, configuration)
+            profile_id = self._identity(sketch_id, "sketch_id")
+            self._require_profile(target, profile_id)
+            through = self._boolean(through_all, "through_all")
+            depth: float | None = None
+            if through:
+                if depth_mm is not None:
+                    raise PartValidationError("through-all cut must not specify depth_mm")
+            else:
+                depth = self._positive_number(depth_mm, "depth_mm")
+            return self.service.cut(
+                target,
+                CutSpec(
+                    name=self._name(name, "name"),
+                    profile=ProfileRef(profile_id),
+                    through_all=through,
+                    depth_mm=depth,
+                ),
+            )
+
+        return self._call_service("part_profile_cut", operation, mutation=True)
 
     def cut_extrude(
         self,
@@ -795,6 +857,44 @@ class IntegratedPartFeatureService:
 
         return self._call_service("part_feature_set_suppressed", operation, mutation=True)
 
+    def feature_parameters_get(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+        configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            return self.service.get_feature_parameters(
+                self._target(path, expected_revision, configuration),
+                self._identity(feature_id, "feature_id"),
+            )
+
+        return self._call_service("part_feature_parameters_get", operation, mutation=False)
+
+    def feature_parameter_set(
+        self,
+        *,
+        path: str,
+        expected_revision: int,
+        feature_id: str,
+        parameter: str,
+        value: float,
+        configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        def operation() -> Any:
+            if parameter not in {"depth_mm", "radius_mm"}:
+                raise PartValidationError("parameter must be depth_mm or radius_mm")
+            return self.service.set_feature_parameter(
+                self._target(path, expected_revision, configuration),
+                self._identity(feature_id, "feature_id"),
+                parameter,
+                self._positive_number(value, "value"),
+            )
+
+        return self._call_service("part_feature_parameter_set", operation, mutation=True)
+
     def set_feature_parameter(
         self,
         *,
@@ -804,17 +904,13 @@ class IntegratedPartFeatureService:
         parameter: str,
         value: float,
     ) -> NativeCallResult[Any]:
-        def operation() -> Any:
-            if parameter != "radius_mm":
-                raise PartValidationError("parameter must be exactly 'radius_mm'")
-            return self.service.set_feature_parameter(
-                self._target(path, expected_revision),
-                self._identity(feature_id, "feature_id"),
-                parameter,
-                self._positive_number(value, "value"),
-            )
-
-        return self._call_service("part_feature_set_parameter", operation, mutation=True)
+        return self.feature_parameter_set(
+            path=path,
+            expected_revision=expected_revision,
+            feature_id=feature_id,
+            parameter=parameter,
+            value=value,
+        )
 
     def reconcile_simple_hole(
         self,
@@ -1704,13 +1800,49 @@ class IntegratedPartFeatureService:
             raise PartValidationError("size must be one of M2, M4, or M6")
         return size
 
-    def _target(self, path: str, expected_revision: int) -> DocumentTarget:
+    def _target(
+        self,
+        path: str,
+        expected_revision: int,
+        configuration: str | None = None,
+    ) -> DocumentTarget:
         source = self.path_policy.validate_open(path)
         if Path(source).suffix.lower() != _PART_EXT:
             raise PartValidationError("parametric part feature requires a native .SLDPRT document")
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
             raise PartValidationError("expected_revision must be a non-negative integer")
-        return DocumentTarget(source, expected_revision, "mm")
+        if configuration is not None and (not isinstance(configuration, str) or not configuration.strip()):
+            raise PartValidationError("configuration must be a non-empty string when supplied")
+        return DocumentTarget(
+            source,
+            expected_revision,
+            "mm",
+            expected_configuration=configuration.strip() if configuration is not None else None,
+        )
+
+    def _require_profile(self, target: DocumentTarget, sketch_id: str) -> None:
+        port = self.profile_port
+        if port is None or not callable(getattr(port, "inspect_profile", None)):
+            raise PartValidationError("profile inspection dependency is unavailable")
+        raw = port.inspect_profile(
+            path=target.document_id,
+            expected_revision=target.expected_revision,
+            sketch_id=sketch_id,
+        )
+        if isinstance(raw, NativeCallResult):
+            if raw.state is not NativeCallState.SUCCESS or raw.value is None:
+                raise PartValidationError("profile inspection dependency did not return usable state")
+            raw = raw.value
+        if isinstance(raw, Mapping):
+            closed = raw.get("closed")
+            ambiguous = raw.get("ambiguous")
+        else:
+            closed = getattr(raw, "closed", None)
+            ambiguous = getattr(raw, "ambiguous", None)
+        if closed is not True:
+            raise PartValidationError("profile must be explicitly closed before feature mutation")
+        if ambiguous is not False:
+            raise PartValidationError("profile is ambiguous and requires an explicit unambiguous profile")
 
     @contextmanager
     def _recoverable(self, family: str, **kwargs):

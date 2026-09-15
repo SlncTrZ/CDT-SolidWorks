@@ -16,6 +16,7 @@ from cdt_solidworks.part.models import (
     CircularPatternSpec,
     CutSpec,
     DraftSpec,
+    ExtrudeSpec,
     FeatureKind,
     FeatureSnapshot,
     FilletSpec,
@@ -101,6 +102,7 @@ class PartNativeRuntime:
         body_name: Callable[[Any], str],
         rebuild_verifier: Callable[[Any], RebuildResult],
         cut_profile_validator: Callable[[Any, Any, str], None] | None = None,
+        extrude_profile_validator: Callable[[Any, Any, str], None] | None = None,
         revolve_profile_validator: Callable[[Any, Any, str], None] | None = None,
         null_dispatch: Callable[[], Any] | None = None,
     ) -> None:
@@ -113,6 +115,7 @@ class PartNativeRuntime:
         self._body_name = body_name
         self._rebuild = rebuild_verifier
         self._cut_profile_validator = cut_profile_validator
+        self._extrude_profile_validator = extrude_profile_validator
         self._revolve_profile_validator = revolve_profile_validator
         self._null_dispatch = null_dispatch or (lambda: None)
 
@@ -128,6 +131,75 @@ class PartNativeRuntime:
             )
 
         return self._execute(operation, stage="part_resolve_document", mutation=False)
+
+    def create_extrude(self, document: ResolvedDocument, spec: ExtrudeSpec) -> MutationReceipt:
+        def operation(app: Any) -> MutationReceipt:
+            binding = self._binding_from_document(app, document)
+            model = binding.model
+            profile = self._member(model, "FeatureByName", spec.profile.sketch_id)
+            if profile is None or self._native_feature_type(profile) != "ProfileFeature":
+                raise NativeRuntimeError(
+                    "cad_precondition_failed",
+                    "part_extrude_native",
+                    "The requested profile sketch could not be resolved as a native sketch feature.",
+                )
+            if self._extrude_profile_validator is not None:
+                self._extrude_profile_validator(model, profile, spec.profile.sketch_id)
+            self._member(model, "ClearSelection2", True)
+            if not bool(self._member(profile, "Select2", False, 0)):
+                raise NativeRuntimeError(
+                    "cad_selection_failed",
+                    "part_extrude_native",
+                    "The requested profile sketch could not be selected.",
+                )
+            manager = self._member(model, "FeatureManager")
+            feature = self._member(
+                manager,
+                "FeatureExtrusion3",
+                True,
+                False,
+                False,
+                _SW_END_BLIND,
+                _SW_END_BLIND,
+                float(spec.depth_mm) / 1000.0,
+                0.0,
+                False,
+                False,
+                False,
+                False,
+                0.0,
+                0.0,
+                False,
+                False,
+                False,
+                False,
+                True,
+                False,
+                True,
+                _SW_START_SKETCH_PLANE,
+                0.0,
+                False,
+            )
+            if feature is None:
+                raise NativeRuntimeError(
+                    "cad_mutation_failed",
+                    "part_extrude_native",
+                    "SOLIDWORKS did not create the requested boss/base extrude feature.",
+                )
+            try:
+                feature.Name = spec.name
+            except Exception:
+                pass
+            identity = self._feature_name(feature).strip()
+            if not identity:
+                raise NativeRuntimeError(
+                    "cad_postcondition_failed",
+                    "part_extrude_native",
+                    "Created boss/base extrude returned an empty feature identity.",
+                )
+            return MutationReceipt(identity)
+
+        return self._execute(operation, stage="part_extrude_native", mutation=True)
 
     def create_cut(self, document: ResolvedDocument, spec: CutSpec) -> MutationReceipt:
         def operation(app: Any) -> MutationReceipt:
@@ -984,6 +1056,28 @@ class PartNativeRuntime:
             if feature is None:
                 return None
             native_type = self._native_feature_type(feature)
+            if native_type in {"Boss", "Extrusion"}:
+                definition = self._member(feature, "GetDefinition")
+                if definition is None:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "part_feature_readback",
+                        "Boss/base extrude definition was unavailable during native read-back.",
+                    )
+                depth_m = float(self._member(definition, "GetDepth", True))
+                if not math.isfinite(depth_m) or depth_m <= 0.0:
+                    raise NativeRuntimeError(
+                        "cad_postcondition_failed",
+                        "part_feature_readback",
+                        "Boss/base extrude returned an invalid native depth.",
+                    )
+                return FeatureSnapshot(
+                    feature_id=self._feature_name(feature),
+                    name=self._feature_name(feature),
+                    kind=FeatureKind.EXTRUDE,
+                    parameters={"depth_mm": depth_m * 1000.0},
+                    suppressed=self._is_feature_suppressed(feature),
+                )
             if native_type == "Cut":
                 definition = self._member(feature, "GetDefinition")
                 if definition is None:
@@ -1539,12 +1633,26 @@ class PartNativeRuntime:
                     "part_feature_parameter",
                     f"Feature {feature_id!r} was not found.",
                 )
-            if self._feature_kind(feature) is not FeatureKind.FILLET or parameter != "radius_mm":
+            kind = self._feature_kind(feature)
+            supported = {
+                FeatureKind.EXTRUDE: "depth_mm",
+                FeatureKind.CUT: "depth_mm",
+                FeatureKind.FILLET: "radius_mm",
+            }
+            if kind not in supported or supported[kind] != parameter:
                 raise NativeRuntimeError(
                     "unsupported_native_operation",
                     "part_feature_parameter",
-                    "Only radius_mm editing for promoted constant-radius fillets is supported.",
+                    "Only promoted extrude/cut depth_mm and constant-radius fillet radius_mm edits are supported.",
                 )
+            if kind is FeatureKind.CUT:
+                definition = self._member(feature, "GetDefinition")
+                if definition is None or int(self._member(definition, "GetEndCondition", True)) != _SW_END_BLIND:
+                    raise NativeRuntimeError(
+                        "unsupported_native_operation",
+                        "part_feature_parameter",
+                        "Through-all or unreadable cuts do not expose a bounded finite depth parameter.",
+                    )
             dimension = self._member(feature, "Parameter", "D1")
             if dimension is None:
                 raise NativeRuntimeError(
@@ -1565,8 +1673,8 @@ class PartNativeRuntime:
                 raise NativeRuntimeError(
                     "cad_mutation_failed",
                     "part_feature_parameter",
-                    "SOLIDWORKS rejected the fillet radius dimension update.",
-                    details={"status": status},
+                    "SOLIDWORKS rejected the bounded feature dimension update.",
+                    details={"status": status, "parameter": parameter},
                 )
             return MutationReceipt(feature_id)
 
@@ -1652,6 +1760,8 @@ class PartNativeRuntime:
 
     def _feature_kind(self, feature: Any) -> FeatureKind | None:
         native_type = self._native_feature_type(feature)
+        if native_type in {"Boss", "Extrusion"}:
+            return FeatureKind.EXTRUDE
         if native_type == "Cut":
             return FeatureKind.CUT
         if native_type in {"Hole", "SketchHole", "SimpleHole", "HoleWzd"}:
