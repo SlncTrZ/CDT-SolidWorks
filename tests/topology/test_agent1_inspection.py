@@ -102,7 +102,7 @@ def test_geometry_inspection_is_typed_unit_explicit_and_finite():
         assert body_geo.body_kind == "solid"
         assert body_geo.bbox_mm == (0.0, 0.0, 0.0, 10.0, 20.0, 30.0)
         assert math.isclose(body_geo.volume_mm3, 6000.0)
-        assert math.isclose(body_geo.area_mm2, 2200.0)
+        assert body_geo.area_mm2 == 2200.0
 
         face_geo = service.inspect(context, face_ref).value.geometry
         assert face_geo.surface_type == "cylindrical"
@@ -212,3 +212,55 @@ def test_component_instance_binding_prevents_cross_instance_resolution():
         right = service.resolve(context, ref_a, component_id="Shared-1")
         assert right.state is NativeCallState.SUCCESS
         assert right.value.component_id == "Shared-1"
+
+
+def test_component_query_persists_underlying_model_entity_not_assembly_proxy():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        part_path = root / "shared.SLDPRT"
+        part_path.write_bytes(b"part")
+        v1 = FakeVertex(b"v1")
+        v2 = FakeVertex(b"v2", (0.001, 0.0, 0.0))
+        edge = FakeEdge(b"e1", v1, v2)
+        source_face = FakeFace(b"source-face", (edge,))
+        source_body = FakeBody(b"source-body", "SharedBody", (source_face,))
+        part_doc = FakeDocument(str(part_path), source_body)
+
+        proxy_face = FakeFace(b"assembly-face", (edge,))
+        proxy_body = FakeBody(b"assembly-body", "SharedBody", (proxy_face,))
+
+        class ProxyComponent(Component):
+            def GetBodies3(self, body_type, options):
+                return (proxy_body,) if body_type == 0 else ()
+
+            def GetBodies2(self, body_type):
+                return self.GetBodies3(body_type, 0)
+
+            def GetCorrespondingEntity(self, entity):
+                return proxy_face if entity is source_face else entity
+
+        component = ProxyComponent("Shared-1", part_doc)
+        asm_path = root / "fixture.SLDASM"
+        asm_path.write_bytes(b"asm")
+        assembly = AssemblyDocument(str(asm_path), (component,))
+        api = AssemblyApi()
+        session = FakeSession(FakeApp(assembly), api)
+        documents = DocumentService(session, path_policy=DocumentPathPolicy((root,)))
+        service = TopologyNativeAdapter(session, document_service=documents, max_items=64)
+        context = DocumentContext(
+            session_id=session.session_id,
+            path=os.path.realpath(asm_path),
+            title=asm_path.name,
+            document_type=DocumentType.ASSEMBLY,
+            configuration="Default",
+            update_stamp=10,
+        )
+
+        result = service.query(context, kinds=("face",), component_id="Shared-1")
+        assert result.state is NativeCallState.SUCCESS
+        reference = result.value.items[0].reference
+        part_doc.Extension.states[b"assembly-face"] = 1
+
+        resolved = service.resolve(context, reference, component_id="Shared-1")
+        assert resolved.state is NativeCallState.SUCCESS
+        assert resolved.value.component_id == "Shared-1"

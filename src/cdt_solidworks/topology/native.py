@@ -329,19 +329,11 @@ class TopologyNativeAdapter:
         result: list[Any] = []
         seen: set[bytes] = set()
         for body_type in (0, 1):
-            if component is None:
-                bodies = self.api.bodies(model, body_type, False)
-            else:
-                try:
-                    bodies = self._as_tuple(self.api._member(component, "GetBodies3", body_type, 0))
-                except Exception:
-                    try:
-                        bodies = self._as_tuple(self.api._member(component, "GetBodies2", body_type))
-                    except Exception as exc:
-                        raise NativeRuntimeError(
-                            "topology_component_body_read_failed", "topology_query",
-                            "SOLIDWORKS could not enumerate bodies for the bound component instance.",
-                        ) from exc
+            # Persistent references must be created by the underlying source model.
+            # Component-context bodies can yield references that the part model later
+            # reports as invalid; instance identity is already bound separately in
+            # the opaque token and converted back through GetCorrespondingEntity.
+            bodies = self.api.bodies(model, body_type, False)
             for body in bodies:
                 if body is None:
                     continue
