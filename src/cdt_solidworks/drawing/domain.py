@@ -80,6 +80,15 @@ class BomSnapshot:
     row_count: int
     column_count: int = 0
     rows: tuple[tuple[str, ...], ...] = ()
+    component_ids: tuple[tuple[str, ...], ...] = ()
+
+
+@dataclass(frozen=True)
+class DrawingUpdateSnapshot:
+    view_count: int
+    dimension_count: int
+    bom_count: int
+    current: bool
 
 
 class DrawingAdapter(Protocol):
@@ -129,11 +138,20 @@ class DrawingAdapter(Protocol):
         self, drawing_id: str, annotation_id: str
     ) -> AnnotationSnapshot | None: ...
 
-    def add_dimension(self, drawing_id: str, view_id: str, source_ref: str) -> str: ...
+    def add_dimension(
+        self,
+        drawing_id: str,
+        view_id: str,
+        source_ref: str,
+        x_mm: float = 0.0,
+        y_mm: float = 0.0,
+    ) -> str: ...
 
     def read_dimension(
         self, drawing_id: str, dimension_id: str
     ) -> DimensionSnapshot | None: ...
+
+    def list_dimensions(self, drawing_id: str) -> tuple[DimensionSnapshot, ...]: ...
 
     def supports_bom(self, drawing_id: str) -> bool: ...
 
@@ -142,6 +160,10 @@ class DrawingAdapter(Protocol):
     ) -> str: ...
 
     def read_bom(self, drawing_id: str, bom_id: str) -> BomSnapshot | None: ...
+
+    def list_boms(self, drawing_id: str) -> tuple[BomSnapshot, ...]: ...
+
+    def list_views(self, drawing_id: str) -> tuple[ViewSnapshot, ...]: ...
 
     def rebuild_drawing(self, drawing_id: str) -> RebuildReport: ...
 
@@ -368,7 +390,15 @@ class DrawingService:
         return tuple(snapshots)
 
     def add_dimension(
-        self, drawing_id: str, view_id: str, source_ref: str
+        self,
+        drawing_id: str,
+        view_id: str,
+        source_ref: str,
+        *,
+        source_model_path: str | None = None,
+        source_configuration: str | None = None,
+        x_mm: float = 0.0,
+        y_mm: float = 0.0,
     ) -> DimensionSnapshot:
         self._require_identity("drawing_id", drawing_id)
         self._require_identity("view_id", view_id)
@@ -376,7 +406,26 @@ class DrawingService:
         view = self._adapter.read_view(drawing_id, view_id)
         if view is None or view.dangling:
             raise DrawingRefusal("invalid_dimension_view", view_id)
-        dimension_id = self._adapter.add_dimension(drawing_id, view_id, source_ref)
+        explicit_binding = source_model_path is not None or source_configuration is not None
+        if source_model_path is not None:
+            self._require_identity("source_model_path", source_model_path)
+            if view.source_model_path != source_model_path:
+                raise DrawingRefusal("dimension_source_identity_mismatch", source_model_path)
+        if source_configuration is not None:
+            self._require_identity("source_configuration", source_configuration)
+            if view.source_configuration != source_configuration:
+                raise DrawingRefusal(
+                    "dimension_source_configuration_mismatch", source_configuration
+                )
+        if explicit_binding and not source_ref.startswith("swref1."):
+            raise DrawingRefusal("invalid_topology_reference", source_ref)
+        self._require_position(x_mm, y_mm)
+        if explicit_binding:
+            dimension_id = self._adapter.add_dimension(
+                drawing_id, view_id, source_ref, float(x_mm), float(y_mm)
+            )
+        else:
+            dimension_id = self._adapter.add_dimension(drawing_id, view_id, source_ref)
         self._require_identity("dimension_id", dimension_id)
         self._require_rebuild(drawing_id)
         dimension = self._adapter.read_dimension(drawing_id, dimension_id)
@@ -384,23 +433,38 @@ class DrawingService:
             raise DrawingPostconditionError(
                 "dimension_readback_missing", dimension_id
             )
-        if dimension.dangling:
-            raise DrawingPostconditionError("dangling_dimension", dimension_id)
-        if dimension.view_id != view_id or dimension.source_ref != source_ref:
-            raise DrawingPostconditionError(
-                "dimension_source_readback_mismatch", dimension_id
-            )
-        if not dimension.display_text.strip():
-            raise DrawingPostconditionError(
-                "dimension_display_readback_missing", dimension_id
-            )
+        self._validate_dimension(dimension, view_id, source_ref)
         return dimension
+
+    def list_dimensions(
+        self, drawing_id: str, view_id: str | None = None
+    ) -> tuple[DimensionSnapshot, ...]:
+        self._require_identity("drawing_id", drawing_id)
+        if view_id is not None:
+            self._require_identity("view_id", view_id)
+        reader = getattr(self._adapter, "list_dimensions", None)
+        if reader is None:
+            raise DrawingRefusal("unsupported_capability", "solidworks.drawing.dimensions_list")
+        dimensions = tuple(reader(drawing_id))
+        result: list[DimensionSnapshot] = []
+        seen: set[str] = set()
+        for dimension in dimensions:
+            if view_id is not None and dimension.view_id != view_id:
+                continue
+            if dimension.identity in seen:
+                raise DrawingPostconditionError("duplicate_dimension_identity", dimension.identity)
+            seen.add(dimension.identity)
+            self._validate_dimension(dimension, dimension.view_id, dimension.source_ref)
+            result.append(dimension)
+        return tuple(result)
 
     def create_bom(
         self,
         drawing_id: str,
         view_id: str,
         source_configuration: str | None = None,
+        *,
+        source_model_path: str | None = None,
     ) -> BomSnapshot:
         self._require_identity("drawing_id", drawing_id)
         self._require_identity("view_id", view_id)
@@ -411,6 +475,15 @@ class DrawingService:
         view = self._adapter.read_view(drawing_id, view_id)
         if view is None or view.dangling:
             raise DrawingRefusal("invalid_bom_view", view_id)
+        if source_model_path is not None:
+            self._require_identity("source_model_path", source_model_path)
+            if view.source_model_path != source_model_path:
+                raise DrawingRefusal("bom_source_identity_mismatch", source_model_path)
+        if (
+            source_configuration is not None
+            and view.source_configuration != source_configuration
+        ):
+            raise DrawingRefusal("bom_configuration_mismatch", source_configuration)
         bom_id = self._adapter.create_bom(
             drawing_id, view_id, source_configuration
         )
@@ -427,11 +500,104 @@ class DrawingService:
             )
         if bom.row_count < 1 or bom.column_count < 1:
             raise DrawingPostconditionError("bom_empty_readback", bom_id)
+        self._validate_bom(bom)
+        return bom
+
+    def read_bom(self, drawing_id: str, bom_id: str) -> BomSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("bom_id", bom_id)
+        bom = self._adapter.read_bom(drawing_id, bom_id)
+        if bom is None:
+            raise DrawingRefusal("bom_not_found", bom_id)
+        self._validate_bom(bom)
+        return bom
+
+    def update_drawing(
+        self,
+        drawing_id: str,
+        *,
+        source_model_path: str,
+        source_configuration: str | None = None,
+    ) -> DrawingUpdateSnapshot:
+        self._require_identity("drawing_id", drawing_id)
+        self._require_identity("source_model_path", source_model_path)
+        if source_configuration is not None:
+            self._require_identity("source_configuration", source_configuration)
+        list_views = getattr(self._adapter, "list_views", None)
+        list_dimensions = getattr(self._adapter, "list_dimensions", None)
+        list_boms = getattr(self._adapter, "list_boms", None)
+        if list_views is None or list_dimensions is None or list_boms is None:
+            raise DrawingRefusal("unsupported_capability", "solidworks.drawing.update")
+        before = tuple(list_views(drawing_id))
+        if not before:
+            raise DrawingRefusal("drawing_views_missing", drawing_id)
+        self._validate_update_source(before, source_model_path, source_configuration)
+        self._require_rebuild(drawing_id)
+        views = tuple(list_views(drawing_id))
+        self._validate_update_source(views, source_model_path, source_configuration)
+        for view in views:
+            if view.dangling:
+                raise DrawingPostconditionError("dangling_view", view.identity)
+        dimensions = tuple(list_dimensions(drawing_id))
+        for dimension in dimensions:
+            self._validate_dimension(dimension, dimension.view_id, dimension.source_ref)
+        boms = tuple(list_boms(drawing_id))
+        for bom in boms:
+            self._validate_bom(bom)
+        return DrawingUpdateSnapshot(
+            view_count=len(views),
+            dimension_count=len(dimensions),
+            bom_count=len(boms),
+            current=True,
+        )
+
+    @staticmethod
+    def _validate_dimension(
+        dimension: DimensionSnapshot, view_id: str, source_ref: str
+    ) -> None:
+        if dimension.dangling:
+            raise DrawingPostconditionError("dangling_dimension", dimension.identity)
+        if dimension.view_id != view_id or dimension.source_ref != source_ref:
+            raise DrawingPostconditionError(
+                "dimension_source_readback_mismatch", dimension.identity
+            )
+        if not dimension.display_text.strip():
+            raise DrawingPostconditionError(
+                "dimension_display_readback_missing", dimension.identity
+            )
+
+    @staticmethod
+    def _validate_bom(bom: BomSnapshot) -> None:
+        if bom.row_count < 1 or bom.column_count < 1:
+            raise DrawingPostconditionError("bom_empty_readback", bom.identity)
         if len(bom.rows) != bom.row_count or any(
             len(row) != bom.column_count for row in bom.rows
         ):
-            raise DrawingPostconditionError("bom_table_shape_mismatch", bom_id)
-        return bom
+            raise DrawingPostconditionError("bom_table_shape_mismatch", bom.identity)
+        if bom.component_ids and len(bom.component_ids) != bom.row_count:
+            raise DrawingPostconditionError("bom_component_shape_mismatch", bom.identity)
+
+    @staticmethod
+    def _validate_update_source(
+        views: tuple[ViewSnapshot, ...],
+        source_model_path: str,
+        source_configuration: str | None,
+    ) -> None:
+        for view in views:
+            if view.dangling:
+                raise DrawingPostconditionError("dangling_view", view.identity)
+            if view.source_model_path != source_model_path:
+                raise DrawingRefusal(
+                    "drawing_source_identity_mismatch", view.source_model_path
+                )
+            if (
+                source_configuration is not None
+                and view.source_configuration != source_configuration
+            ):
+                raise DrawingRefusal(
+                    "drawing_source_configuration_mismatch",
+                    str(view.source_configuration),
+                )
 
     def _require_derived_view(
         self,

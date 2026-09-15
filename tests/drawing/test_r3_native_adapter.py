@@ -1,6 +1,6 @@
 import unittest
 
-from cdt_solidworks.drawing.domain import DrawingService
+from cdt_solidworks.drawing.domain import DrawingRefusal, DrawingService
 from cdt_solidworks.drawing.native import SolidWorksDrawingAdapter
 from cdt_solidworks.native.models import NativeCallResult
 
@@ -45,6 +45,11 @@ class FakeAnnotation:
         return (1,)
 
 
+class FakeBadAttachmentAnnotation(FakeAnnotation):
+    def GetAttachedEntityTypes(self):
+        raise RuntimeError("attachment read failed")
+
+
 class FakeNote:
     def __init__(self, annotation):
         self.annotation = annotation
@@ -57,16 +62,38 @@ class FakeFeature:
     Name = "BOM1"
 
 
+class FakeComponent:
+    def __init__(self, select_id):
+        self.select_id = select_id
+
+    def GetSelectByIDString(self):
+        return self.select_id
+
+
 class FakeTable:
     RowCount = 2
-    ColumnCount = 2
+    ColumnCount = 4
+
+    def __init__(self):
+        self._next = None
 
     def GetFeature(self):
         return FakeFeature()
 
     def DisplayedText2(self, row, column, include_hidden):
-        values = (("ITEM NO.", "QTY."), ("1", "2"))
+        values = (
+            ("ITEM NO.", "QTY.", "PART NUMBER", "DESCRIPTION"),
+            ("1", "2", "P-100", "PIN"),
+        )
         return values[row][column]
+
+    def GetComponents2(self, row, configuration):
+        if row == 0:
+            return ()
+        return (FakeComponent("PIN-1@fixture"), FakeComponent("PIN-2@fixture"))
+
+    def GetNext(self):
+        return self._next
 
 
 class FakeSection:
@@ -75,6 +102,18 @@ class FakeSection:
 
     def GetLabel(self):
         return self.label
+
+
+class FakeDisplayDimension:
+    def __init__(self, name, text="10.00"):
+        self.annotation = FakeAnnotation(name, 4, text)
+        self._next = None
+
+    def GetAnnotation(self):
+        return self.annotation
+
+    def GetNext5(self):
+        return self._next
 
 
 class FakeCenterMark:
@@ -117,6 +156,8 @@ class FakeView:
         self._next = None
         self._specific = specific
         self._center_marks = []
+        self._display_dimensions = []
+        self._tables = []
 
     def GetNextView(self):
         return self._next
@@ -125,7 +166,11 @@ class FakeView:
         return 3
 
     def InsertBomTable5(self, *args):
-        return FakeTable()
+        table = FakeTable()
+        if self._tables:
+            self._tables[-1]._next = table
+        self._tables.append(table)
+        return table
 
     def GetSection(self):
         return self._specific if isinstance(self._specific, FakeSection) else None
@@ -139,6 +184,12 @@ class FakeView:
 
     def GetFirstCenterMark(self):
         return self._center_marks[0] if self._center_marks else None
+
+    def GetFirstDisplayDimension5(self):
+        return self._display_dimensions[0] if self._display_dimensions else None
+
+    def GetFirstTableAnnotation(self):
+        return self._tables[0] if self._tables else None
 
 
 class FakeExtension:
@@ -225,6 +276,14 @@ class FakeDrawing:
     def InsertModelAnnotations4(self, *args):
         return (FakeAnnotation("D1@Sketch1", 4, "25.00"),)
 
+    def AddDimension2(self, x, y, z):
+        assert self.selected_view is not None
+        display = FakeDisplayDimension(f"D{len(self.selected_view._display_dimensions) + 1}@{self.selected_view.Name}")
+        if self.selected_view._display_dimensions:
+            self.selected_view._display_dimensions[-1]._next = display
+        self.selected_view._display_dimensions.append(display)
+        return display
+
     def GetFirstView(self):
         sheet = FakeView("SheetFormat", "")
         current = sheet
@@ -268,6 +327,15 @@ class FakeApi:
         return object()
 
 
+class FakeReferenceSelector:
+    def __init__(self):
+        self.calls = []
+
+    def select_for_drawing(self, **kwargs):
+        self.calls.append(kwargs)
+        return str(kwargs["source_ref"]).startswith("swref1.")
+
+
 class FakeSession:
     def __init__(self, api, app):
         self.api = api
@@ -282,10 +350,12 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.path = r"C:\\drawings\\fixture.SLDDRW"
         self.drawing = FakeDrawing(self.path)
         self.api = FakeApi(self.drawing)
+        self.selector = FakeReferenceSelector()
         self.adapter = SolidWorksDrawingAdapter(
             FakeSession(self.api, object()),
             path_policy=FakePathPolicy(),
             bom_template_path=r"C:\\templates\\bom.sldbomtbt",
+            reference_selector=self.selector,
         )
         self.service = DrawingService(self.adapter)
         self.base = self.service.create_view(
@@ -305,6 +375,15 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
             self.path, projected.identity
         )
         bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        dimension = self.service.add_dimension(
+            self.path,
+            self.base.identity,
+            "swref1.opaque.reference",
+            source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default",
+            x_mm=40.0,
+            y_mm=30.0,
+        )
         center_marks = self.service.auto_insert_center_marks(
             self.path, self.base.identity
         )
@@ -319,7 +398,74 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.assertEqual("display_dimension", annotations[0].annotation_kind)
         self.assertEqual(2, len(center_marks))
         self.assertTrue(all(item.annotation_kind == "center_mark" for item in center_marks))
-        self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0])
+        self.assertEqual(("ITEM NO.", "QTY."), bom.rows[0][:2])
+        self.assertEqual(("1", "2", "P-100", "PIN"), bom.rows[1])
+        self.assertEqual(("PIN-1@fixture", "PIN-2@fixture"), bom.component_ids[1])
+        self.assertEqual("swref1.opaque.reference", dimension.source_ref)
+        self.assertEqual(1, len(self.selector.calls))
+        update = self.service.update_drawing(
+            self.path,
+            source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default",
+        )
+        self.assertGreaterEqual(update.view_count, 1)
+        self.assertEqual(1, update.dimension_count)
+        self.assertEqual(1, update.bom_count)
+
+    def test_attachment_read_error_is_typed_and_never_clean_false(self):
+        self.drawing.InsertNote = lambda text: FakeNote(
+            FakeBadAttachmentAnnotation("NoteBad", 6, text)
+        )
+        with self.assertRaisesRegex(Exception, "attachment_read_failed"):
+            self.service.add_note(self.path, self.base.identity, "CHECK")
+
+    def test_topology_port_missing_ambiguous_and_stale_refusals_fail_closed(self):
+        for reason in (
+            "topology_reference_unavailable",
+            "ambiguous_topology_reference",
+            "stale_topology_reference",
+        ):
+            with self.subTest(reason=reason):
+                def reject(**kwargs):
+                    raise DrawingRefusal(reason, kwargs["source_ref"])
+
+                self.selector.select_for_drawing = reject
+                before = len(self.drawing.views[0]._display_dimensions)
+                with self.assertRaisesRegex(DrawingRefusal, reason):
+                    self.service.add_dimension(
+                        self.path,
+                        self.base.identity,
+                        "swref1.opaque.reference",
+                        source_model_path=r"C:\\models\\fixture.SLDASM",
+                        source_configuration="Default",
+                        x_mm=40.0,
+                        y_mm=30.0,
+                    )
+                self.assertEqual(before, len(self.drawing.views[0]._display_dimensions))
+
+    def test_structure_readback_survives_lane_metadata_cache_loss(self):
+        bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        dimension = self.service.add_dimension(
+            self.path,
+            self.base.identity,
+            "swref1.opaque.reference",
+            source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default",
+            x_mm=40.0,
+            y_mm=30.0,
+        )
+        self.adapter._bom_metadata.clear()
+        self.adapter._dimension_metadata.clear()
+        self.adapter._view_metadata.clear()
+
+        views = self.adapter.list_views(self.path)
+        dimensions = self.adapter.list_dimensions(self.path)
+        boms = self.adapter.list_boms(self.path)
+
+        self.assertEqual((self.base.identity,), tuple(item.identity for item in views))
+        self.assertEqual((dimension.identity,), tuple(item.identity for item in dimensions))
+        self.assertEqual((bom.identity,), tuple(item.identity for item in boms))
+        self.assertEqual(("PIN-1@fixture", "PIN-2@fixture"), boms[0].component_ids[1])
 
 
 if __name__ == "__main__":

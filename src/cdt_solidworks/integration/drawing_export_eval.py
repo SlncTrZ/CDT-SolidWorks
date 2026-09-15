@@ -125,8 +125,11 @@ class IntegratedDrawingService:
         path_policy: DocumentPathPolicy,
         service: Any | None = None,
         timeout: float = 60.0,
+        bom_template_path: str | None = None,
+        reference_selector: Any | None = None,
     ) -> None:
         self.path_policy = path_policy
+        injected_service = service is not None
         if service is None:
             if session is None:
                 raise ValueError("session is required when drawing service is not injected")
@@ -135,9 +138,21 @@ class IntegratedDrawingService:
                     session,
                     path_policy=path_policy,
                     default_timeout=timeout,
+                    bom_template_path=bom_template_path,
+                    reference_selector=reference_selector,
                 )
             )
         self.service = service
+        self.dimension_available = (
+            bool(getattr(service, "dimension_available", True))
+            if injected_service
+            else reference_selector is not None
+        )
+        self.bom_available = (
+            bool(getattr(service, "bom_available", True))
+            if injected_service
+            else bom_template_path is not None
+        )
 
     def create(self, output_path: str) -> NativeCallResult[Any]:
         stage = "drawing_create"
@@ -286,6 +301,120 @@ class IntegratedDrawingService:
             return _local_failure(stage, "view_id must be a non-empty string.")
         return self._call(
             stage, lambda: self.service.auto_insert_center_marks(drawing, view_id)
+        )
+
+    def create_dimension(
+        self,
+        path: str,
+        view_id: str,
+        source_model_path: str,
+        source_configuration: str | None,
+        source_ref: str,
+        x_mm: float,
+        y_mm: float,
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_dimension_create"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        source = self._validate_open(source_model_path, stage, _PART_EXTENSIONS)
+        if isinstance(source, NativeCallResult):
+            return source
+        if not isinstance(view_id, str) or not view_id.strip():
+            return _local_failure(stage, "view_id must be a non-empty string.")
+        if not isinstance(source_ref, str) or not source_ref.startswith("swref1."):
+            return _local_failure(stage, "source_ref must be an opaque swref1 topology reference.")
+        if source_configuration is not None and (
+            not isinstance(source_configuration, str) or not source_configuration.strip()
+        ):
+            return _local_failure(stage, "source_configuration must be non-empty when supplied.")
+        return self._call(
+            stage,
+            lambda: self.service.add_dimension(
+                drawing,
+                view_id,
+                source_ref,
+                source_model_path=source,
+                source_configuration=source_configuration,
+                x_mm=x_mm,
+                y_mm=y_mm,
+            ),
+        )
+
+    def list_dimensions(
+        self, path: str, view_id: str | None = None
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_dimensions_list"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if view_id is not None and (not isinstance(view_id, str) or not view_id.strip()):
+            return _local_failure(stage, "view_id must be non-empty when supplied.")
+        return self._call(stage, lambda: self.service.list_dimensions(drawing, view_id))
+
+    def create_bom(
+        self,
+        path: str,
+        view_id: str,
+        source_assembly_path: str,
+        source_configuration: str,
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_bom_create"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        source = self._validate_open(source_assembly_path, stage, _ASSEMBLY_EXTENSIONS)
+        if isinstance(source, NativeCallResult):
+            return source
+        if not isinstance(view_id, str) or not view_id.strip():
+            return _local_failure(stage, "view_id must be a non-empty string.")
+        if not isinstance(source_configuration, str) or not source_configuration.strip():
+            return _local_failure(stage, "source_configuration must be a non-empty string.")
+        return self._call(
+            stage,
+            lambda: self.service.create_bom(
+                drawing,
+                view_id,
+                source_configuration,
+                source_model_path=source,
+            ),
+        )
+
+    def read_bom(self, path: str, bom_id: str) -> NativeCallResult[Any]:
+        stage = "drawing_bom_read"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        if not isinstance(bom_id, str) or not bom_id.strip():
+            return _local_failure(stage, "bom_id must be a non-empty string.")
+        return self._call(stage, lambda: self.service.read_bom(drawing, bom_id))
+
+    def update(
+        self,
+        path: str,
+        source_model_path: str,
+        source_configuration: str | None = None,
+    ) -> NativeCallResult[Any]:
+        stage = "drawing_update"
+        drawing = self._validate_open(path, stage, _DRAWING_EXTENSIONS)
+        if isinstance(drawing, NativeCallResult):
+            return drawing
+        source = self._validate_open(
+            source_model_path, stage, _PART_EXTENSIONS | _ASSEMBLY_EXTENSIONS
+        )
+        if isinstance(source, NativeCallResult):
+            return source
+        if source_configuration is not None and (
+            not isinstance(source_configuration, str) or not source_configuration.strip()
+        ):
+            return _local_failure(stage, "source_configuration must be non-empty when supplied.")
+        return self._call(
+            stage,
+            lambda: self.service.update_drawing(
+                drawing,
+                source_model_path=source,
+                source_configuration=source_configuration,
+            ),
         )
 
     def _validate_open(
