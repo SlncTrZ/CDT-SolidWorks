@@ -180,12 +180,30 @@ def test_catalog_scans_bounded_vendor_parts_read_only(tmp_path: Path) -> None:
     assert session.api.closed
 
 
-def test_probe_loads_browser_addin_only_for_provider_owned_session(tmp_path: Path) -> None:
+def test_probe_loads_browser_addin_from_executable_file_path_for_provider_owned_session(tmp_path: Path) -> None:
     root = tmp_path / "Toolbox"
     _fixture(root)
     session = _Session(root)
     session.app.addin = None
     browser_dll = session.app.executable_path.parent / "Toolbox" / "SwBrowser.dll"
+    browser_dll.parent.mkdir(parents=True)
+    browser_dll.write_bytes(b"addin")
+    adapter = ToolboxNativeAdapter(session)
+
+    probe = adapter.probe()
+
+    assert probe.available is True
+    assert probe.addin_loaded is True
+    assert session.app.load_addin_calls == [str(browser_dll)]
+
+
+def test_probe_loads_browser_addin_when_get_executable_path_returns_install_directory(tmp_path: Path) -> None:
+    root = tmp_path / "Toolbox"
+    _fixture(root)
+    session = _Session(root)
+    session.app.addin = None
+    session.app.executable_path = root / "Program"
+    browser_dll = session.app.executable_path / "Toolbox" / "SwBrowser.dll"
     browser_dll.parent.mkdir(parents=True)
     browser_dll.write_bytes(b"addin")
     adapter = ToolboxNativeAdapter(session)

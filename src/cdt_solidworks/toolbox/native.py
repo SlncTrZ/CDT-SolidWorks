@@ -206,7 +206,8 @@ class ToolboxNativeAdapter:
             return None
         if not executable.name:
             return None
-        browser_dll = executable.parent / "Toolbox" / "SwBrowser.dll"
+        install_directory = executable.parent if executable.suffix.casefold() == ".exe" else executable
+        browser_dll = install_directory / "Toolbox" / "SwBrowser.dll"
         if not browser_dll.is_file():
             return None
         try:
