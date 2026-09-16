@@ -216,6 +216,7 @@ Install the package and run `cdt-solidworks`. Agent 6 does not perform productio
 Network startup reads runtime configuration from these environment variable names only:
 
 - `CDT_SOLIDWORKS_BEARER_TOKEN`
+- `CDT_SOLIDWORKS_TOPOLOGY_REFERENCE_SECRET` — independent signing secret; must not reuse the bearer credential.
 - `CDT_SOLIDWORKS_AUTH_ISSUER_URL`
 - `CDT_SOLIDWORKS_RESOURCE_URL`
 - `CDT_SOLIDWORKS_ALLOWED_ROOTS`
@@ -224,4 +225,4 @@ Network startup reads runtime configuration from these environment variable name
 - `CDT_SOLIDWORKS_PORT`
 - `CDT_SOLIDWORKS_VERSION`
 
-Authentication configuration is mandatory and startup fails closed when it is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.
+Authentication configuration and the independent topology-reference signing secret are mandatory; startup fails closed when either is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.

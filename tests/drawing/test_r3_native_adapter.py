@@ -96,6 +96,7 @@ class FakeTable:
         self._next = None
         self.source_path = source_path
         self.configuration = configuration
+        self.quantity = "2"
 
     def GetFeature(self):
         return FakeFeature(self.source_path, self.configuration)
@@ -103,7 +104,7 @@ class FakeTable:
     def DisplayedText2(self, row, column, include_hidden):
         values = (
             ("ITEM NO.", "QTY.", "PART NUMBER", "DESCRIPTION"),
-            ("1", "2", "P-100", "PIN"),
+            ("1", self.quantity, "P-100", "PIN"),
         )
         return values[row][column]
 
@@ -547,6 +548,33 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.assertEqual((bom.identity,), tuple(item.identity for item in boms))
         self.assertEqual(self.base.identity, boms[0].view_id)
         self.assertEqual("Default", boms[0].source_configuration)
+
+    def test_bom_read_reads_current_native_quantity_not_create_cache(self):
+        created = self.service.create_bom(self.path, self.base.identity, "Default")
+        table = self.drawing.views[0]._tables[0]
+        table.quantity = "3"
+
+        current = self.service.read_bom(self.path, created.identity)
+
+        self.assertEqual("3", current.rows[1][1])
+
+    def test_sheet_bom_does_not_match_view_from_different_directory_by_basename(self):
+        self.service.create_bom(self.path, self.base.identity, "Default")
+        native_view = self.drawing.views[0]
+        table = native_view._tables[0]
+        table.BomFeature = FakeBomFeature(
+            r"C:\\other\\fixture.SLDASM", native_view.ReferencedConfiguration
+        )
+        sheet_view = FakeView("Sheet1", "")
+        sheet_view._tables = [table]
+        native_view._tables.clear()
+        sheet_view._next = native_view
+        self.drawing.GetFirstView = lambda: sheet_view
+        self.adapter._bom_metadata.clear()
+        self.adapter._view_metadata.clear()
+
+        with self.assertRaisesRegex(Exception, "bom_source_view_missing"):
+            self.adapter.list_boms(self.path)
 
     def test_bom_readback_survives_cache_loss_when_native_table_moves_to_sheet_view(self):
         bom = self.service.create_bom(self.path, self.base.identity, "Default")

@@ -1033,5 +1033,10 @@ class IntegratedProviderRuntime:
         from .plugins.loader import register_plugins
         from .registrar import register_runtime_tools
 
-        register_runtime_tools(server, self)
+        original_tool = server.tool
+        try:
+            register_runtime_tools(server, self)
+        finally:
+            # Core registration temporarily observes server.tool; plugins apply their own wrapper.
+            server.tool = original_tool
         register_plugins(server, self)

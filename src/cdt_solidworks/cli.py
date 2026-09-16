@@ -10,6 +10,7 @@ import uvicorn
 from cdt_solidworks.auth.config import NetworkAuthConfig
 from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
 from cdt_solidworks.integration.server import build_integrated_network_app
+from cdt_solidworks.native.models import NativeCallState
 from cdt_solidworks.platform.errors import StartupConfigError
 from cdt_solidworks.server.factory import ServerConfig
 
@@ -20,6 +21,7 @@ BOM_TEMPLATE_PATH_ENV = "CDT_SOLIDWORKS_BOM_TEMPLATE_PATH"
 BIND_HOST_ENV = "CDT_SOLIDWORKS_BIND_HOST"
 PORT_ENV = "CDT_SOLIDWORKS_PORT"
 VERSION_ENV = "CDT_SOLIDWORKS_VERSION"
+TOPOLOGY_REFERENCE_SECRET_ENV = "CDT_SOLIDWORKS_TOPOLOGY_REFERENCE_SECRET"
 
 
 def _allowed_roots_from_environ(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -49,6 +51,13 @@ def _bind_from_environ(environ: Mapping[str, str]) -> tuple[str, int]:
     return host, port
 
 
+def _topology_reference_secret_from_environ(environ: Mapping[str, str]) -> str:
+    secret = environ.get(TOPOLOGY_REFERENCE_SECRET_ENV, "").strip()
+    if not secret:
+        raise StartupConfigError(f"{TOPOLOGY_REFERENCE_SECRET_ENV} is required.")
+    return secret
+
+
 def _version_from_environ(environ: Mapping[str, str]) -> int | None:
     raw = environ.get(VERSION_ENV, "").strip()
     if not raw:
@@ -68,11 +77,17 @@ def _shutdown_runtime(
 
     first_error: Exception | None = None
     try:
-        runtime.session.disconnect(timeout=30.0)
+        disconnect = runtime.session.disconnect(timeout=30.0)
+        if getattr(disconnect, "state", None) is not NativeCallState.SUCCESS:
+            failure = getattr(disconnect, "failure", None)
+            code = getattr(failure, "code", None) or "disconnect_failed"
+            first_error = RuntimeError(f"native shutdown failed: {code}")
     except Exception as exc:
         first_error = exc
     try:
-        runtime.session.close_dispatcher(timeout=5.0)
+        closed = runtime.session.close_dispatcher(timeout=5.0)
+        if closed is not True and first_error is None:
+            first_error = RuntimeError("native shutdown failed: dispatcher_close_failed")
     except Exception as exc:
         if first_error is None:
             first_error = exc
@@ -89,7 +104,7 @@ def main() -> None:
         weldment_profile_roots=_weldment_profile_roots_from_environ(os.environ),
         drawing_bom_template_path=_bom_template_path_from_environ(os.environ),
         version=_version_from_environ(os.environ),
-        topology_reference_secret=auth.bearer_token,
+        topology_reference_secret=_topology_reference_secret_from_environ(os.environ),
     )
     failed = False
     try:

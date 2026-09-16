@@ -10,8 +10,10 @@ from cdt_solidworks.cli import (
     _allowed_roots_from_environ,
     _bind_from_environ,
     _bom_template_path_from_environ,
+    _topology_reference_secret_from_environ,
     _weldment_profile_roots_from_environ,
 )
+from cdt_solidworks.native.models import NativeCallResult, NativeFailure
 from cdt_solidworks.platform.errors import StartupConfigError
 
 
@@ -38,6 +40,14 @@ def test_bom_template_path_is_explicit_single_dependency() -> None:
     ) == "/templates/bom-standard.sldbomtbt"
 
 
+def test_topology_reference_secret_is_required_and_independent() -> None:
+    with pytest.raises(StartupConfigError, match="CDT_SOLIDWORKS_TOPOLOGY_REFERENCE_SECRET"):
+        _topology_reference_secret_from_environ({})
+    assert _topology_reference_secret_from_environ(
+        {"CDT_SOLIDWORKS_TOPOLOGY_REFERENCE_SECRET": " topology-signing-key "}
+    ) == "topology-signing-key"
+
+
 def test_weldment_profile_roots_are_independent_from_document_roots() -> None:
     env = {
         "CDT_SOLIDWORKS_ALLOWED_ROOTS": os.pathsep.join(("/docs-a", "/docs-b")),
@@ -48,10 +58,11 @@ def test_weldment_profile_roots_are_independent_from_document_roots() -> None:
 
 
 def _install_main_fakes(monkeypatch, events: list[tuple[str, object]], *, run_error=None):
+    monkeypatch.setenv("CDT_SOLIDWORKS_TOPOLOGY_REFERENCE_SECRET", "independent-topology-secret")
     class Session:
         def disconnect(self, *, timeout):
             events.append(("disconnect", timeout))
-            return object()
+            return NativeCallResult.success(True, call_id="disconnect", dispatched=True)
 
         def close_dispatcher(self, *, timeout):
             events.append(("close_dispatcher", timeout))
@@ -89,12 +100,31 @@ def test_main_cleans_up_native_runtime_after_normal_server_return(monkeypatch) -
     cli.main()
 
     runtime_kwargs = next(value for event, value in events if event == "runtime")
-    assert runtime_kwargs["topology_reference_secret"] == "test-topology-secret"
+    assert runtime_kwargs["topology_reference_secret"] == "independent-topology-secret"
+    assert runtime_kwargs["topology_reference_secret"] != "test-topology-secret"
     assert events[-3:] == [
         ("uvicorn", ("127.0.0.1", 8000)),
         ("disconnect", 30.0),
         ("close_dispatcher", 5.0),
     ]
+
+
+def test_shutdown_runtime_rejects_failed_disconnect_and_dispatcher_close(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    _install_main_fakes(monkeypatch, events)
+    class BadSession:
+        def disconnect(self, *, timeout):
+            return NativeCallResult.failed(
+                NativeFailure("disconnect_refused", "disconnect", "no"),
+                call_id="bad",
+                dispatched=True,
+            )
+        def close_dispatcher(self, *, timeout):
+            return False
+
+    runtime = SimpleNamespace(session=BadSession())
+    with pytest.raises(RuntimeError, match="disconnect_refused"):
+        cli._shutdown_runtime(runtime, suppress_errors=False)
 
 
 def test_main_cleans_up_native_runtime_without_masking_server_failure(monkeypatch) -> None:

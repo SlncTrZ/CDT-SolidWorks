@@ -863,12 +863,7 @@ class SolidWorksDrawingAdapter:
         return snapshot.identity
 
     def read_bom(self, drawing_id: str, bom_id: str) -> BomSnapshot | None:
-        source = self._path_policy.validate_open(drawing_id)
-        cached = self._bom_metadata.get(
-            (drawing_id, bom_id), self._bom_metadata.get((source, bom_id))
-        )
-        if cached is not None:
-            return cached
+        # BOM cells and quantities are live native state; metadata is identity fallback only.
         return next(
             (item for item in self.list_boms(drawing_id) if item.identity == bom_id),
             None,
@@ -1390,10 +1385,7 @@ class SolidWorksDrawingAdapter:
             if not native_path:
                 continue
             native_windows_path = PureWindowsPath(native_path)
-            if native_windows_path != referenced_path and (
-                native_windows_path.name.casefold()
-                != referenced_path.name.casefold()
-            ):
+            if native_windows_path != referenced_path:
                 continue
             try:
                 view_configuration = str(

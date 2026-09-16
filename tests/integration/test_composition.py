@@ -129,6 +129,31 @@ def test_core_runtime_tool_observability_records_native_call_id() -> None:
     assert snapshot.provider_latency_ms_total >= 0
 
 
+def test_plugin_tool_observability_counts_each_invocation_once() -> None:
+    observer = SafeObserver()
+    runtime = IntegratedProviderRuntime(
+        allowed_roots=("/tmp",),
+        session=_FakeSession(_success_probe(registered=True, running=True)),
+        document_service=_FakeDocumentService(),
+        cad_service=_FakeCadService(),
+        observer=observer,
+    )
+    server = build_integrated_server(ServerConfig(network_mode=False), runtime=runtime)
+    tool = next(item for item in server._tool_manager.list_tools() if item.name == "reconstruction_compare")
+
+    before = observer.snapshot().request_count
+    result = tool.fn(
+        expected_dimensions_mm={"width": 10.0},
+        actual_dimensions_mm={"width": 10.0},
+        tolerance_mm=0.01,
+    )
+    after = observer.snapshot()
+
+    assert result["state"] == "success"
+    assert after.request_count - before == 1
+    assert after.last_tool == "reconstruction_compare"
+
+
 def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:
     runtime = IntegratedProviderRuntime(
         allowed_roots=("/tmp",),
