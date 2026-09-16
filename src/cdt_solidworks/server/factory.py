@@ -24,7 +24,13 @@ from cdt_solidworks.platform.errors import StartupConfigError
 from cdt_solidworks.platform.help import HelpService
 from cdt_solidworks.platform.identity import PROVIDER_ID, PROVIDER_VERSION
 from cdt_solidworks.platform.log_safety import install_mcp_tool_log_safety
-from cdt_solidworks.platform.models import HelpResponse, RuntimeContext, SystemCapabilities, SystemStatus
+from cdt_solidworks.platform.models import (
+    HelpResponse,
+    ObservabilitySnapshot,
+    RuntimeContext,
+    SystemCapabilities,
+    SystemStatus,
+)
 from cdt_solidworks.platform.observability import SafeObserver
 from cdt_solidworks.server.validation import (
     _TOOL_ARGUMENTS,
@@ -152,6 +158,13 @@ def build_server(
             dependency_latency_ms=None,
         )
         return result
+
+    @server.tool(
+        name="system_observability",
+        description="Report bounded provider telemetry without request payloads or credentials.",
+    )
+    def system_observability_tool() -> ObservabilitySnapshot:
+        return observer.snapshot()
 
     @server.tool(
         name="system_capabilities",

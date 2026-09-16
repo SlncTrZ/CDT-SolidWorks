@@ -45,6 +45,6 @@ class HelpService:
             contract_hash=contract_hash,
             updated_at=CONTRACT_UPDATED_AT,
             authentication=AUTHENTICATION_DESCRIPTION,
-            capabilities=("help", "system_status", "system_capabilities"),
+            capabilities=("help", "system_status", "system_observability", "system_capabilities"),
             content=content,
         )

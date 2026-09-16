@@ -256,6 +256,7 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
             )
             async with Client(target) as client:
                 valid = await client.call_tool("application_probe")
+                telemetry = await client.call_tool("system_observability")
                 with pytest.raises(MCPError) as exc_info:
                     await client.call_tool("application_probe", {"unexpected": True})
                 with pytest.raises(MCPError) as sketch_exc_info:
@@ -339,6 +340,13 @@ async def test_integrated_network_rejects_unknown_native_tool_arguments(tmp_path
                     )
 
     assert valid.is_error is False
+    assert telemetry.is_error is False
+    assert telemetry.structured_content["request_count"] >= 1
+    assert telemetry.structured_content["success_count"] >= 1
+    assert telemetry.structured_content["last_tool"] == "application_probe"
+    assert telemetry.structured_content["last_outcome"] == "success"
+    assert telemetry.structured_content["last_operation_id"] == "probe-call"
+    assert telemetry.structured_content["provider_latency_ms_total"] >= 0
     assert exc_info.value.code == INVALID_PARAMS
     assert "unexpected" in exc_info.value.message.lower()
     assert sketch_exc_info.value.code == INVALID_PARAMS

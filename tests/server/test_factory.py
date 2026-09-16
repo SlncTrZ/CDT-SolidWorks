@@ -27,6 +27,10 @@ def test_server_constructs_with_zero_external_registrars(tmp_path: Path) -> None
     server = build_server(ServerConfig.in_process(guide_path=_guide(tmp_path)))
 
     assert server.name == "solidworks"
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    schema = tools["system_observability"].input_schema
+    assert schema["additionalProperties"] is False
+    assert schema["properties"] == {}
 
 
 def test_server_invokes_multiple_external_registrars_in_order(tmp_path: Path) -> None:

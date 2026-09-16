@@ -6,6 +6,7 @@ The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD prim
 
 - `help` — read-only provider identity, version, contract fingerprint and this guide content.
 - `system_status` — provider/backend dependency state.
+- `system_observability` — bounded provider telemetry (counts, latency, operation ID and failure class) without request payloads or credentials.
 - `system_capabilities` — separates `implemented` from currently `available`.
 
 ## Application tools

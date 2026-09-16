@@ -14,6 +14,7 @@ from mcp_types import INVALID_PARAMS
 _TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "help": frozenset(),
     "system_status": frozenset(),
+    "system_observability": frozenset(),
     "system_capabilities": frozenset(),
     "application_probe": frozenset({"version"}),
     "application_connect": frozenset({"policy", "version", "visible"}),

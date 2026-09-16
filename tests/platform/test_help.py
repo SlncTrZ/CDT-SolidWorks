@@ -23,6 +23,7 @@ def test_help_is_runtime_backed_read_only_and_deterministically_fingerprinted(tm
     assert first.provider_version == "0.1.0"
     assert first.protocol_version == LATEST_PROTOCOL_VERSION
     assert first.contract_version == "0.1.0"
+    assert first.updated_at == "2026-09-16"
     assert first.authentication == "Bearer token required in network mode"
     assert first.content == expected_content
     assert first.contract_hash == hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
@@ -34,6 +35,8 @@ def test_default_help_guide_is_current_platform_contract_only() -> None:
 
     assert "help" in result.content
     assert "system_status" in result.content
+    assert "system_observability" in result.content
+    assert "system_observability" in result.capabilities
     assert "system_capabilities" in result.content
     assert "W2" not in result.content
     assert "W3" not in result.content
