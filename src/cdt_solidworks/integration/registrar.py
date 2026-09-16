@@ -6,6 +6,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any, Literal
 
+from cdt_solidworks.integration.plugins.loader import observed_tool
 from cdt_solidworks.document.models import DocumentContext, DocumentType
 from cdt_solidworks.native.models import NativeCallResult, NativeCallState
 from cdt_solidworks.native.session import AttachPolicy
@@ -147,6 +148,18 @@ def _context(
 
 def register_runtime_tools(server: Any, runtime: Any) -> None:
     """Register only the native/document tools backed by the accepted B-lane runtime."""
+
+    original_tool = server.tool
+
+    def observed_server_tool(*, name: str, description: str, **kwargs: Any):
+        register = original_tool(name=name, description=description, **kwargs)
+
+        def decorator(func: Any):
+            return register(observed_tool(func, tool_name=name, observer=runtime.observer))
+
+        return decorator
+
+    server.tool = observed_server_tool
 
     @server.tool(name="application_probe", description="Probe SolidWorks registration/running state without mutation.")
     def application_probe(version: int | None = None) -> dict[str, Any]:

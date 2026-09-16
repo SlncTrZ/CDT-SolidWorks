@@ -8,6 +8,7 @@ from cdt_solidworks.integration.registrar import register_runtime_tools
 from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
 from cdt_solidworks.integration.server import build_integrated_server
 from cdt_solidworks.native.models import ApplicationProbe, NativeCallResult
+from cdt_solidworks.platform.observability import SafeObserver
 from cdt_solidworks.server.factory import ServerConfig
 from cdt_solidworks.server.validation import _TOOL_ARGUMENTS
 
@@ -89,6 +90,43 @@ def _success_probe(*, registered: bool, running: bool) -> NativeCallResult[Appli
         call_id="probe-1",
         dispatched=True,
     )
+
+
+def test_core_runtime_tool_observability_records_native_call_id() -> None:
+    observer = SafeObserver()
+    runtime = IntegratedProviderRuntime(
+        allowed_roots=("/tmp",),
+        session=_FakeSession(_success_probe(registered=True, running=True)),
+        document_service=_FakeDocumentService(),
+        cad_service=_FakeCadService(),
+        sketch_service=_FakeSketchService(),
+        part_feature_service=_FakePartFeatureService(),
+        body_service=_FakeBodyService(),
+        surface_service=_FakeSurfaceService(),
+        sheetmetal_service=_FakeSheetMetalService(),
+        weldment_service=_FakeWeldmentService(),
+        assembly_service=_FakeAssemblyService(),
+        configuration_service=_FakeConfigurationService(),
+        drawing_service=_FakeDrawingService(),
+        export_service=_FakeExportService(),
+        import_service=_FakeImportService(),
+        evaluation_service=_FakeEvaluationService(),
+        observer=observer,
+    )
+    server = build_integrated_server(ServerConfig(network_mode=False), runtime=runtime)
+    tool = next(item for item in server._tool_manager.list_tools() if item.name == "application_probe")
+
+    result = tool.fn()
+    snapshot = observer.snapshot()
+
+    assert result["state"] == "success"
+    assert result["call_id"] == "probe-1"
+    assert snapshot.request_count == 1
+    assert snapshot.success_count == 1
+    assert snapshot.last_tool == "application_probe"
+    assert snapshot.last_outcome == "success"
+    assert snapshot.last_operation_id == "probe-1"
+    assert snapshot.provider_latency_ms_total >= 0
 
 
 def test_runtime_context_exposes_only_integrated_native_capabilities() -> None:

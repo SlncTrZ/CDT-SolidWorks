@@ -221,7 +221,7 @@ def _record_observation(
     )
 
 
-def _observed_tool(func: Callable[..., Any], *, tool_name: str, observer: SafeObserver):
+def observed_tool(func: Callable[..., Any], *, tool_name: str, observer: SafeObserver):
     signature = inspect.signature(func, eval_str=True)
     if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
         raise PluginCompositionError(
@@ -309,7 +309,7 @@ class _PluginServerProxy:
                     "duplicate_public_tool",
                     f"Duplicate public tool: {name}.",
                 )
-            wrapped = _observed_tool(func, tool_name=name, observer=self._observer)
+            wrapped = observed_tool(func, tool_name=name, observer=self._observer)
             registered = self._server.tool(name=name, description=description, **kwargs)(wrapped)
             self._known_tool_names.add(name)
             self.registered_names.append(name)
