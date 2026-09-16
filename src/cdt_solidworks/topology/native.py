@@ -83,6 +83,9 @@ class TopologyNativeAdapter:
         def operation(app: Any) -> TopologyQueryResult:
             document = self.documents._resolve_context(app, context)
             source_model, component = self._source_model(document, context, component_id)
+            persistent_binding = self._persistent_binding(
+                context, document, source_model, component_id=component_id
+            )
             items: list[TopologyItem] = []
             counts = {kind: 0 for kind in ("body", "face", "edge", "vertex")}
             seen = {kind: set() for kind in counts}
@@ -104,7 +107,13 @@ class TopologyNativeAdapter:
                     items.append(
                         TopologyItem(
                             kind=kind,
-                            reference=self._encode_reference(context, kind, pid, component_id=component_id),
+                            reference=self._encode_reference(
+                                context,
+                                kind,
+                                pid,
+                                component_id=component_id,
+                                persistent_binding=persistent_binding,
+                            ),
                             body_name=body_name,
                             ordinal=counts[kind] - 1,
                             component_id=component_id,
@@ -324,6 +333,9 @@ class TopologyNativeAdapter:
     ) -> tuple[Any, Any, Any | None]:
         component_id = payload.get("component") if isinstance(payload.get("component"), str) else None
         source_model, component = self._source_model(document, context, component_id)
+        self._require_cross_session_persisted_binding(
+            document, source_model, payload, component=component, stage="topology_resolve"
+        )
         entity, state = self.api.object_by_persistent_reference(source_model, pid)
         self._require_resolved_state(entity, int(state))
         self._require_entity_kind(entity, kind)
@@ -573,6 +585,7 @@ class TopologyNativeAdapter:
         pid: bytes,
         *,
         component_id: str | None = None,
+        persistent_binding: dict[str, object] | None = None,
     ) -> str:
         payload = {
             "version": 1,
@@ -583,6 +596,8 @@ class TopologyNativeAdapter:
             "kind": kind,
             "pid": self._encode_pid(pid),
         }
+        if persistent_binding:
+            payload.update(persistent_binding)
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
         signature = self._reference_signature(raw)
@@ -610,6 +625,16 @@ class TopologyNativeAdapter:
                 raise ValueError("configuration")
             if not isinstance(payload.get("update_stamp"), int):
                 raise ValueError("update_stamp")
+            origin_session = payload.get("origin_session")
+            if origin_session is not None and not isinstance(origin_session, str):
+                raise ValueError("origin_session")
+            restartable = payload.get("restartable")
+            if restartable is not None and not isinstance(restartable, bool):
+                raise ValueError("restartable")
+            for name in ("document_revision", "source_document", "source_revision"):
+                value = payload.get(name)
+                if value is not None and not isinstance(value, str):
+                    raise ValueError(name)
             self._decode_pid(str(payload.get("pid", "")))
             return payload
         except NativeRuntimeError:
@@ -638,11 +663,26 @@ class TopologyNativeAdapter:
                 "topology_reference_context_mismatch", stage,
                 "Topology reference belongs to a different configuration.",
             )
-        if payload["update_stamp"] != context.update_stamp:
-            raise NativeRuntimeError(
-                "stale_topology_reference", stage,
-                "Document revision changed after the topology reference was captured.",
-            )
+        origin_session = payload.get("origin_session")
+        if origin_session is None or origin_session == self.session.session_id:
+            if payload["update_stamp"] != context.update_stamp:
+                raise NativeRuntimeError(
+                    "stale_topology_reference", stage,
+                    "Document revision changed after the topology reference was captured.",
+                )
+        else:
+            if payload.get("restartable") is not True:
+                raise NativeRuntimeError(
+                    "stale_topology_reference", stage,
+                    "Topology reference was captured from an unpersisted document state.",
+                )
+            expected_revision = payload.get("document_revision")
+            current_revision = self._persisted_revision(context.path)
+            if not isinstance(expected_revision, str) or current_revision != expected_revision:
+                raise NativeRuntimeError(
+                    "stale_topology_reference", stage,
+                    "Persisted document revision changed after the topology reference was captured.",
+                )
         bound_component = payload.get("component")
         if component_id is not None and bound_component != component_id:
             raise NativeRuntimeError(
@@ -659,6 +699,94 @@ class TopologyNativeAdapter:
                 "topology_reference_component_mismatch", stage,
                 "Assembly topology references require an explicit component instance binding.",
             )
+
+    def _persistent_binding(
+        self,
+        context: DocumentContext,
+        document: Any,
+        source_model: Any,
+        *,
+        component_id: str | None,
+    ) -> dict[str, object]:
+        document_revision = self._persisted_revision(context.path)
+        restartable = document_revision is not None and not self._document_is_dirty(document)
+        binding: dict[str, object] = {
+            "origin_session": self.session.session_id,
+            "restartable": restartable,
+            "document_revision": document_revision,
+        }
+        if component_id is not None:
+            source_path = str(self.api.document_path(source_model) or "")
+            source_revision = self._persisted_revision(source_path) if source_path else None
+            binding.update(
+                {
+                    "source_document": self._document_fingerprint(source_path) if source_path else None,
+                    "source_revision": source_revision,
+                }
+            )
+            binding["restartable"] = bool(
+                restartable
+                and source_path
+                and source_revision is not None
+                and not self._document_is_dirty(source_model)
+            )
+        return binding
+
+    def _require_cross_session_persisted_binding(
+        self,
+        document: Any,
+        source_model: Any,
+        payload: dict[str, object],
+        *,
+        component: Any | None,
+        stage: str,
+    ) -> None:
+        origin_session = payload.get("origin_session")
+        if origin_session is None or origin_session == self.session.session_id:
+            return
+        if self._document_is_dirty(document):
+            raise NativeRuntimeError(
+                "stale_topology_reference", stage,
+                "Opened document has unpersisted changes after the topology reference was captured.",
+            )
+        if component is None:
+            return
+        if self._document_is_dirty(source_model):
+            raise NativeRuntimeError(
+                "stale_topology_reference", stage,
+                "Bound component source has unpersisted changes after the topology reference was captured.",
+            )
+        source_path = str(self.api.document_path(source_model) or "")
+        expected_document = payload.get("source_document")
+        expected_revision = payload.get("source_revision")
+        if (
+            not source_path
+            or not isinstance(expected_document, str)
+            or self._document_fingerprint(source_path) != expected_document
+            or not isinstance(expected_revision, str)
+            or self._persisted_revision(source_path) != expected_revision
+        ):
+            raise NativeRuntimeError(
+                "stale_topology_reference", stage,
+                "Bound component persisted revision changed after the topology reference was captured.",
+            )
+
+    def _document_is_dirty(self, document: Any) -> bool:
+        try:
+            return bool(self.api.document_dirty(document))
+        except Exception:
+            return True
+
+    @staticmethod
+    def _persisted_revision(path: str) -> str | None:
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except (OSError, TypeError, ValueError):
+            return None
 
     @staticmethod
     def _document_fingerprint(path: str) -> str:

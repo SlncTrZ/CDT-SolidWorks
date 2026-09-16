@@ -87,6 +87,7 @@ class FakeDocument:
         self.doc_type = int(DocumentType.PART)
         self.configuration = "Default"
         self.update_stamp = 10
+        self.dirty = False
         self.Extension = FakeExtension()
         self.body = body
 
@@ -112,6 +113,7 @@ class FakeApi:
     def document_type(self, doc): return doc.doc_type
     def active_configuration(self, doc): return doc.configuration
     def update_stamp(self, doc): return doc.update_stamp
+    def document_dirty(self, doc): return doc.dirty
     def bodies(self, doc, body_type, visible_only):
         return (doc.body,) if int(body_type) == 0 else ()
     def body_name(self, body): return body.Name
@@ -129,7 +131,7 @@ class FakeSession:
     def __init__(self, app, api):
         self.app = app
         self.api = api
-        self.session_id = "session-topology"
+        self.session_id = os.urandom(16).hex()
         self.calls = 0
 
     def execute(self, operation, *, stage: str, timeout: float, mutation: bool = False, **kwargs):
@@ -151,7 +153,8 @@ def fixture(root: Path, *, reference_secret: str | bytes | None = None):
     f2 = FakeFace(b"f2", (e1,))
     body = FakeBody(b"b1", "Body1", (f1, f2))
     path = root / "fixture.SLDPRT"
-    path.write_bytes(b"fixture")
+    if not path.exists():
+        path.write_bytes(b"fixture")
     doc = FakeDocument(str(path), body)
     api = FakeApi()
     session = FakeSession(FakeApp(doc), api)
@@ -249,6 +252,66 @@ def test_reference_bound_to_revision_rejects_refreshed_context_after_change():
         assert result.failure is not None
         assert result.failure.code == "stale_topology_reference"
         assert doc.Extension.resolve_calls == 0
+
+
+def test_reference_allows_cross_session_stamp_drift_when_persisted_file_is_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first, first_context, _ = fixture(root, reference_secret="shared-secret")
+        ref = first.query(first_context, kinds=("face",)).value.items[0].reference
+
+        restarted, restarted_context, restarted_doc = fixture(root, reference_secret="shared-secret")
+        restarted_context = DocumentContext(
+            session_id=restarted_context.session_id,
+            path=restarted_context.path,
+            title=restarted_context.title,
+            document_type=restarted_context.document_type,
+            configuration=restarted_context.configuration,
+            update_stamp=restarted_context.update_stamp + 77,
+        )
+        restarted_doc.update_stamp = restarted_context.update_stamp
+        restarted.query(restarted_context, kinds=("face",))
+        resolved = restarted.resolve(restarted_context, ref, expected_kind="face")
+
+        assert resolved.state is NativeCallState.SUCCESS
+
+
+def test_reference_rejects_cross_session_when_persisted_file_changed_before_native_lookup():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first, first_context, _ = fixture(root, reference_secret="shared-secret")
+        ref = first.query(first_context, kinds=("face",)).value.items[0].reference
+
+        Path(first_context.path).write_bytes(b"changed-on-disk")
+        restarted, restarted_context, restarted_doc = fixture(root, reference_secret="shared-secret")
+        restarted.query(restarted_context, kinds=("face",))
+        before = restarted_doc.Extension.resolve_calls
+        result = restarted.resolve(restarted_context, ref, expected_kind="face")
+
+        assert result.state is NativeCallState.FAILURE
+        assert result.dispatched is False
+        assert result.failure is not None
+        assert result.failure.code == "stale_topology_reference"
+        assert restarted_doc.Extension.resolve_calls == before
+
+
+def test_dirty_reference_is_not_restartable_even_when_persisted_file_is_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first, first_context, first_doc = fixture(root, reference_secret="shared-secret")
+        first_doc.dirty = True
+        ref = first.query(first_context, kinds=("face",)).value.items[0].reference
+
+        restarted, restarted_context, restarted_doc = fixture(root, reference_secret="shared-secret")
+        restarted.query(restarted_context, kinds=("face",))
+        before = restarted_doc.Extension.resolve_calls
+        result = restarted.resolve(restarted_context, ref, expected_kind="face")
+
+        assert result.state is NativeCallState.FAILURE
+        assert result.dispatched is False
+        assert result.failure is not None
+        assert result.failure.code == "stale_topology_reference"
+        assert restarted_doc.Extension.resolve_calls == before
 
 
 def test_reference_bound_to_document_rejects_substitution_before_native_lookup():
