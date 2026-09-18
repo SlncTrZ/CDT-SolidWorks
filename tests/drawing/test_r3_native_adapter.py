@@ -549,6 +549,66 @@ class DrawingR3NativeAdapterTests(unittest.TestCase):
         self.assertEqual(self.base.identity, boms[0].view_id)
         self.assertEqual("Default", boms[0].source_configuration)
 
+
+    def _create_test_dimension(self):
+        return self.service.add_dimension(
+            self.path, self.base.identity, "swref1.opaque.reference",
+            source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default", x_mm=40.0, y_mm=30.0,
+        )
+
+    def test_deleted_bom_is_not_resurrected_from_metadata(self):
+        bom = self.service.create_bom(self.path, self.base.identity, "Default")
+        self.drawing.views[0]._tables.clear()
+        self.assertEqual((), self.adapter.list_boms(self.path))
+        self.assertIsNone(self.adapter.read_bom(self.path, bom.identity))
+        with self.assertRaisesRegex(DrawingRefusal, "bom_not_found"):
+            self.service.read_bom(self.path, bom.identity)
+
+    def test_deleted_dimension_is_not_resurrected_from_metadata(self):
+        dimension = self._create_test_dimension()
+        self.drawing.views[0]._display_dimensions.clear()
+        self.assertEqual((), self.adapter.list_dimensions(self.path))
+        self.assertIsNone(self.adapter.read_dimension(self.path, dimension.identity))
+
+    def test_dimension_read_refreshes_value_and_dangling_state(self):
+        dimension = self._create_test_dimension()
+        native = self.drawing.views[0]._display_dimensions[0]
+        native.dimension.user_value = 24.0
+        current = self.adapter.read_dimension(self.path, dimension.identity)
+        self.assertEqual("24", current.display_text)
+        self.assertEqual(dimension.source_ref, current.source_ref)
+        native.annotation.GetAttachedEntityTypes = lambda: (0,)
+        self.assertTrue(self.adapter.read_dimension(self.path, dimension.identity).dangling)
+
+    def test_drawing_update_counts_only_existing_native_entities(self):
+        self.service.create_bom(self.path, self.base.identity, "Default")
+        self._create_test_dimension()
+        self.drawing.views[0]._tables.clear()
+        self.drawing.views[0]._display_dimensions.clear()
+        current = self.service.update_drawing(
+            self.path, source_model_path=r"C:\\models\\fixture.SLDASM",
+            source_configuration="Default",
+        )
+        self.assertEqual(0, current.bom_count)
+        self.assertEqual(0, current.dimension_count)
+
+    def test_dimension_enumeration_error_is_not_reported_as_empty(self):
+        self._create_test_dimension()
+        def fail():
+            raise RuntimeError("native enumeration failed")
+        self.drawing.views[0].GetFirstDisplayDimension5 = fail
+        with self.assertRaisesRegex(Exception, "dimension_enumeration_failed"):
+            self.adapter.list_dimensions(self.path)
+
+    def test_bom_enumeration_error_is_not_reported_as_empty(self):
+        self.service.create_bom(self.path, self.base.identity, "Default")
+        def fail():
+            raise RuntimeError("native enumeration failed")
+        self.drawing.views[0].GetFirstTableAnnotation = fail
+        with self.assertRaisesRegex(Exception, "table_enumeration_failed"):
+            self.adapter.list_boms(self.path)
+
     def test_bom_read_reads_current_native_quantity_not_create_cache(self):
         created = self.service.create_bom(self.path, self.base.identity, "Default")
         table = self.drawing.views[0]._tables[0]

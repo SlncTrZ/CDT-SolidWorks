@@ -725,13 +725,6 @@ class SolidWorksDrawingAdapter:
     def read_dimension(
         self, drawing_id: str, dimension_id: str
     ) -> DimensionSnapshot | None:
-        source = self._path_policy.validate_open(drawing_id)
-        cached = self._dimension_metadata.get(
-            (drawing_id, dimension_id),
-            self._dimension_metadata.get((source, dimension_id)),
-        )
-        if cached is not None:
-            return cached
         return next(
             (
                 item
@@ -771,10 +764,6 @@ class SolidWorksDrawingAdapter:
                         seen.add(snapshot.identity)
                         result.append(snapshot)
                     display = self._next_display_dimension(display)
-            for (key_drawing, _), snapshot in self._dimension_metadata.items():
-                if key_drawing in {drawing_id, source} and snapshot.identity not in seen:
-                    seen.add(snapshot.identity)
-                    result.append(snapshot)
             return tuple(result)
 
         return self._with_drawing(source, stage="drawing_list_dimensions", reader=read)
@@ -917,10 +906,6 @@ class SolidWorksDrawingAdapter:
                             )
                         )
                     table = self._next_table_annotation(table)
-            for (key_drawing, _), snapshot in self._bom_metadata.items():
-                if key_drawing in {drawing_id, source} and snapshot.identity not in seen:
-                    seen.add(snapshot.identity)
-                    result.append(snapshot)
             return tuple(result)
 
         return self._with_drawing(source, stage="drawing_list_boms", reader=read)
@@ -1434,7 +1419,7 @@ class SolidWorksDrawingAdapter:
                 return self._api._member(view, name)
             except Exception:
                 continue
-        return None
+        raise DrawingPostconditionError("dimension_enumeration_failed")
 
     def _next_display_dimension(self, display: Any) -> Any | None:
         for name in ("GetNext5", "GetNext"):
@@ -1442,13 +1427,13 @@ class SolidWorksDrawingAdapter:
                 return self._api._member(display, name)
             except Exception:
                 continue
-        return None
+        raise DrawingPostconditionError("dimension_enumeration_failed")
 
     def _first_table_annotation(self, view: Any) -> Any | None:
         try:
             return self._api._member(view, "GetFirstTableAnnotation")
-        except Exception:
-            return None
+        except Exception as exc:
+            raise DrawingPostconditionError("table_enumeration_failed") from exc
 
     def _next_table_annotation(self, table: Any) -> Any | None:
         for name in ("GetNext", "GetNextTableAnnotation"):
@@ -1456,7 +1441,7 @@ class SolidWorksDrawingAdapter:
                 return self._api._member(table, name)
             except Exception:
                 continue
-        return None
+        raise DrawingPostconditionError("table_enumeration_failed")
 
     def _view_sheet_name(self, view: Any) -> str:
         try:
