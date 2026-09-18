@@ -41,11 +41,11 @@ The shared runtime exposes `core.session`, `core.path_policy`, `core.document_se
 
 Every advertised tool, including plugin tools, receives a closed input schema with `additionalProperties=false`; plugin tools using `**kwargs` are rejected at startup. Plugin calls share bounded provider observability for call/operation ID, latency, failure class, timeout/uncertainty, and reconciliation counts without retaining raw request or COM payloads. Mutation results preserve the original native call ID and are never retried by the composition layer.
 
-Plugin-discovered lane capabilities remain implementation claims only until Agent 7 validates the exact integrated wheel on Linux and Windows with native SOLIDWORKS evidence. This guide does not pre-award acceptance for parallel lane features.
+Plugin-discovered lane capabilities are implementation claims until workflow evidence promotes the exact bounded behavior. Recorded Agent-7/Core95 evidence promotes only the accepted subsets described below; later source changes require affected-surface requalification. Runtime availability remains fail-closed when required services, licenses, templates, or native dependencies are absent.
 
-### Integration-candidate plugin tools — native acceptance pending
+### Composed plugin tools — mixed acceptance status
 
-These names are part of the composed tool catalog, but listing them here is **not** a native-acceptance claim. Runtime capability state remains fail-closed until the required services, licenses, templates, and Agent-7 evidence are present.
+These names are part of the composed tool catalog. **Tool registration is not a family-wide native-acceptance claim.** Topology/part/assembly/drawing and selected fabrication behaviors have bounded workflow evidence recorded by the project, while reconstruction and still-unpromoted breadth remain acceptance-pending. The granular capability descriptions and explicit limitations below are authoritative for public scope.
 
 - Agent 1: `topology_query`, `topology_resolve`, `topology_inspect`.
 - Agent 2: `assembly_component_insert`, `assembly_mate_get`, `assembly_mate_delete`, `configuration_state_query`, `configuration_component_set_suppressed`, `configuration_component_set_configuration`, `toolbox_probe`, `toolbox_catalog_query`, `toolbox_component_resolve`, `toolbox_component_properties`, `toolbox_component_insert`.
@@ -226,3 +226,9 @@ Network startup reads runtime configuration from these environment variable name
 - `CDT_SOLIDWORKS_VERSION`
 
 Authentication configuration and the independent topology-reference signing secret are mandatory; startup fails closed when either is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.
+
+## Release gates
+
+The tracked `release-gates` workflow enforces the deterministic Linux suite, source compilation/diff checks, exact-source wheel provenance, and an explicit opt-in Windows self-hosted SOLIDWORKS 2024 qualification job. The native job is never implied by a Linux pass and must run on a runner labeled `solidworks-2024`.
+
+`scripts/release_provenance.py` fails closed on a dirty tracked tree, records the exact Git SHA plus build runtime and wheel SHA-256/size/file count, rejects private/agent-local payload, and verifies a non-editable wheel install outside the checkout. The manifest proves artifact/source identity; it does not replace native workflow evidence or dependency lock/reproducibility guarantees beyond the recorded environment.
