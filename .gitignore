@@ -43,3 +43,7 @@ CLAUDE.md
 
 # Internal development direction, roadmap and evidence
 _private/
+
+# Build / package artifacts
+build/
+*.egg-info/
