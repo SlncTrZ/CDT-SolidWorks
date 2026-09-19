@@ -122,7 +122,7 @@ class FabricationReconstructionFacade:
         return self._reconstruction_call(
             "reconstruction_assess",
             lambda service: service.assess(self._source_path(source_path)),
-            mutation=False,
+            mutation=True,
         )
 
     def reconstruction_step_to_editable(

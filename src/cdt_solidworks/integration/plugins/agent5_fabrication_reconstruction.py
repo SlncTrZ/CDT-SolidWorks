@@ -8,6 +8,7 @@ from cdt_solidworks.integration.fabrication_reconstruction import (
     FabricationReconstructionFacade,
     result_payload,
 )
+from cdt_solidworks.reconstruction.native_ports import bind_native_step_ports
 
 PLUGIN_CONTRACT_VERSION = 1
 PLUGIN_ID = "agent5.fabrication_reconstruction"
@@ -15,6 +16,7 @@ PLUGIN_ORDER = 5
 
 
 def register_tools(server: Any, runtime: Any) -> None:
+    bind_native_step_ports(runtime)
     facade = FabricationReconstructionFacade(runtime)
 
     @server.tool(name="body_move_copy", description="Move or copy explicitly named solid bodies by a bounded XYZ translation in millimeters.")
@@ -165,6 +167,7 @@ def register_tools(server: Any, runtime: Any) -> None:
 
 
 def capability_descriptors(runtime: Any) -> list[dict[str, Any]]:
+    bind_native_step_ports(runtime)
     native_available, native_reason = _solidworks_dependency(runtime)
     descriptors: list[dict[str, Any]] = []
 
@@ -190,11 +193,15 @@ def capability_descriptors(runtime: Any) -> list[dict[str, Any]]:
     topology = getattr(runtime, "reconstruction_topology_port", None)
     part = getattr(runtime, "reconstruction_part_port", None)
     mesh = getattr(runtime, "reconstruction_mesh_port", None)
-    assess_available = topology is not None or mesh is not None
+    assess_implemented = topology is not None or mesh is not None
+    assess_available = assess_implemented and native_available
+    assess_reason = None if assess_available else (
+        native_reason if assess_implemented else "reconstruction_inspection_port_unavailable"
+    )
     descriptors.append(_descriptor(
         "solidworks.reconstruction.assess", True, assess_available,
-        None if assess_available else "reconstruction_inspection_port_unavailable",
-        backend="provider_orchestration", dependencies=(),
+        assess_reason,
+        backend="provider_orchestration", dependencies=("solidworks",),
     ))
     step_reason = _port_reason(("topology_port", topology), ("part_port", part))
     step_available = step_reason is None and native_available

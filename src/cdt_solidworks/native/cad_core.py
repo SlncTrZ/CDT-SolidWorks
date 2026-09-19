@@ -137,6 +137,34 @@ class CadCoreService:
             mutation=True,
         )
 
+    def create_empty_part(
+        self,
+        output_path: str | Path,
+        *,
+        timeout: float | None = None,
+    ) -> NativeCallResult[dict[str, Any]]:
+        """Create, persist, and close one empty native part for internal orchestration."""
+        try:
+            target = self._validate_new_path(output_path, _PART_EXT)
+        except Exception as exc:
+            return self._local_failure(exc, "part_create_empty")
+
+        def operation(app: Any) -> dict[str, Any]:
+            model = self._new_document(app, 1)
+            try:
+                self._require_clean_rebuild(model, "part_create_empty")
+                self._save_as(model, target, "part_create_empty")
+                return {"path": target}
+            finally:
+                self._close_quietly(app, model)
+
+        return self.session.execute(
+            operation,
+            stage="part_create_empty",
+            timeout=self._timeout(timeout),
+            mutation=True,
+        )
+
     def add_rect_extrude(
         self,
         path: str | Path,
