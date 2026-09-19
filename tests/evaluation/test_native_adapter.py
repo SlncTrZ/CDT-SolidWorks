@@ -147,6 +147,34 @@ class FakeApp:
     pass
 
 
+class FakeSelectableEntity:
+    def __init__(self):
+        self.select_calls = []
+
+    def Select2(self, append, mark):
+        self.select_calls.append((append, mark))
+        return True
+
+
+class FakeTopologyResolver:
+    def __init__(self, entity):
+        self.entity = entity
+        self.calls = []
+
+    def resolve_native_for_open_document(self, model, reference):
+        self.calls.append((model, reference))
+        return NativeCallResult.success(
+            {
+                "native_entity": self.entity,
+                "component_id": None,
+                "kind": "face",
+                "reference": reference,
+            },
+            call_id="topology-resolve-1",
+            dispatched=False,
+        )
+
+
 class FakeApi:
     def __init__(self, model):
         self.model = model
@@ -277,6 +305,28 @@ class SolidWorksEvaluationAdapterTests(unittest.TestCase):
             [("plane:front", False), ("plane:right", True)], selected
         )
         self.assertEqual(2, self.model.clear_selection_calls)
+
+    def test_measure_accepts_authenticated_topology_reference_through_bound_resolver(self):
+        entity = FakeSelectableEntity()
+        topology = FakeTopologyResolver(entity)
+        self.adapter.bind_topology_service(topology)
+        reference = "swref1.opaque-authenticated-token"
+        self.model.Extension.measure.Distance = -1.0
+        self.model.Extension.measure.Angle = -1.0
+        self.model.Extension.measure.Radius = 0.005
+        self.model.Extension.measure.Diameter = 0.010
+
+        result = self.adapter.measure(self.model.path, (reference,))
+
+        self.assertAlmostEqual(0.005, result.radius_m)
+        self.assertAlmostEqual(0.010, result.diameter_m)
+        self.assertEqual([(self.model, reference)], topology.calls)
+        self.assertEqual([(False, 0)], entity.select_calls)
+
+    def test_topology_measure_reference_fails_closed_without_bound_resolver(self):
+        with self.assertRaisesRegex(Exception, "topology_measure_reference_unavailable"):
+            self.adapter.measure(self.model.path, ("swref1.opaque-authenticated-token",))
+        self.assertEqual([], self.session.calls)
 
     def test_single_reference_measure_normalizes_radius_from_diameter(self):
         self.adapter._select_measure_reference = lambda model, reference, append: None

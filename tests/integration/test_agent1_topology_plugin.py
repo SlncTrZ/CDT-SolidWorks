@@ -27,6 +27,15 @@ class FakeServer:
         return decorate
 
 
+class FakeEvaluation:
+    def __init__(self):
+        self.bound = None
+
+    def bind_topology_service(self, service):
+        self.bound = service
+        return service is not None
+
+
 class FakeTopology:
     def query(self, context, *, kinds, component_id, timeout):
         return NativeCallResult.success(
@@ -65,6 +74,20 @@ def test_agent1_plugin_registers_only_three_explicit_schema_tools():
     assert payload["state"] == "success"
     assert payload["call_id"] == "query-1"
     assert payload["error"] is None
+
+
+def test_agent1_plugin_binds_topology_into_evaluation_measurement():
+    server = FakeServer()
+    topology = FakeTopology()
+    evaluation = FakeEvaluation()
+    runtime = SimpleNamespace(
+        topology_service=topology,
+        evaluation_service=evaluation,
+    )
+
+    plugin.register_tools(server, runtime)
+
+    assert evaluation.bound is topology
 
 
 def test_agent1_capability_descriptors_reflect_dependency_state():

@@ -61,6 +61,20 @@ class SolidWorksEvaluationAdapter:
         self._path_policy = path_policy
         self._default_timeout = float(default_timeout)
         self._max_features = int(max_features)
+        self._topology_service: Any | None = None
+
+    def bind_topology_service(self, topology_service: Any | None) -> bool:
+        """Bind authenticated topology-reference resolution for measurement selection."""
+
+        resolver = (
+            getattr(topology_service, "resolve_native_for_open_document", None)
+            if topology_service is not None
+            else None
+        )
+        if topology_service is not None and not callable(resolver):
+            raise ValueError("topology service must expose resolve_native_for_open_document")
+        self._topology_service = topology_service
+        return topology_service is not None
 
     def mass_properties(
         self, document_id: str, configuration: str | None = None
@@ -194,7 +208,7 @@ class SolidWorksEvaluationAdapter:
         if len(refs) not in (1, 2):
             raise EvaluationRefusal("invalid_measurement_reference_count")
         for reference in refs:
-            self._parse_measure_reference(reference)
+            self._validate_measure_reference(reference)
 
         def read(model: Any, doc_type: int) -> MeasureSnapshot:
             try:
@@ -384,12 +398,15 @@ class SolidWorksEvaluationAdapter:
     def _select_measure_reference(
         self, model: Any, reference: str, *, append: bool
     ) -> None:
-        kind, name, _index = self._parse_measure_reference(reference)
         try:
-            if kind == "plane":
-                target = self._standard_plane_feature(model, name)
+            if reference.startswith("swref1."):
+                target = self._resolve_topology_measure_reference(model, reference)
             else:
-                target = self._resolve_measure_reference(model, reference)
+                kind, name, _index = self._parse_measure_reference(reference)
+                if kind == "plane":
+                    target = self._standard_plane_feature(model, name)
+                else:
+                    target = self._resolve_measure_reference(model, reference)
             selected = bool(
                 self._api._member(target, "Select2", bool(append), 0)
             )
@@ -405,6 +422,30 @@ class SolidWorksEvaluationAdapter:
             raise _EvaluationNativeError(
                 "measure_reference_select_failed", reference
             )
+
+    def _resolve_topology_measure_reference(self, model: Any, reference: str) -> Any:
+        topology_service = self._topology_service
+        resolver = (
+            getattr(topology_service, "resolve_native_for_open_document", None)
+            if topology_service is not None
+            else None
+        )
+        if not callable(resolver):
+            raise EvaluationRefusal("topology_measure_reference_unavailable")
+        result = resolver(model, reference)
+        if result.state is not NativeCallState.SUCCESS or result.value is None:
+            detail = "topology_reference_resolution_failed"
+            if result.failure is not None:
+                detail = f"{result.failure.code}@{result.failure.stage}: {result.failure.message}"
+            raise EvaluationPostconditionError(
+                "measure_reference_resolution_failed", detail
+            )
+        value = result.value
+        if not isinstance(value, dict) or value.get("native_entity") is None:
+            raise EvaluationPostconditionError(
+                "measure_reference_resolution_failed", reference
+            )
+        return value["native_entity"]
 
     def _resolve_measure_reference(self, model: Any, reference: str) -> Any:
         kind, name, index = self._parse_measure_reference(reference)
@@ -467,6 +508,19 @@ class SolidWorksEvaluationAdapter:
                 index += 1
             feature = self._api.next_feature(feature)
         raise EvaluationPostconditionError("standard_plane_missing", plane)
+
+    def _validate_measure_reference(self, reference: str) -> None:
+        if isinstance(reference, str) and reference.startswith("swref1."):
+            topology_service = self._topology_service
+            resolver = (
+                getattr(topology_service, "resolve_native_for_open_document", None)
+                if topology_service is not None
+                else None
+            )
+            if not callable(resolver):
+                raise EvaluationRefusal("topology_measure_reference_unavailable")
+            return
+        self._parse_measure_reference(reference)
 
     @staticmethod
     def _parse_measure_reference(reference: str) -> tuple[str, str, int | None]:

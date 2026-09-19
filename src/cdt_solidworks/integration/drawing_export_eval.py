@@ -742,17 +742,28 @@ class IntegratedEvaluationService:
         timeout: float = 30.0,
     ) -> None:
         self.path_policy = path_policy
+        native_adapter: SolidWorksEvaluationAdapter | None = None
         if service is None:
             if session is None:
                 raise ValueError("session is required when evaluation service is not injected")
-            service = EvaluationService(
-                SolidWorksEvaluationAdapter(
-                    session,
-                    path_policy=path_policy,
-                    default_timeout=timeout,
-                )
+            native_adapter = SolidWorksEvaluationAdapter(
+                session,
+                path_policy=path_policy,
+                default_timeout=timeout,
             )
+            service = EvaluationService(native_adapter)
         self.service = service
+        self._native_adapter = native_adapter
+
+    def bind_topology_service(self, topology_service: Any | None) -> bool:
+        """Bind authenticated topology references into native measurement selection."""
+
+        if self._native_adapter is not None:
+            return self._native_adapter.bind_topology_service(topology_service)
+        binder = getattr(self.service, "bind_topology_service", None)
+        if not callable(binder):
+            return False
+        return bool(binder(topology_service))
 
     def mass_properties(
         self, path: str, configuration: str | None = None

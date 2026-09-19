@@ -124,7 +124,7 @@ The following bounded operations have native SOLIDWORKS 2024 acceptance evidence
 - `evaluation_mass_properties` — read validated part mass/volume/area, center of mass, and inertia.
 - `evaluation_bounding_box` — read a validated approximate part bounding box.
 - `evaluation_geometry_sanity` — read body/error sanity and fail when native feature errors exist.
-- `evaluation_measure` — measure one or two bounded stable part references and return validated distance/angle/radius/diameter values where applicable.
+- `evaluation_measure` — measure one or two bounded stable part references and return validated distance/angle/radius/diameter values where applicable; accepted references include provider-authenticated `swref1` topology tokens plus the bounded legacy plane/sketch forms.
 - `evaluation_interferences` — detect assembly interference pairs and validated overlap volume, including a clean zero-interference case.
 
 All CAD paths are constrained by the same configured path policy as document operations. The provider does not expose arbitrary macros, scripts, COM method names, or raw native API argument lists.

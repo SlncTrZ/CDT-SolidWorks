@@ -122,6 +122,14 @@ def register_tools(server: Any, runtime: Any) -> None:
     service = _service(runtime)
     if service is not None and getattr(runtime, "topology_service", None) is None:
         setattr(runtime, "topology_service", service)
+    evaluation = getattr(runtime, "evaluation_service", None)
+    evaluation_binder = (
+        getattr(evaluation, "bind_topology_service", None)
+        if evaluation is not None
+        else None
+    )
+    if service is not None and callable(evaluation_binder):
+        evaluation_binder(service)
 
     @server.tool(
         name="topology_query",
