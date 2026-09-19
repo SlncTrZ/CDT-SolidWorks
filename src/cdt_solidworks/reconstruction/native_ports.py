@@ -105,6 +105,43 @@ def _near(first: float, second: float) -> bool:
     )
 
 
+def _coincident_cylinders(first: FaceGeometry, second: FaceGeometry) -> bool:
+    first_axis = _axis_index(first.axis)
+    second_axis = _axis_index(second.axis)
+    if first_axis is None or first_axis != second_axis:
+        return False
+    if first.radius_mm is None or second.radius_mm is None:
+        return False
+    if not _near(float(first.radius_mm), float(second.radius_mm)):
+        return False
+    if first.origin_mm is None or second.origin_mm is None:
+        return False
+    first_origin = (
+        float(first.origin_mm.x_mm),
+        float(first.origin_mm.y_mm),
+        float(first.origin_mm.z_mm),
+    )
+    second_origin = (
+        float(second.origin_mm.x_mm),
+        float(second.origin_mm.y_mm),
+        float(second.origin_mm.z_mm),
+    )
+    return all(
+        _near(first_origin[index], second_origin[index])
+        for index in range(3)
+        if index != first_axis
+    )
+
+
+def _unique_cylinders(faces: Sequence[FaceGeometry]) -> list[FaceGeometry]:
+    unique: list[FaceGeometry] = []
+    for face in faces:
+        if any(_coincident_cylinders(face, existing) for existing in unique):
+            continue
+        unique.append(face)
+    return unique
+
+
 class NativeStepTopologyPort:
     """Measure a neutral CAD source through transient native import and topology read-back."""
 
@@ -247,13 +284,14 @@ class NativeStepTopologyPort:
             and isinstance(item.geometry, FaceGeometry)
         ]
         planar = [face for face in faces if face.surface_type == "planar"]
-        cylindrical = [
+        cylindrical_faces = [
             face
             for face in faces
             if face.surface_type == "cylindrical"
             and face.radius_mm is not None
             and face.radius_mm > 0.0
         ]
+        cylindrical = _unique_cylinders(cylindrical_faces)
         unsupported_faces = [
             face
             for face in faces
@@ -453,6 +491,10 @@ class NativeStepPartPort:
             if isinstance(parameters, Mapping)
             else None
         )
+        context = _native_value(
+            self.document_service.refresh(context),
+            "editable result refresh before close after intended edit",
+        )
         _native_value(
             self.document_service.close(context),
             "editable result close after intended edit",
@@ -572,6 +614,10 @@ class NativeStepPartPort:
             context,
             hole_id=hole_id,
         )
+        context = _native_value(
+            self.document_service.refresh(context),
+            "prismatic bracket refresh before close",
+        )
         _native_value(
             self.document_service.close(context),
             "prismatic bracket close",
@@ -660,6 +706,10 @@ class NativeStepPartPort:
             output_path,
             "turned_shaft",
             context,
+        )
+        context = _native_value(
+            self.document_service.refresh(context),
+            "turned shaft refresh before close",
         )
         _native_value(
             self.document_service.close(context),

@@ -44,9 +44,9 @@ def test_topology_evidence_recognizes_controlled_prismatic_bracket() -> None:
     query = TopologyQueryResult(
         items=tuple(
             TopologyItem("face", f"f{i}", "Body1", i)
-            for i in range(7)
+            for i in range(8)
         ),
-        counts={"body": 1, "face": 7, "edge": 18, "vertex": 12},
+        counts={"body": 1, "face": 8, "edge": 18, "vertex": 12},
     )
     planes = [
         FaceGeometry("planar", normal=Vector3D(1.0, 0.0, 0.0)),
@@ -64,7 +64,7 @@ def test_topology_evidence_recognizes_controlled_prismatic_bracket() -> None:
     )
     inspections = tuple(
         _face(f"f{i}", geometry)
-        for i, geometry in enumerate([*planes, cylinder])
+        for i, geometry in enumerate([*planes, cylinder, cylinder])
     )
 
     evidence = NativeStepTopologyPort.evidence_from_native(
@@ -84,6 +84,52 @@ def test_topology_evidence_recognizes_controlled_prismatic_bracket() -> None:
     assert evidence["unit"] == "mm"
     assert evidence["unit_confidence"] == 1.0
     assert evidence["frame_confidence"] >= 0.95
+    assert sum(item["kind"] == "cylinder" for item in evidence["primitives"]) == 1
+
+
+def test_topology_evidence_refuses_two_distinct_bracket_holes() -> None:
+    bounds = BoundingBox((0.0, 0.0, 0.0), (0.080, 0.050, 0.012))
+    sanity = GeometrySanity(1, 0, 0, 0)
+    query = TopologyQueryResult(
+        items=tuple(TopologyItem("face", f"f{i}", "Body1", i) for i in range(8)),
+        counts={"body": 1, "face": 8, "edge": 20, "vertex": 16},
+    )
+    planes = [
+        FaceGeometry("planar", normal=Vector3D(1.0, 0.0, 0.0)),
+        FaceGeometry("planar", normal=Vector3D(-1.0, 0.0, 0.0)),
+        FaceGeometry("planar", normal=Vector3D(0.0, 1.0, 0.0)),
+        FaceGeometry("planar", normal=Vector3D(0.0, -1.0, 0.0)),
+        FaceGeometry("planar", normal=Vector3D(0.0, 0.0, 1.0)),
+        FaceGeometry("planar", normal=Vector3D(0.0, 0.0, -1.0)),
+    ]
+    cylinders = [
+        FaceGeometry(
+            "cylindrical",
+            origin_mm=Point3D(-15.0, 0.0, 0.0),
+            axis=Vector3D(0.0, 0.0, 1.0),
+            radius_mm=5.0,
+        ),
+        FaceGeometry(
+            "cylindrical",
+            origin_mm=Point3D(15.0, 0.0, 0.0),
+            axis=Vector3D(0.0, 0.0, 1.0),
+            radius_mm=5.0,
+        ),
+    ]
+    inspections = tuple(
+        _face(f"f{i}", geometry)
+        for i, geometry in enumerate([*planes, *cylinders])
+    )
+
+    evidence = NativeStepTopologyPort.evidence_from_native(
+        bounds=bounds,
+        sanity=sanity,
+        query=query,
+        inspections=inspections,
+    )
+
+    assert evidence["recognized_class"] is None
+    assert sum(item["kind"] == "cylinder" for item in evidence["primitives"]) == 2
 
 
 def test_topology_evidence_recognizes_axis_aligned_turned_shaft() -> None:

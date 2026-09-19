@@ -177,8 +177,8 @@ def test_native_step_reconstruction_workflow() -> None:
             session.connect(
                 policy=AttachPolicy.START_NEW,
                 version=2024,
-                visible=True,
-                timeout=120.0,
+                visible=False,
+                timeout=180.0,
             ),
             "provider-owned SOLIDWORKS connect",
         )
