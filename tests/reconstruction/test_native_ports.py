@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,8 @@ from cdt_solidworks.native.models import NativeCallResult, NativeCallState
 from cdt_solidworks.reconstruction.native_ports import (
     NativeStepPartPort,
     NativeStepTopologyPort,
+    NativeStlMeshPort,
+    bind_native_mesh_port,
     bind_native_step_ports,
 )
 from cdt_solidworks.topology.models import (
@@ -36,6 +40,81 @@ def _face(ref: str, geometry: FaceGeometry) -> TopologyInspection:
         component_id=None,
         geometry=geometry,
     )
+
+
+def _bracket_mesh_triangles(
+    *,
+    width: float = 80.0,
+    height: float = 50.0,
+    depth: float = 12.0,
+    hole_radius: float = 5.0,
+    segments: int = 16,
+) -> list[tuple[tuple[float, float, float], ...]]:
+    per_side = segments // 4
+    outer: list[tuple[float, float]] = []
+    for index in range(segments):
+        side, step = divmod(index, per_side)
+        fraction = step / per_side
+        if side == 0:
+            outer.append((fraction * width, 0.0))
+        elif side == 1:
+            outer.append((width, fraction * height))
+        elif side == 2:
+            outer.append((width * (1.0 - fraction), height))
+        else:
+            outer.append((0.0, height * (1.0 - fraction)))
+    center = (width / 2.0, height / 2.0)
+    inner = [
+        (
+            center[0] + hole_radius * math.cos(-3.0 * math.pi / 4.0 + 2.0 * math.pi * index / segments),
+            center[1] + hole_radius * math.sin(-3.0 * math.pi / 4.0 + 2.0 * math.pi * index / segments),
+        )
+        for index in range(segments)
+    ]
+    triangles: list[tuple[tuple[float, float, float], ...]] = []
+    for index in range(segments):
+        nxt = (index + 1) % segments
+        ob0 = (*outer[index], 0.0)
+        ob1 = (*outer[nxt], 0.0)
+        ot0 = (*outer[index], depth)
+        ot1 = (*outer[nxt], depth)
+        ib0 = (*inner[index], 0.0)
+        ib1 = (*inner[nxt], 0.0)
+        it0 = (*inner[index], depth)
+        it1 = (*inner[nxt], depth)
+        triangles.extend(
+            [
+                (ot0, ot1, it1),
+                (ot0, it1, it0),
+                (ob0, ib1, ob1),
+                (ob0, ib0, ib1),
+                (ob0, ob1, ot1),
+                (ob0, ot1, ot0),
+                (ib0, it1, ib1),
+                (ib0, it0, it1),
+            ]
+        )
+    return triangles
+
+
+def _write_binary_stl(
+    path: Path,
+    triangles: list[tuple[tuple[float, float, float], ...]],
+) -> None:
+    payload = bytearray(b"cdt-solidworks-test".ljust(80, b" "))
+    payload.extend(struct.pack("<I", len(triangles)))
+    for triangle in triangles:
+        payload.extend(
+            struct.pack(
+                "<12fH",
+                0.0,
+                0.0,
+                0.0,
+                *(coordinate for vertex in triangle for coordinate in vertex),
+                0,
+            )
+        )
+    path.write_bytes(payload)
 
 
 def test_topology_evidence_recognizes_controlled_prismatic_bracket() -> None:
@@ -430,6 +509,56 @@ def test_native_part_port_reopen_and_edit_uses_part_parameter_readback(tmp_path:
     assert result["reopen_verified"] is True
     assert result["readback_mm"] == pytest.approx(15.0)
     assert part.edits == [("ReconstructionBase", "depth_mm", 15.0)]
+
+
+def test_stl_mesh_port_requires_explicit_scale_before_classification(tmp_path: Path) -> None:
+    source = tmp_path / "bracket.stl"
+    _write_binary_stl(source, _bracket_mesh_triangles())
+    port = NativeStlMeshPort()
+
+    unitless = port.inspect_mesh(str(source))
+
+    assert unitless["triangle_count"] == 128
+    assert unitless["watertight"] is True
+    assert unitless["manifold"] is True
+    assert unitless["unit"] is None
+    assert unitless["unit_confidence"] == 0.0
+    assert unitless["recognized_class"] is None
+    assert unitless["dimensions_mm"] == {}
+
+    scaled = port.inspect_mesh(str(source), scale_to_mm=1.0)
+
+    assert scaled["recognized_class"] == "prismatic_bracket"
+    assert scaled["dimensions_mm"] == {
+        "width": pytest.approx(80.0),
+        "height": pytest.approx(50.0),
+        "depth": pytest.approx(12.0),
+        "hole_diameter": pytest.approx(10.0),
+    }
+    assert scaled["unit"] == "mm"
+    assert scaled["unit_confidence"] == 1.0
+    assert scaled["frame_confidence"] >= 0.95
+    cylinder = next(item for item in scaled["primitives"] if item["kind"] == "cylinder")
+    assert 0.0 < cylinder["fit_residual_mm"] < 0.1
+
+
+def test_stl_mesh_port_marks_open_mesh_non_watertight_and_unclassified(tmp_path: Path) -> None:
+    source = tmp_path / "open-bracket.stl"
+    triangles = _bracket_mesh_triangles()
+    _write_binary_stl(source, triangles[:-1])
+
+    evidence = NativeStlMeshPort().inspect_mesh(str(source), scale_to_mm=1.0)
+
+    assert evidence["watertight"] is False
+    assert evidence["recognized_class"] is None
+
+
+def test_bind_native_mesh_port_requires_runtime_path_policy() -> None:
+    runtime = SimpleNamespace(path_policy=object())
+
+    bind_native_mesh_port(runtime)
+
+    assert isinstance(runtime.reconstruction_mesh_port, NativeStlMeshPort)
 
 
 def test_bind_native_step_ports_composes_only_when_dependencies_are_present() -> None:

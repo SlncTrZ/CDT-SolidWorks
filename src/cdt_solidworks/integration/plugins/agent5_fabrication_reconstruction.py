@@ -8,7 +8,10 @@ from cdt_solidworks.integration.fabrication_reconstruction import (
     FabricationReconstructionFacade,
     result_payload,
 )
-from cdt_solidworks.reconstruction.native_ports import bind_native_step_ports
+from cdt_solidworks.reconstruction.native_ports import (
+    bind_native_mesh_port,
+    bind_native_step_ports,
+)
 
 PLUGIN_CONTRACT_VERSION = 1
 PLUGIN_ID = "agent5.fabrication_reconstruction"
@@ -17,6 +20,7 @@ PLUGIN_ORDER = 5
 
 def register_tools(server: Any, runtime: Any) -> None:
     bind_native_step_ports(runtime)
+    bind_native_mesh_port(runtime)
     facade = FabricationReconstructionFacade(runtime)
 
     @server.tool(name="body_move_copy", description="Move or copy explicitly named solid bodies by a bounded XYZ translation in millimeters.")
@@ -120,9 +124,15 @@ def register_tools(server: Any, runtime: Any) -> None:
             property_name=property_name, value=value,
         ))
 
-    @server.tool(name="reconstruction_assess", description="Classify and assess a STEP/IGES/Parasolid/native-imported/STL source with hash, units/frame confidence, topology or mesh statistics, primitive fits, missing semantics, and a bounded strategy.")
-    def reconstruction_assess(source_path: str) -> dict[str, Any]:
-        return result_payload(facade.reconstruction_assess(source_path=source_path))
+    @server.tool(name="reconstruction_assess", description="Classify and assess a STEP/IGES/Parasolid/native-imported/STL source with hash, units/frame confidence, topology or mesh statistics, primitive fits, missing semantics, and a bounded strategy. Unitless STL may supply an explicit scale-to-mm for dimensional classification.")
+    def reconstruction_assess(
+        source_path: str,
+        mesh_scale_to_mm: float | None = None,
+    ) -> dict[str, Any]:
+        return result_payload(facade.reconstruction_assess(
+            source_path=source_path,
+            mesh_scale_to_mm=mesh_scale_to_mm,
+        ))
 
     @server.tool(name="reconstruction_step_to_editable", description="Rebuild a controlled STEP benchmark as ordinary editable SOLIDWORKS features through injected topology/part ports, verify critical dimensions and optional intended edit after reopen.")
     def reconstruction_step_to_editable(
@@ -138,18 +148,20 @@ def register_tools(server: Any, runtime: Any) -> None:
             intended_edit=intended_edit,
         ))
 
-    @server.tool(name="reconstruction_mesh_to_parametric", description="Approximate a controlled STL benchmark as editable SOLIDWORKS features only when mesh confidence/residuals satisfy the declared tolerance; ambiguity is refused.")
+    @server.tool(name="reconstruction_mesh_to_parametric", description="Approximate a controlled STL benchmark as editable SOLIDWORKS features only when an explicit source scale-to-mm, watertight/manifold quality, primitive confidence, and fit residual satisfy the declared tolerance; ambiguity is refused.")
     def reconstruction_mesh_to_parametric(
         source_path: str,
         output_path: str,
         benchmark_class: str,
         approximation_tolerance_mm: float,
+        mesh_scale_to_mm: float | None = None,
         intended_edit: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         return result_payload(facade.reconstruction_mesh_to_parametric(
             source_path=source_path, output_path=output_path,
             benchmark_class=benchmark_class,
             approximation_tolerance_mm=approximation_tolerance_mm,
+            mesh_scale_to_mm=mesh_scale_to_mm,
             intended_edit=intended_edit,
         ))
 
@@ -168,6 +180,7 @@ def register_tools(server: Any, runtime: Any) -> None:
 
 def capability_descriptors(runtime: Any) -> list[dict[str, Any]]:
     bind_native_step_ports(runtime)
+    bind_native_mesh_port(runtime)
     native_available, native_reason = _solidworks_dependency(runtime)
     descriptors: list[dict[str, Any]] = []
 

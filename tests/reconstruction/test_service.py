@@ -60,7 +60,21 @@ class _MeshPort:
         self.confidence = confidence
         self.residual_mm = residual_mm
 
-    def inspect_mesh(self, source_path: str) -> dict[str, object]:
+    def inspect_mesh(
+        self, source_path: str, *, scale_to_mm: float | None = None
+    ) -> dict[str, object]:
+        if scale_to_mm is None:
+            return {
+                "triangle_count": 1240,
+                "watertight": True,
+                "manifold": True,
+                "recognized_class": None,
+                "dimensions_mm": {},
+                "primitives": [],
+                "unit": None,
+                "unit_confidence": 0.0,
+                "frame_confidence": 0.0,
+            }
         return {
             "triangle_count": 1240,
             "watertight": True,
@@ -72,8 +86,9 @@ class _MeshPort:
                 {"kind": "cylinder", "confidence": self.confidence, "fit_residual_mm": self.residual_mm},
             ],
             "unit": "mm",
-            "unit_confidence": 0.95,
+            "unit_confidence": 1.0,
             "frame_confidence": 0.94,
+            "source_scale_to_mm": scale_to_mm,
         }
 
 
@@ -152,6 +167,21 @@ def test_mesh_to_parametric_rejects_ambiguous_fit_instead_of_claiming_zero_devia
             str(tmp_path / "bracket.SLDPRT"),
             benchmark_class="prismatic_bracket",
             approximation_tolerance_mm=0.25,
+            mesh_scale_to_mm=1.0,
+        )
+
+
+def test_mesh_to_parametric_requires_explicit_scale_for_unitless_stl(tmp_path: Path) -> None:
+    source = tmp_path / "bracket.stl"
+    source.write_bytes(b"mesh")
+    service = ReconstructionService(mesh_port=_MeshPort(), part_port=_PartPort())
+
+    with pytest.raises(ReconstructionValidationError, match="mesh_scale_to_mm"):
+        service.mesh_to_parametric(
+            str(source),
+            str(tmp_path / "bracket.SLDPRT"),
+            benchmark_class="prismatic_bracket",
+            approximation_tolerance_mm=0.25,
         )
 
 
@@ -165,6 +195,7 @@ def test_mesh_to_parametric_reports_quantitative_deviation(tmp_path: Path) -> No
         str(tmp_path / "bracket.SLDPRT"),
         benchmark_class="prismatic_bracket",
         approximation_tolerance_mm=0.25,
+        mesh_scale_to_mm=1.0,
     )
 
     assert result.strategy is ReconstructionStrategy.APPROXIMATION

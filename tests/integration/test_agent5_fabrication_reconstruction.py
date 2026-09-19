@@ -55,6 +55,44 @@ class _TopologyPort:
         }
 
 
+class _MeshPort:
+    def inspect_mesh(
+        self, source_path: str, *, scale_to_mm: float | None = None
+    ) -> dict[str, object]:
+        if scale_to_mm is None:
+            return {
+                "triangle_count": 128,
+                "watertight": True,
+                "manifold": True,
+                "recognized_class": None,
+                "dimensions_mm": {},
+                "primitives": [],
+                "unit": None,
+                "unit_confidence": 0.0,
+                "frame_confidence": 0.0,
+            }
+        return {
+            "triangle_count": 128,
+            "watertight": True,
+            "manifold": True,
+            "recognized_class": "prismatic_bracket",
+            "dimensions_mm": {
+                "width": 40.0,
+                "height": 30.0,
+                "depth": 10.0,
+                "hole_diameter": 6.0,
+            },
+            "primitives": [
+                {"kind": "plane", "confidence": 1.0, "fit_residual_mm": 0.0},
+                {"kind": "cylinder", "confidence": 0.98, "fit_residual_mm": 0.08},
+            ],
+            "unit": "mm",
+            "unit_confidence": 1.0,
+            "frame_confidence": 1.0,
+            "source_scale_to_mm": scale_to_mm,
+        }
+
+
 class _PartPort:
     def rebuild_editable(self, output_path: str, plan: dict[str, object]) -> dict[str, object]:
         return {
@@ -89,7 +127,7 @@ class _Runtime:
         self.reconstruction_topology_port = _TopologyPort() if with_reconstruction_ports else None
         self.reconstruction_part_port = _PartPort() if with_reconstruction_ports else None
         self.reconstruction_drawing_port = None
-        self.reconstruction_mesh_port = None
+        self.reconstruction_mesh_port = _MeshPort() if with_reconstruction_ports else None
 
     def runtime_context(self):
         return _Context()
@@ -166,14 +204,36 @@ def test_reconstruction_public_wrapper_preserves_envelope_and_typed_unavailable(
     assert blocked["error"]["native_code"] == "capability_unavailable"
 
 
+def test_public_mesh_reconstruction_forwards_explicit_scale(tmp_path: Path) -> None:
+    source = tmp_path / "bracket.stl"
+    source.write_bytes(b"mesh")
+    runtime = _Runtime()
+    server = _CapturingServer()
+    register_tools(server, runtime)
+
+    result = server.tools["reconstruction_mesh_to_parametric"](
+        source_path=str(source),
+        output_path=str(tmp_path / "out.SLDPRT"),
+        benchmark_class="prismatic_bracket",
+        approximation_tolerance_mm=0.25,
+        mesh_scale_to_mm=1.0,
+        intended_edit=None,
+    )
+
+    assert result["state"] == "success"
+    assert result["dispatched"] is True
+    assert result["value"]["strategy"] == "approximation"
+    assert result["value"]["within_tolerance"] is True
+
+
 def test_capability_descriptors_use_live_dependency_and_port_state() -> None:
     ready = {row["name"]: row for row in capability_descriptors(_Runtime())}
     assert ready["solidworks.body.move_copy"]["implemented"] is True
     assert ready["solidworks.body.move_copy"]["available"] is True
     assert ready["solidworks.reconstruction.step_editable"]["implemented"] is True
     assert ready["solidworks.reconstruction.step_editable"]["available"] is True
-    assert ready["solidworks.reconstruction.mesh_parametric"]["available"] is False
-    assert ready["solidworks.reconstruction.mesh_parametric"]["reason"] == "mesh_port_unavailable"
+    assert ready["solidworks.reconstruction.mesh_parametric"]["available"] is True
+    assert ready["solidworks.reconstruction.mesh_parametric"]["reason"] is None
 
     blocked = {row["name"]: row for row in capability_descriptors(_Runtime(with_reconstruction_ports=False))}
     assert blocked["solidworks.reconstruction.step_editable"]["available"] is False

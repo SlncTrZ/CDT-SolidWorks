@@ -10,8 +10,10 @@ the reconstruction service rather than guessed.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 import math
 from pathlib import Path
+import struct
 from typing import Any, Mapping, Sequence
 import uuid
 
@@ -38,6 +40,9 @@ _AXIS_NAMES = ("x", "y", "z")
 _AXIS_ALIGNMENT = 0.999
 _SPAN_ABS_TOL_MM = 0.05
 _SPAN_REL_TOL = 0.005
+_MAX_STL_BYTES = 64 * 1024 * 1024
+_MAX_STL_TRIANGLES = 1_000_000
+_MIN_HOLE_RING_POINTS = 8
 
 
 def _native_value(result: object, label: str) -> Any:
@@ -140,6 +145,354 @@ def _unique_cylinders(faces: Sequence[FaceGeometry]) -> list[FaceGeometry]:
             continue
         unique.append(face)
     return unique
+
+
+class NativeStlMeshPort:
+    """Inspect bounded STL meshes without inventing unit metadata or design intent."""
+
+    def inspect_mesh(
+        self,
+        source_path: str,
+        *,
+        scale_to_mm: float | None = None,
+    ) -> dict[str, object]:
+        source = Path(source_path).expanduser().resolve(strict=False)
+        if source.suffix.lower() != ".stl":
+            raise ReconstructionValidationError("native mesh port supports STL only")
+        if not source.is_file():
+            raise ReconstructionValidationError("STL mesh source does not exist")
+        size = source.stat().st_size
+        if size <= 0 or size > _MAX_STL_BYTES:
+            raise ReconstructionValidationError("STL mesh size is outside the bounded parser limit")
+        triangles = self._parse_stl(source.read_bytes())
+        if scale_to_mm is None:
+            metrics = self._mesh_metrics(triangles)
+            return {
+                "valid": True,
+                "mixed_representation": False,
+                "body_count": metrics["component_count"],
+                "triangle_count": len(triangles),
+                "watertight": metrics["watertight"],
+                "manifold": metrics["manifold"],
+                "component_count": metrics["component_count"],
+                "degenerate_triangle_count": metrics["degenerate_triangle_count"],
+                "boundary_edge_count": metrics["boundary_edge_count"],
+                "nonmanifold_edge_count": metrics["nonmanifold_edge_count"],
+                "source_scale_to_mm": None,
+                "unit": None,
+                "unit_confidence": 0.0,
+                "frame_confidence": 0.0,
+                "recognized_class": None,
+                "dimensions_mm": {},
+                "primitives": [],
+            }
+        scale = self._positive_scale(scale_to_mm)
+        scaled = [
+            tuple(tuple(float(value) * scale for value in vertex) for vertex in triangle)
+            for triangle in triangles
+        ]
+        return self._evidence_from_triangles(scaled, source_scale_to_mm=scale)
+
+    @classmethod
+    def _evidence_from_triangles(
+        cls,
+        triangles: Sequence[Sequence[Sequence[float]]],
+        *,
+        source_scale_to_mm: float,
+    ) -> dict[str, object]:
+        metrics = cls._mesh_metrics(triangles)
+        points = [vertex for triangle in triangles for vertex in triangle]
+        mins = tuple(min(float(vertex[index]) for vertex in points) for index in range(3))
+        maxs = tuple(max(float(vertex[index]) for vertex in points) for index in range(3))
+        spans = tuple(maxs[index] - mins[index] for index in range(3))
+        tolerance = max(1e-6, max(spans) * 1e-8)
+        recognized: str | None = None
+        dimensions: dict[str, float] = {}
+        primitives: list[dict[str, object]] = []
+        frame_confidence = 0.0
+
+        bracket = cls._bracket_fit(
+            triangles,
+            mins=mins,
+            maxs=maxs,
+            spans=spans,
+            tolerance=tolerance,
+            metrics=metrics,
+        )
+        if bracket is not None:
+            recognized = "prismatic_bracket"
+            frame_confidence = 1.0
+            dimensions = {
+                "width": spans[0],
+                "height": spans[1],
+                "depth": spans[2],
+                "hole_diameter": 2.0 * bracket["radius_mm"],
+            }
+            primitives = [
+                {
+                    "kind": "plane",
+                    "confidence": 1.0,
+                    "fit_residual_mm": 0.0,
+                    "axis": "z",
+                },
+                {
+                    "kind": "cylinder",
+                    "confidence": bracket["confidence"],
+                    "fit_residual_mm": bracket["fit_residual_mm"],
+                    "radius_mm": bracket["radius_mm"],
+                    "axis": "z",
+                    "center_x_mm": bracket["center_x_mm"],
+                    "center_y_mm": bracket["center_y_mm"],
+                },
+            ]
+
+        return {
+            "valid": True,
+            "mixed_representation": False,
+            "body_count": metrics["component_count"],
+            "triangle_count": len(triangles),
+            "watertight": metrics["watertight"],
+            "manifold": metrics["manifold"],
+            "component_count": metrics["component_count"],
+            "degenerate_triangle_count": metrics["degenerate_triangle_count"],
+            "boundary_edge_count": metrics["boundary_edge_count"],
+            "nonmanifold_edge_count": metrics["nonmanifold_edge_count"],
+            "source_scale_to_mm": source_scale_to_mm,
+            "unit": "mm",
+            "unit_confidence": 1.0,
+            "frame_confidence": frame_confidence,
+            "recognized_class": recognized,
+            "dimensions_mm": dimensions,
+            "primitives": primitives,
+        }
+
+    @classmethod
+    def _mesh_metrics(
+        cls,
+        triangles: Sequence[Sequence[Sequence[float]]],
+    ) -> dict[str, object]:
+        if not triangles:
+            raise ReconstructionValidationError("STL mesh does not contain triangles")
+        points = [vertex for triangle in triangles for vertex in triangle]
+        mins = tuple(min(float(vertex[index]) for vertex in points) for index in range(3))
+        maxs = tuple(max(float(vertex[index]) for vertex in points) for index in range(3))
+        spans = tuple(maxs[index] - mins[index] for index in range(3))
+        if any(not math.isfinite(value) for vertex in points for value in vertex):
+            raise ReconstructionValidationError("STL mesh contains non-finite coordinates")
+        if any(value <= 0.0 for value in spans):
+            raise ReconstructionValidationError("STL mesh bounding box is degenerate")
+        tolerance = max(1e-9, max(spans) * 1e-9)
+
+        def key(vertex: Sequence[float]) -> tuple[int, int, int]:
+            return tuple(int(round(float(value) / tolerance)) for value in vertex)  # type: ignore[return-value]
+
+        parent = list(range(len(triangles)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(first: int, second: int) -> None:
+            left, right = find(first), find(second)
+            if left != right:
+                parent[right] = left
+
+        edge_owners: dict[tuple[tuple[int, int, int], tuple[int, int, int]], list[int]] = defaultdict(list)
+        degenerate = 0
+        for index, triangle in enumerate(triangles):
+            if len(triangle) != 3:
+                raise ReconstructionValidationError("STL facet does not contain three vertices")
+            vertex_keys = [key(vertex) for vertex in triangle]
+            if len(set(vertex_keys)) < 3 or cls._double_area(triangle) <= tolerance * tolerance:
+                degenerate += 1
+            for first, second in ((0, 1), (1, 2), (2, 0)):
+                edge = tuple(sorted((vertex_keys[first], vertex_keys[second])))
+                edge_owners[edge].append(index)
+        for owners in edge_owners.values():
+            for other in owners[1:]:
+                union(owners[0], other)
+        edge_counts = Counter(len(owners) for owners in edge_owners.values())
+        boundary = edge_counts.get(1, 0)
+        nonmanifold = sum(count for multiplicity, count in edge_counts.items() if multiplicity > 2)
+        components = len({find(index) for index in range(len(triangles))})
+        manifold = degenerate == 0 and nonmanifold == 0
+        return {
+            "watertight": manifold and boundary == 0,
+            "manifold": manifold,
+            "component_count": components,
+            "degenerate_triangle_count": degenerate,
+            "boundary_edge_count": boundary,
+            "nonmanifold_edge_count": nonmanifold,
+        }
+
+    @classmethod
+    def _bracket_fit(
+        cls,
+        triangles: Sequence[Sequence[Sequence[float]]],
+        *,
+        mins: tuple[float, float, float],
+        maxs: tuple[float, float, float],
+        spans: tuple[float, float, float],
+        tolerance: float,
+        metrics: Mapping[str, object],
+    ) -> dict[str, float] | None:
+        if (
+            metrics.get("watertight") is not True
+            or metrics.get("manifold") is not True
+            or metrics.get("component_count") != 1
+            or spans[2] >= min(spans[0], spans[1])
+            or min(spans[0], spans[1]) < 1.5 * spans[2]
+        ):
+            return None
+
+        xy_levels: dict[tuple[int, int], set[int]] = defaultdict(set)
+        xy_values: dict[tuple[int, int], tuple[float, float]] = {}
+        xy_tolerance = max(tolerance, 1e-6)
+        unique_vertices = {
+            tuple(float(value) for value in vertex)
+            for triangle in triangles
+            for vertex in triangle
+        }
+        for x, y, z in unique_vertices:
+            level = 0 if abs(z - mins[2]) <= tolerance else 1 if abs(z - maxs[2]) <= tolerance else None
+            if level is None:
+                continue
+            if (
+                abs(x - mins[0]) <= tolerance
+                or abs(x - maxs[0]) <= tolerance
+                or abs(y - mins[1]) <= tolerance
+                or abs(y - maxs[1]) <= tolerance
+            ):
+                continue
+            key = (int(round(x / xy_tolerance)), int(round(y / xy_tolerance)))
+            xy_levels[key].add(level)
+            xy_values[key] = (x, y)
+        ring = [xy_values[key] for key, levels in xy_levels.items() if levels == {0, 1}]
+        if len(ring) < _MIN_HOLE_RING_POINTS:
+            return None
+        center_x = sum(point[0] for point in ring) / len(ring)
+        center_y = sum(point[1] for point in ring) / len(ring)
+        radii = [math.hypot(x - center_x, y - center_y) for x, y in ring]
+        radius = sum(radii) / len(radii)
+        if not math.isfinite(radius) or radius <= tolerance:
+            return None
+        radial_residual = max(abs(value - radius) for value in radii)
+        if radial_residual > max(_SPAN_ABS_TOL_MM, radius * 0.01):
+            return None
+        angles = sorted(math.atan2(y - center_y, x - center_x) for x, y in ring)
+        gaps = [angles[index + 1] - angles[index] for index in range(len(angles) - 1)]
+        gaps.append((angles[0] + 2.0 * math.pi) - angles[-1])
+        maximum_gap = max(gaps)
+        if maximum_gap > math.pi / 2.0:
+            return None
+        sagitta = radius * (1.0 - math.cos(maximum_gap / 2.0))
+        fit_residual = max(radial_residual, sagitta)
+
+        for triangle in triangles:
+            normal = cls._unit_normal(triangle)
+            if normal is None:
+                return None
+            absolute = tuple(abs(value) for value in normal)
+            if max(absolute) >= _AXIS_ALIGNMENT:
+                continue
+            if absolute[2] > 0.05:
+                return None
+            centroid_x = sum(float(vertex[0]) for vertex in triangle) / 3.0
+            centroid_y = sum(float(vertex[1]) for vertex in triangle) / 3.0
+            centroid_radius = math.hypot(centroid_x - center_x, centroid_y - center_y)
+            if abs(centroid_radius - radius) > max(0.15, radius * 0.05):
+                return None
+        confidence = max(0.8, min(1.0, 1.0 - fit_residual / radius))
+        return {
+            "center_x_mm": center_x,
+            "center_y_mm": center_y,
+            "radius_mm": radius,
+            "fit_residual_mm": fit_residual,
+            "confidence": confidence,
+        }
+
+    @staticmethod
+    def _double_area(triangle: Sequence[Sequence[float]]) -> float:
+        first, second, third = triangle
+        ab = tuple(float(second[index]) - float(first[index]) for index in range(3))
+        ac = tuple(float(third[index]) - float(first[index]) for index in range(3))
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        return math.sqrt(sum(value * value for value in cross))
+
+    @classmethod
+    def _unit_normal(
+        cls, triangle: Sequence[Sequence[float]]
+    ) -> tuple[float, float, float] | None:
+        first, second, third = triangle
+        ab = tuple(float(second[index]) - float(first[index]) for index in range(3))
+        ac = tuple(float(third[index]) - float(first[index]) for index in range(3))
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        magnitude = math.sqrt(sum(value * value for value in cross))
+        if magnitude <= 0.0:
+            return None
+        return tuple(value / magnitude for value in cross)
+
+    @classmethod
+    def _parse_stl(
+        cls, payload: bytes
+    ) -> list[tuple[tuple[float, float, float], ...]]:
+        if len(payload) >= 84:
+            triangle_count = struct.unpack_from("<I", payload, 80)[0]
+            if triangle_count > _MAX_STL_TRIANGLES:
+                raise ReconstructionValidationError("STL triangle count exceeds the bounded parser limit")
+            expected = 84 + triangle_count * 50
+            if triangle_count > 0 and expected == len(payload):
+                triangles: list[tuple[tuple[float, float, float], ...]] = []
+                offset = 84
+                for _ in range(triangle_count):
+                    values = struct.unpack_from("<12fH", payload, offset)
+                    offset += 50
+                    triangles.append(
+                        (
+                            tuple(float(value) for value in values[3:6]),
+                            tuple(float(value) for value in values[6:9]),
+                            tuple(float(value) for value in values[9:12]),
+                        )
+                    )
+                return triangles
+        try:
+            text = payload.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ReconstructionValidationError("STL payload is neither valid binary nor ASCII") from exc
+        vertices: list[tuple[float, float, float]] = []
+        for line in text.splitlines():
+            fields = line.strip().split()
+            if len(fields) != 4 or fields[0].lower() != "vertex":
+                continue
+            try:
+                vertex = tuple(float(value) for value in fields[1:])
+            except ValueError as exc:
+                raise ReconstructionValidationError("ASCII STL contains an invalid vertex") from exc
+            vertices.append(vertex)  # type: ignore[arg-type]
+            if len(vertices) // 3 > _MAX_STL_TRIANGLES:
+                raise ReconstructionValidationError("STL triangle count exceeds the bounded parser limit")
+        if not vertices or len(vertices) % 3 != 0:
+            raise ReconstructionValidationError("ASCII STL does not contain complete triangle facets")
+        return [tuple(vertices[index:index + 3]) for index in range(0, len(vertices), 3)]
+
+    @staticmethod
+    def _positive_scale(value: object) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ReconstructionValidationError("scale_to_mm must be a positive finite number")
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric <= 0.0:
+            raise ReconstructionValidationError("scale_to_mm must be a positive finite number")
+        return numeric
 
 
 class NativeStepTopologyPort:
@@ -834,6 +1187,16 @@ class NativeStepPartPort:
             if isinstance(parameters, Mapping) and parameters.get("axis") == "z":
                 matches.append(item)
         return matches[0] if len(matches) == 1 else None
+
+
+def bind_native_mesh_port(runtime: Any) -> None:
+    """Attach the bounded STL parser only to a path-contained integrated runtime."""
+
+    if (
+        getattr(runtime, "reconstruction_mesh_port", None) is None
+        and getattr(runtime, "path_policy", None) is not None
+    ):
+        runtime.reconstruction_mesh_port = NativeStlMeshPort()
 
 
 def bind_native_step_ports(runtime: Any) -> None:

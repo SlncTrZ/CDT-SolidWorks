@@ -62,14 +62,27 @@ class ReconstructionService:
         self.drawing_port = drawing_port
         self.mesh_port = mesh_port
 
-    def assess(self, source_path: str) -> ReconstructionAssessment:
+    def assess(
+        self,
+        source_path: str,
+        *,
+        mesh_scale_to_mm: float | None = None,
+    ) -> ReconstructionAssessment:
         source = self._source_identity(source_path)
         if source.source_class is SourceClass.NEUTRAL_CAD:
             port = self._require_port(self.topology_port, "topology_port")
             evidence = self._mapping(port.inspect_source(source.path), "topology assessment")
         elif source.source_class is SourceClass.MESH:
             port = self._require_port(self.mesh_port, "mesh_port")
-            evidence = self._mapping(port.inspect_mesh(source.path), "mesh assessment")
+            scale = (
+                None
+                if mesh_scale_to_mm is None
+                else self._positive(mesh_scale_to_mm, "mesh_scale_to_mm")
+            )
+            evidence = self._mapping(
+                port.inspect_mesh(source.path, scale_to_mm=scale),
+                "mesh assessment",
+            )
         elif source.source_class is SourceClass.NATIVE_IMPORTED_BODY:
             port = self._require_port(self.topology_port, "topology_port")
             evidence = self._mapping(port.inspect_source(source.path), "native imported-body assessment")
@@ -181,15 +194,25 @@ class ReconstructionService:
         *,
         benchmark_class: str,
         approximation_tolerance_mm: float,
+        mesh_scale_to_mm: float | None = None,
         intended_edit: Mapping[str, object] | None = None,
     ) -> ReconstructionResult:
         self._require_port(self.mesh_port, "mesh_port")
         part = self._require_port(self.part_port, "part_port")
         tolerance = self._positive(approximation_tolerance_mm, "approximation_tolerance_mm")
+        if mesh_scale_to_mm is None:
+            raise ReconstructionValidationError(
+                "mesh_scale_to_mm is required because STL does not carry authoritative units"
+            )
+        scale = self._positive(mesh_scale_to_mm, "mesh_scale_to_mm")
         benchmark = self._benchmark(benchmark_class)
-        assessment = self.assess(source_path)
+        assessment = self.assess(source_path, mesh_scale_to_mm=scale)
         if assessment.source.source_class is not SourceClass.MESH:
             raise ReconstructionValidationError("mesh-to-parametric requires an STL mesh source")
+        if assessment.unit != "mm" or assessment.unit_confidence < 0.99:
+            raise ReconstructionValidationError(
+                "mesh unit normalization is not explicit enough for reconstruction"
+            )
         self._require_recognized_class(assessment, benchmark)
         self._require_dimensions(assessment.dimensions_mm, benchmark)
         if assessment.mesh.get("watertight") is not True or assessment.mesh.get("manifold") is not True:
@@ -212,6 +235,7 @@ class ReconstructionService:
             "ordinary_features_only": True,
             "critical_dimensions_mm": dict(assessment.dimensions_mm),
             "approximation_tolerance_mm": tolerance,
+            "mesh_scale_to_mm": scale,
             "primitive_fits": [self._primitive_payload(item) for item in assessment.primitives],
         }
         try:
@@ -340,7 +364,16 @@ class ReconstructionService:
         }
         mesh = {
             key: evidence[key]
-            for key in ("triangle_count", "watertight", "manifold")
+            for key in (
+                "triangle_count",
+                "watertight",
+                "manifold",
+                "component_count",
+                "degenerate_triangle_count",
+                "boundary_edge_count",
+                "nonmanifold_edge_count",
+                "source_scale_to_mm",
+            )
             if key in evidence
         }
         warnings: list[str] = []

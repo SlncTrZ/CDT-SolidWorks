@@ -118,10 +118,18 @@ class FabricationReconstructionFacade:
             "weldment_service", "set_cut_list_property", "weldment_set_cut_list_property", **kwargs
         )
 
-    def reconstruction_assess(self, *, source_path: str) -> NativeCallResult[Any]:
+    def reconstruction_assess(
+        self,
+        *,
+        source_path: str,
+        mesh_scale_to_mm: float | None = None,
+    ) -> NativeCallResult[Any]:
         return self._reconstruction_call(
             "reconstruction_assess",
-            lambda service: service.assess(self._source_path(source_path)),
+            lambda service: service.assess(
+                self._source_path(source_path),
+                mesh_scale_to_mm=mesh_scale_to_mm,
+            ),
             mutation=True,
         )
 
@@ -153,6 +161,7 @@ class FabricationReconstructionFacade:
         output_path: str,
         benchmark_class: str,
         approximation_tolerance_mm: float,
+        mesh_scale_to_mm: float | None,
         intended_edit: Mapping[str, object] | None,
     ) -> NativeCallResult[Any]:
         return self._reconstruction_call(
@@ -162,6 +171,7 @@ class FabricationReconstructionFacade:
                 self._output_path(output_path),
                 benchmark_class=benchmark_class,
                 approximation_tolerance_mm=approximation_tolerance_mm,
+                mesh_scale_to_mm=mesh_scale_to_mm,
                 intended_edit=intended_edit,
             ),
             mutation=True,
