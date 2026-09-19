@@ -226,3 +226,11 @@ Network startup reads runtime configuration from these environment variable name
 - `CDT_SOLIDWORKS_VERSION`
 
 Authentication configuration and the independent topology-reference signing secret are mandatory; startup fails closed when either is incomplete. If allowed roots are omitted, document and CAD path operations remain disabled by policy. Weldment profile roots are configured independently from document roots; `weldment_create_structural_member` remains unavailable until `CDT_SOLIDWORKS_WELDMENT_PROFILE_ROOTS` is configured, while read-only weldment inspection can remain available.
+
+## Release gates
+
+The tracked `release-gates` workflow enforces the deterministic Linux suite, source compilation/diff checks, exact-source wheel provenance, and an explicit opt-in Windows self-hosted SOLIDWORKS 2024 qualification job. The native job is never implied by a Linux pass and must run on a runner labeled `solidworks-2024`.
+
+Release environments use platform-specific CPython 3.12 locks under `requirements/`. Every resolved build/runtime/test distribution is pinned to an exact version and exact wheel SHA-256; installation uses `--require-hashes`, wheel-only artifacts, and `--no-deps` so the installer cannot resolve an unpinned package outside the lock. Linux x86_64 and Windows amd64 have separate locks because compiled wheel hashes are platform-specific.
+
+`scripts/release_provenance.py` fails closed on a dirty tracked tree, unsupported release platform, missing or non-hash-pinned lock entries, or public/package guide drift. It creates a clean venv without system-site-packages, installs the exact platform lock, builds the wheel without build isolation from that locked environment, records Git SHA + lock identity + guide identity + build runtime + wheel SHA-256/size/file count, then verifies the wheel in a second clean locked venv outside the checkout. The installed package must pass `pip check`, import from outside the source tree, report the expected package version, and contain the exact packaged provider-guide hash. Native SOLIDWORKS workflow evidence remains a separate mandatory release gate.

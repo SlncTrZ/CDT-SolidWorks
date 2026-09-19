@@ -46,4 +46,5 @@ _private/
 
 # Build / package artifacts
 build/
+dist/
 *.egg-info/

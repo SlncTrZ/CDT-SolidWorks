@@ -20,3 +20,11 @@ def test_packaging_includes_root_namespace_cli_and_runtime_guide() -> None:
     plugin_root = ROOT / "src" / "cdt_solidworks" / "integration" / "plugins"
     assert (plugin_root / "__init__.py").is_file()
     assert (plugin_root / "loader.py").is_file()
+
+
+def test_packaged_provider_guide_exactly_matches_public_tool_guide() -> None:
+    public = (ROOT / "docs" / "TOOL_GUIDE.md").read_bytes()
+    packaged = (
+        ROOT / "src" / "cdt_solidworks" / "platform" / "PROVIDER_GUIDE.md"
+    ).read_bytes()
+    assert packaged == public
