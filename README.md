@@ -2,7 +2,13 @@
 
 Independent SOLIDWORKS MCP provider for the CDT engineering program.
 
-> Status: **bounded Mechanical 90 A–D provider surface integrated and native-verified on SOLIDWORKS 2024 SP0.1; mature 90–95 release gate not yet met** · Spec pin: `CDT_Engineer@643019c`
+> Status: **release-qualified for the declared SOLIDWORKS 2024 SP0.1 provider scope at source 9537cc313020ffb26eb21cfd9ab6810a2671a5dc; gateway-controlled lifecycle acceptance remains separate** · Spec pin: `CDT_Engineer@643019c`
+>
+> **CDT certified host target:** SOLIDWORKS **2024 SP0.1 on Windows**. Current
+> acceptance and release scoring are bound to that target only. Other SOLIDWORKS
+> releases are not implied supported or unsupported; they are unverified
+> compatibility candidates that may be added later and are not part of the
+> current quality score.
 
 ## Repository role
 
@@ -30,7 +36,7 @@ The provider has native Windows evidence for:
 - part mass/volume/area, center of mass, inertia, bounding box, and geometry-sanity evaluation;
 - rebuild/error validation and bounded path policy.
 
-M95-R3 Agent A's evidence-backed Sketch/Parametric Part subset is registered through granular public tools and capabilities; broader `solidworks.part.parametric` remains intentionally partial. Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset remains registered and native-verified. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated. The mature 90–95 Mechanical Core release threshold is **not yet met**; unaccepted families remain explicitly partial/unavailable.
+M95-R3 Agent A's evidence-backed Sketch/Parametric Part subset is registered through granular public tools and capabilities; broader `solidworks.part.parametric` remains intentionally partial. Mechanical 90 Lane D's bounded Drawing/Export/Evaluation subset remains registered and native-verified. The provider still intentionally does **not** claim full part, assembly, configuration, drawing/detailing/BOM, evaluation, MBD, Simulation, Motion, Routing, Flow Simulation or Electrical coverage. Capability promotion remains granular and evidence-gated. Final exact-source acceptance at `9537cc313020ffb26eb21cfd9ab6810a2671a5dc` is **PASS / RELEASE-QUALIFIED FOR DECLARED PROVIDER SCOPE**. Unaccepted families remain explicitly partial/unavailable; this does not certify full Mechanical suite coverage or the gateway-controlled lifecycle lane.
 
 ## Correctness rules
 
@@ -47,3 +53,13 @@ M95-R3 Agent A's evidence-backed Sketch/Parametric Part subset is registered thr
 3. Read `specs/MCP_PROVIDER_STANDARD.md`, `specs/ARCHITECTURE.md`, and `specs/CONTRACTS.md`.
 
 Development roadmaps, research, handoffs and acceptance evidence are intentionally kept outside the public documentation set.
+
+## Gateway-controlled execution lifecycle
+
+Integration target: an authorized lifecycle controller ensures the native runtime, verifies readiness, syncs the already-registered gateway provider, verifies activation, and refreshes client tools/list. The lifecycle tools are not implemented or advertised by this provider merely because this guide exists. A stopped engine must not be the only endpoint capable of starting itself.
+
+Require the accepted SOLIDWORKS 2024 SP0.1 session and STA worker; distinguish provider-owned and user-owned instances. Preserve rebuild/read-back verification and uncertainty quarantine. Gateway/lifecycle acceptance is separate from declared-scope native release qualification.
+
+Stop/drain requires verified ownership, no unresolved mutation and explicit dirty-document handling. Do not kill all application processes or silently discard work. Gateway hot activation does not require a gateway restart and may change the provider generation.
+
+Interface reference: [CDT_Engineer Execution Lifecycle Contract](https://github.com/SlncTrZ/CDT_Engineer/blob/main/docs/EXECUTION_LIFECYCLE_CONTRACT.md). The contract is a draft target and is not published by this documentation-only workspace update; it is available in the sibling CDT_Engineer checkout. Existing pinned `specs/**` remain unchanged.
