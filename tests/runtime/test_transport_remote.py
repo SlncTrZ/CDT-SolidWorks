@@ -19,6 +19,8 @@ from cdt_solidworks.runtime.transport import (
     RuntimeOpRefusedError,
     RuntimeUnavailableError,
     RuntimeUncertainError,
+    RuntimeTransportError,
+    SolidWorksRuntimeTransport,
     check_deadline,
     check_op,
 )
@@ -289,3 +291,114 @@ def test_remote_timeout_after_dispatch_is_uncertain_and_quarantines() -> None:
     finally:
         agent.stop()
         session.close_dispatcher(timeout=0.5)
+
+class RecoveryTransport(SolidWorksRuntimeTransport):
+    """Script a lost lifecycle reply and authenticated native recovery evidence."""
+
+    def __init__(self, *, snapshot=None, receipt=None, known_call=False):
+        self.snapshot = {
+            "session_id": "workstation-session",
+            "uncertain_call_id": "native-call",
+        } if snapshot is None else snapshot
+        self.receipt = {
+            "state": "success", "call_id": "native-call", "value": True, "dispatched": True,
+        } if receipt is None else receipt
+        self.known_call = known_call
+        self.calls = []
+
+    def call(self, op, args=(), kwargs=None, **options):
+        self.calls.append(op)
+        if op == "connect":
+            if self.known_call:
+                return {
+                    "state": "uncertain_after_dispatch", "call_id": "native-call",
+                    "dispatched": True,
+                }
+            raise RuntimeUncertainError("lifecycle reply lost")
+        if op == "runtime_status":
+            return self.snapshot
+        if op == "reconcile":
+            return self.receipt
+        if op == "disconnect":
+            return {
+                "state": "success", "call_id": "disconnect-call",
+                "value": True, "dispatched": True,
+            }
+        return {}
+
+    def health(self):
+        return {}
+
+    def close(self):
+        pass
+
+
+def recovery_remote(transport):
+    remote = RemoteSessionAdapter(
+        transport, workstation_session_id="workstation-session", expected_generation="generation-1",
+    )
+    if transport.known_call:
+        assert remote.connect().state is NativeCallState.UNCERTAIN_AFTER_DISPATCH
+    else:
+        with pytest.raises(RuntimeUncertainError):
+            remote.connect()
+    return remote
+
+
+def test_lost_reply_recovery_binds_observed_native_call_and_releases_writer():
+    transport = RecoveryTransport()
+    remote = recovery_remote(transport)
+    result = remote.reconcile(
+        "native-call", stage="recover", timeout=1.0, identity=("target",),
+    )
+    assert result.state is NativeCallState.SUCCESS
+    assert remote.writer_lane.status()["quarantined"] is False
+    assert remote.disconnect().state is NativeCallState.SUCCESS
+    assert transport.calls.count("connect") == 1
+    assert transport.calls.count("reconcile") == 1
+
+
+@pytest.mark.parametrize("snapshot", [
+    {},
+    {"session_id": "another-session", "uncertain_call_id": "native-call"},
+    {"session_id": "workstation-session", "uncertain_call_id": "unrelated-call"},
+    {"session_id": "workstation-session", "uncertain_call_id": None},
+])
+def test_lost_reply_recovery_refuses_unbound_native_identity(snapshot):
+    transport = RecoveryTransport(snapshot=snapshot)
+    remote = recovery_remote(transport)
+    with pytest.raises(RuntimeOpRefusedError):
+        remote.reconcile("native-call", stage="recover", timeout=1.0, identity=("target",))
+    assert "reconcile" not in transport.calls
+    assert remote.writer_lane.status()["quarantined"] is True
+    with pytest.raises(RuntimeUncertainError):
+        remote.disconnect()
+
+
+@pytest.mark.parametrize("known_call", [False, True])
+def test_wrong_recovery_receipt_cannot_clear_writer(known_call):
+    transport = RecoveryTransport(
+        known_call=known_call,
+        receipt={"state": "success", "call_id": "unrelated-call", "value": True},
+    )
+    remote = recovery_remote(transport)
+    with pytest.raises(RuntimeTransportError):
+        remote.reconcile("native-call", stage="recover", timeout=1.0, identity=("target",))
+    assert remote.writer_lane.status()["quarantined"] is True
+
+
+@pytest.mark.parametrize("state", ["failure", "uncertain_after_dispatch"])
+def test_unsuccessful_recovery_keeps_writer_quarantined(state):
+    transport = RecoveryTransport(receipt={"state": state, "call_id": "native-call"})
+    remote = recovery_remote(transport)
+    remote.reconcile("native-call", stage="recover", timeout=1.0, identity=("target",))
+    assert remote.writer_lane.status()["quarantined"] is True
+
+
+def test_known_native_quarantine_refuses_recovery_of_another_call():
+    transport = RecoveryTransport(known_call=True)
+    remote = recovery_remote(transport)
+    with pytest.raises(RuntimeOpRefusedError):
+        remote.reconcile("unrelated-call", stage="recover", timeout=1.0, identity=("target",))
+    assert "reconcile" not in transport.calls
+    assert remote.writer_lane.status()["quarantined"] is True

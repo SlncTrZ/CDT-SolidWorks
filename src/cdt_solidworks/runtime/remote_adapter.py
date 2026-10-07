@@ -108,38 +108,49 @@ def _result(op: str, payload: Any) -> NativeCallResult[Any]:
 
 
 class _WriterLane:
-    """Provider-side single-writer lane + uncertainty quarantine (no COM)."""
+    """Provider-side uncertainty quarantine, with native identity bound by evidence."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._quarantined = False
         self._quarantined_call_id: str | None = None
         self._quarantine_reason: str = ""
 
     def check(self, *, stage: str) -> None:
         with self._lock:
-            quarantined = self._quarantined_call_id
+            quarantined = self._quarantined
+            call_id = self._quarantined_call_id
         if quarantined:
             raise RuntimeUncertainError(
-                f"A prior mutation ({quarantined}) must be reconciled before "
-                f"another mutation ({stage})."
+                f"A prior mutation ({call_id or 'native call identity unknown'}) must be "
+                f"reconciled before another mutation ({stage})."
             )
 
-    def quarantine(self, call_id: str, reason: str) -> None:
+    def quarantine(self, call_id: str | None, reason: str) -> None:
         with self._lock:
-            if self._quarantined_call_id is None:
+            if not self._quarantined:
+                self._quarantined = True
                 self._quarantined_call_id = call_id
                 self._quarantine_reason = reason
+
+    def bind_native_call(self, call_id: str) -> None:
+        """Bind a transport-loss fence only after authenticated runtime observation."""
+        with self._lock:
+            if not self._quarantined or self._quarantined_call_id not in (None, call_id):
+                raise RuntimeOpRefusedError("Native recovery identity does not match quarantine.")
+            self._quarantined_call_id = call_id
 
     def clear(self, call_id: str) -> None:
         with self._lock:
             if self._quarantined_call_id == call_id:
+                self._quarantined = False
                 self._quarantined_call_id = None
                 self._quarantine_reason = ""
 
     def status(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "quarantined": self._quarantined_call_id is not None,
+                "quarantined": self._quarantined,
                 "quarantined_call_id": self._quarantined_call_id,
                 "reason": self._quarantine_reason,
             }
@@ -232,7 +243,7 @@ class RemoteSessionAdapter(SolidWorksRuntimePort):
             )
         except RuntimeUncertainError as exc:
             if op in MUTATION_OPS:
-                self._lane.quarantine(str(exc), str(exc))
+                self._lane.quarantine(None, str(exc))
             raise
 
     def probe(self, *, version: int | None = None, timeout: float = 3.0) -> Any:
@@ -294,11 +305,31 @@ class RemoteSessionAdapter(SolidWorksRuntimePort):
                 "remote reconcile refuses caller-supplied verifiers; recovery executes "
                 "agent-side from the original mutation plan."
             )
+        lane = self._lane.status()
+        if lane["quarantined"]:
+            if lane["quarantined_call_id"] is None:
+                snapshot = self.runtime_status()
+                if (
+                    not call_id
+                    or snapshot.get("session_id") != self._workstation_session_id
+                    or snapshot.get("uncertain_call_id") != call_id
+                ):
+                    raise RuntimeOpRefusedError(
+                        "Transport loss requires an observed uncertain native call "
+                        "in the pinned workstation session before reconciliation."
+                    )
+                self._lane.bind_native_call(call_id)
+            elif lane["quarantined_call_id"] != call_id:
+                raise RuntimeOpRefusedError(
+                    "Reconciliation call identity does not match the quarantined mutation."
+                )
         payload = self._call(
             "reconcile", call_id, stage=stage, timeout=timeout, identity=identity
         )
         result = _result("reconcile", payload)
         if result.state is NativeCallState.SUCCESS:
+            if result.call_id != call_id:
+                raise RuntimeTransportError("Reconciliation receipt has a different native call id.")
             self._lane.clear(call_id)
             self._snapshot["uncertain_call_id"] = None
         return result

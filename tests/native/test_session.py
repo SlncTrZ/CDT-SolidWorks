@@ -137,6 +137,24 @@ class SolidWorksSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SolidWorksSession.prog_id_for_version(2001)
 
+    def test_start_failure_during_set_visible_cleans_up_application(self) -> None:
+        started = object()
+        api = FakeComApi(start_app=started)
+
+        def failing_set_visible(app, visible: bool) -> None:
+            raise RuntimeError("window creation failed")
+
+        api.set_visible = failing_set_visible
+        session = SolidWorksSession(api=api)
+        try:
+            result = session.connect(policy=AttachPolicy.START_NEW, timeout=0.5)
+            self.assertEqual(NativeCallState.FAILURE, result.state)
+            self.assertEqual("solidworks_start_failed", result.failure.code)
+            self.assertFalse(session.connected)
+            self.assertEqual([started], api.exited)
+        finally:
+            session.close_dispatcher(timeout=0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

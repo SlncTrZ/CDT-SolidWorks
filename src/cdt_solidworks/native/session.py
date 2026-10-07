@@ -143,6 +143,11 @@ class SolidWorksSession:
                     ownership = ApplicationOwnership.PROVIDER_OWNED
                     self.api.set_visible(app, visible)
                 except Exception as exc:
+                    if app is not None and ownership is ApplicationOwnership.PROVIDER_OWNED:
+                        try:
+                            self.api.exit_application(app)
+                        except Exception:
+                            pass
                     raise NativeRuntimeError(
                         "solidworks_start_failed",
                         "connect",
