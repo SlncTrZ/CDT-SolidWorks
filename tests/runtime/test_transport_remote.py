@@ -402,3 +402,101 @@ def test_known_native_quarantine_refuses_recovery_of_another_call():
         remote.reconcile("unrelated-call", stage="recover", timeout=1.0, identity=("target",))
     assert "reconcile" not in transport.calls
     assert remote.writer_lane.status()["quarantined"] is True
+
+@pytest.mark.parametrize("body", [
+    b"{", b"\xff", b"null", b"[]", b"{}", b'{"ok":"true","result":{}}',
+    b"x" * (1024 * 1024 + 1),
+    b'{"ok":true,"result":{"state":"unknown"},"generation":"g1"}',
+    b'{"ok":true,"result":null,"generation":"g1"}',
+    b'{"ok":true,"result":{},"generation":"g1"}',
+    b'{"ok":true,"result":{"state":"success","call_id":"c","dispatched":true,"value":null},"generation":"g1"}',
+    b'{"ok":true,"result":{"state":"success","call_id":"c","dispatched":true,"value":{"session_id":"other","ownership":"user_owned"}},"generation":"g1"}',
+    b'{"ok":true,"result":{},"generation":"g2"}',
+    b'{"ok":true,"result":{}}',
+], ids=['invalid-json', 'invalid-utf8', 'null', 'array', 'missing-ok', 'nonboolean-ok', 'oversized', 'unknown-native-state', 'malformed-native-result', 'empty-native-result', 'missing-native-session', 'wrong-native-session', 'wrong-success-generation', 'missing-success-generation'])
+def test_untrusted_post_dispatch_reply_fences_writer(monkeypatch, body):
+    import cdt_solidworks.runtime.transport as transport_mod
+
+    attempts = []
+    monkeypatch.setattr(transport_mod, "_preflight_connect", lambda *a: "connected")
+
+    def reply(*args, **kwargs):
+        attempts.append("dispatch")
+        return 200, body
+
+    monkeypatch.setattr(transport_mod, "_post_json", reply)
+    remote = RemoteSessionAdapter(
+        RemoteSolidWorksTransport("http://127.0.0.1:9", "test-token"),
+        workstation_session_id="workstation-session",
+        expected_generation="g1",
+    )
+    with pytest.raises(RuntimeUncertainError):
+        remote.connect()
+    with pytest.raises(RuntimeUncertainError):
+        remote.disconnect()
+    assert len(attempts) == 1
+    assert remote.writer_lane.status()["quarantined"] is True
+
+
+@pytest.mark.parametrize("status,body,error", [
+    (401, b"{}", RuntimeAuthError),
+    (403, b"{}", RuntimeAuthError),
+    (404, b"{}", RuntimeUnavailableError),
+    (200, b'{"ok":false,"error_code":"op_refused","generation":"g1"}', RuntimeOpRefusedError),
+    (200, b'{"ok":false,"error_code":"generation_mismatch","generation":"g2"}', RuntimeGenerationMismatchError),
+])
+def test_authoritative_pre_dispatch_refusal_does_not_fence_writer(monkeypatch, status, body, error):
+    import cdt_solidworks.runtime.transport as transport_mod
+
+    attempts = []
+    monkeypatch.setattr(transport_mod, "_preflight_connect", lambda *a: "connected")
+
+    def reply(*args, **kwargs):
+        attempts.append("dispatch")
+        return status, body
+
+    monkeypatch.setattr(transport_mod, "_post_json", reply)
+    remote = RemoteSessionAdapter(
+        RemoteSolidWorksTransport("http://127.0.0.1:9", "test-token"),
+        workstation_session_id="workstation-session",
+    )
+    for _ in range(2):
+        with pytest.raises(error):
+            remote.connect()
+    assert len(attempts) == 2
+    assert remote.writer_lane.status()["quarantined"] is False
+
+
+def test_remote_port_composes_without_local_com_or_false_native_capabilities():
+    from cdt_solidworks.integration.runtime import IntegratedProviderRuntime
+    from cdt_solidworks.integration.server import build_integrated_server
+    from cdt_solidworks.server.factory import ServerConfig
+
+    class ProbeTransport(RecoveryTransport):
+        def call(self, op, args=(), kwargs=None, **options):
+            self.calls.append(op)
+            if op == "probe":
+                return {
+                    "state": "success", "call_id": "probe", "dispatched": True,
+                    "value": {"prog_id": "SldWorks.Application", "registered": True,
+                              "running": True, "revision": "34.1", "version_year": 2026},
+                }
+            raise AssertionError(f"unexpected dispatch: {op}")
+
+    transport = ProbeTransport()
+    remote = RemoteSessionAdapter(transport, workstation_session_id="workstation-session")
+    runtime = IntegratedProviderRuntime(allowed_roots=("/tmp",), session=remote)
+    server = build_integrated_server(ServerConfig(network_mode=False), runtime=runtime)
+    names = {tool.name for tool in server._tool_manager.list_tools()}
+    assert "application_probe" in names
+    assert "document_open" not in names
+    assert runtime.document_service is None
+    assert runtime.cad_service is None
+    states = {c.name: c for c in runtime.runtime_context().capabilities}
+    assert states["solidworks.application"].available is True
+    assert states["solidworks.document.lifecycle"].implemented is False
+    assert states["solidworks.document.query"].available is False
+    assert states["solidworks.part.extrude"].available is False
+    with pytest.raises(RuntimeOpRefusedError):
+        remote.execute(lambda app: None, stage="unavailable", timeout=1, mutation=True)
+    assert set(transport.calls) == {"probe"}

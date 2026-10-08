@@ -9,7 +9,7 @@ from typing import Any, Callable, TypeVar
 from .api import WindowsComApi
 from .dispatcher import RecoveryPlan, SerializedNativeDispatcher
 from .errors import NativeRuntimeError
-from .models import ApplicationOwnership, ApplicationProbe, NativeCallResult, NativeCallState, NativeFailure, SessionInfo
+from .models import ApplicationOwnership, ApplicationProbe, NativeCallResult, NativeFailure, SessionInfo
 
 
 T = TypeVar("T")
@@ -148,6 +148,10 @@ class SolidWorksSession:
                             self.api.exit_application(app)
                         except Exception:
                             pass
+                    if app is None and isinstance(exc, NativeRuntimeError):
+                        # Preserve safe pre-activation environment errors without
+                        # disguising them as a failed or uncertain COM startup.
+                        raise
                     raise NativeRuntimeError(
                         "solidworks_start_failed",
                         "connect",
@@ -236,11 +240,19 @@ class SolidWorksSession:
         )
 
     def disconnect(self, *, timeout: float = 5.0) -> NativeCallResult[bool]:
-        if self._application is None:
+        state = self._dispatcher.metrics
+        # The locked snapshot establishes an idle no-op before any later admission.
+        # A pending/uncertain connect must instead pass the dispatcher fence.
+        if (state["outstanding"] == 0 and state["uncertain_call_id"] is None
+                and self._application is None):
             return NativeCallResult.success(False, call_id=uuid.uuid4().hex, dispatched=False)
 
         def operation() -> bool:
+            # Observe the binding on the STA worker, after any admitted connect.
+            # Even an empty binding must pass admission/quarantine checks.
             app = self._application
+            if app is None:
+                return False
             ownership = self._ownership
             if app is not None and ownership is ApplicationOwnership.PROVIDER_OWNED:
                 self.api.exit_application(app)

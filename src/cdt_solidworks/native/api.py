@@ -44,6 +44,12 @@ class WindowsComApi:
 
     def uninitialize_thread(self) -> None:
         if self._initialized and self._pythoncom is not None:
+            # COM wrappers can participate in Python reference cycles. Collect
+            # them on their owner while its apartment is still initialized,
+            # rather than releasing stale interfaces in a later session's GC.
+            import gc
+
+            gc.collect()
             self._pythoncom.CoUninitialize()
         self._initialized = False
 
@@ -71,12 +77,50 @@ class WindowsComApi:
         self._require_client()
         return self._client.GetActiveObject(prog_id)
 
+    @staticmethod
+    def _process_session_id() -> int:
+        import ctypes
+        from ctypes import wintypes
+
+        failure = NativeRuntimeError(
+            "solidworks_session_context_unavailable",
+            "connect",
+            "Windows process session could not be verified before SolidWorks startup.",
+        )
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            query = kernel32.ProcessIdToSessionId
+            query.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+            query.restype = wintypes.BOOL
+            session_id = wintypes.DWORD()
+            if not query(os.getpid(), ctypes.byref(session_id)):
+                raise failure
+        except (AttributeError, OSError) as exc:
+            raise failure from exc
+        return int(session_id.value)
+
     def start_application(self, prog_id: str) -> Any:
         self._require_client()
+        session_id = self._process_session_id()
+        if session_id == 0:
+            raise NativeRuntimeError(
+                "solidworks_interactive_session_required",
+                "connect",
+                "SolidWorks startup requires an interactive Windows session; "
+                "run the native workstation in the logged-on user's desktop session.",
+                details={"windows_session_id": session_id},
+            )
         # DispatchEx avoids silently treating an existing user process as provider-owned.
         return self._client.DispatchEx(prog_id)
 
     def set_visible(self, app: Any, visible: bool) -> None:
+        # Only provider-created applications are configured here. Visible alone
+        # does not prevent CloseDoc from exiting a background automation session
+        # when its last document closes. Retain it until explicit disconnect.
+        if visible:
+            app.UserControl = True
+        else:
+            app.UserControlBackground = True
         app.Visible = bool(visible)
 
     def revision_number(self, app: Any) -> str:

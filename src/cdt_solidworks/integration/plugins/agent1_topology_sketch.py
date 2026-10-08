@@ -92,7 +92,11 @@ def _service(runtime: Any) -> Any | None:
         return service
     session = getattr(runtime, "session", None)
     documents = getattr(runtime, "document_service", None)
-    if session is None or documents is None or not hasattr(session, "api"):
+    if (
+        session is None or documents is None
+        or not getattr(session, "supports_native_services", True)
+        or not hasattr(session, "api")
+    ):
         return None
     return TopologyNativeAdapter(
         session,

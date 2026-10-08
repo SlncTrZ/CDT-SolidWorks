@@ -10,7 +10,7 @@ from cdt_solidworks.platform.help import HelpService
 
 def test_help_is_runtime_backed_read_only_and_deterministically_fingerprinted(tmp_path: Path) -> None:
     guide = tmp_path / "guide.md"
-    guide.write_text("# Runtime guide\r\n\r\nOnly current platform tools.\r\n", encoding="utf-8")
+    guide.write_bytes(b"# Runtime guide\r\n\r\nOnly current platform tools.\r\n")
     before = guide.read_bytes()
 
     service = HelpService(guide_path=guide)

@@ -10,18 +10,8 @@ from cdt_solidworks.body.native import BodyNativeAdapter
 from cdt_solidworks.document.path_policy import DocumentPathPolicy
 from cdt_solidworks.native.cad_core import CadCoreService
 from cdt_solidworks.native.models import NativeCallState
-from cdt_solidworks.native.session import AttachPolicy, SolidWorksSession
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="requires native SOLIDWORKS on Windows")
-
-
-def _connected_session() -> SolidWorksSession:
-    session = SolidWorksSession()
-    result = session.connect(policy=AttachPolicy.ATTACH_OR_START, version=2024, visible=True, timeout=30.0)
-    assert result.state is NativeCallState.SUCCESS, result.failure
-    assert result.value is not None
-    assert result.value.version_year == 2024
-    return session
 
 
 def _create_overlap(core: CadCoreService, path: Path) -> None:
@@ -47,83 +37,75 @@ def _create_overlap(core: CadCoreService, path: Path) -> None:
         (CombineOperation.COMMON, False),
     ],
 )
-def test_native_multibody_boolean_fixture(tmp_path, operation: CombineOperation, needs_main: bool) -> None:
-    session = _connected_session()
-    try:
-        policy = DocumentPathPolicy((tmp_path,))
-        core = CadCoreService(session, path_policy=policy)
-        adapter = BodyNativeAdapter(session, path_policy=policy)
-        path = tmp_path / f"boolean-{operation.value}.sldprt"
-        _create_overlap(core, path)
+def test_native_multibody_boolean_fixture(tmp_path, native_solidworks_session, operation: CombineOperation, needs_main: bool) -> None:
+    session = native_solidworks_session
+    policy = DocumentPathPolicy((tmp_path,))
+    core = CadCoreService(session, path_policy=policy)
+    adapter = BodyNativeAdapter(session, path_policy=policy)
+    path = tmp_path / f"boolean-{operation.value}.sldprt"
+    _create_overlap(core, path)
 
-        before = adapter.inspect(path)
-        assert before.state is NativeCallState.SUCCESS, before.failure
-        assert before.value is not None
-        names = tuple(item["name"] for item in before.value["solid_bodies"])
-        assert len(names) == 2 and all(names)
+    before = adapter.inspect(path)
+    assert before.state is NativeCallState.SUCCESS, before.failure
+    assert before.value is not None
+    names = tuple(item["name"] for item in before.value["solid_bodies"])
+    assert len(names) == 2 and all(names)
 
-        result = adapter.combine(
-            path,
-            operation=operation,
-            body_names=names,
-            main_body_name=names[0] if needs_main else None,
-        )
-        assert result.state is NativeCallState.SUCCESS, result.failure
-        assert result.value is not None
-        assert result.value["body_count_after"] == 1
+    result = adapter.combine(
+        path,
+        operation=operation,
+        body_names=names,
+        main_body_name=names[0] if needs_main else None,
+    )
+    assert result.state is NativeCallState.SUCCESS, result.failure
+    assert result.value is not None
+    assert result.value["body_count_after"] == 1
 
-        reopened = adapter.inspect(path)
-        assert reopened.state is NativeCallState.SUCCESS, reopened.failure
-        assert reopened.value is not None
-        assert len(reopened.value["solid_bodies"]) == 1
-    finally:
-        session.disconnect(timeout=10.0)
-        session.close_dispatcher(timeout=5.0)
+    reopened = adapter.inspect(path)
+    assert reopened.state is NativeCallState.SUCCESS, reopened.failure
+    assert reopened.value is not None
+    assert len(reopened.value["solid_bodies"]) == 1
 
 
-def test_native_move_copy_then_delete_keep_fixture(tmp_path) -> None:
-    session = _connected_session()
-    try:
-        policy = DocumentPathPolicy((tmp_path,))
-        core = CadCoreService(session, path_policy=policy)
-        adapter = BodyNativeAdapter(session, path_policy=policy)
-        path = tmp_path / "move-copy-delete.sldprt"
-        _create_overlap(core, path)
+def test_native_move_copy_then_delete_keep_fixture(tmp_path, native_solidworks_session) -> None:
+    session = native_solidworks_session
+    policy = DocumentPathPolicy((tmp_path,))
+    core = CadCoreService(session, path_policy=policy)
+    adapter = BodyNativeAdapter(session, path_policy=policy)
+    path = tmp_path / "move-copy-delete.sldprt"
+    _create_overlap(core, path)
 
-        before = adapter.inspect(path)
-        assert before.state is NativeCallState.SUCCESS, before.failure
-        assert before.value is not None
-        names = tuple(item["name"] for item in before.value["solid_bodies"])
-        assert len(names) == 2
+    before = adapter.inspect(path)
+    assert before.state is NativeCallState.SUCCESS, before.failure
+    assert before.value is not None
+    names = tuple(item["name"] for item in before.value["solid_bodies"])
+    assert len(names) == 2
 
-        copied = adapter.move_copy(
-            path,
-            body_names=(names[0],),
-            translation_mm=(60.0, 0.0, 0.0),
-            copy=True,
-            copies=1,
-        )
-        assert copied.state is NativeCallState.SUCCESS, copied.failure
-        assert copied.value is not None and copied.value["body_count_after"] == 3
+    copied = adapter.move_copy(
+        path,
+        body_names=(names[0],),
+        translation_mm=(60.0, 0.0, 0.0),
+        copy=True,
+        copies=1,
+    )
+    assert copied.state is NativeCallState.SUCCESS, copied.failure
+    assert copied.value is not None and copied.value["body_count_after"] == 3
 
-        reopened = adapter.inspect(path)
-        assert reopened.state is NativeCallState.SUCCESS, reopened.failure
-        assert reopened.value is not None
-        current_names = tuple(item["name"] for item in reopened.value["solid_bodies"])
-        assert len(current_names) == 3
+    reopened = adapter.inspect(path)
+    assert reopened.state is NativeCallState.SUCCESS, reopened.failure
+    assert reopened.value is not None
+    current_names = tuple(item["name"] for item in reopened.value["solid_bodies"])
+    assert len(current_names) == 3
 
-        deleted = adapter.delete_keep(
-            path,
-            body_names=(current_names[-1],),
-            keep=False,
-        )
-        assert deleted.state is NativeCallState.SUCCESS, deleted.failure
-        assert deleted.value is not None and deleted.value["body_count_after"] == 2
+    deleted = adapter.delete_keep(
+        path,
+        body_names=(current_names[-1],),
+        keep=False,
+    )
+    assert deleted.state is NativeCallState.SUCCESS, deleted.failure
+    assert deleted.value is not None and deleted.value["body_count_after"] == 2
 
-        final_state = adapter.inspect(path)
-        assert final_state.state is NativeCallState.SUCCESS, final_state.failure
-        assert final_state.value is not None
-        assert len(final_state.value["solid_bodies"]) == 2
-    finally:
-        session.disconnect(timeout=10.0)
-        session.close_dispatcher(timeout=5.0)
+    final_state = adapter.inspect(path)
+    assert final_state.state is NativeCallState.SUCCESS, final_state.failure
+    assert final_state.value is not None
+    assert len(final_state.value["solid_bodies"]) == 2

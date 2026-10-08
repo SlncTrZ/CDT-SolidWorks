@@ -194,72 +194,73 @@ def register_runtime_tools(server: Any, runtime: Any) -> None:
     def application_disconnect() -> dict[str, Any]:
         return _result_payload(runtime.session.disconnect())
 
-    @server.tool(name="document_open", description="Open a SolidWorks document within configured path roots and return explicit identity context.")
-    def document_open(
-        path: str,
-        expected_type: Literal["part", "assembly", "drawing"] | None = None,
-        configuration: str = "",
-        read_only: bool = False,
-    ) -> dict[str, Any]:
-        doc_type = _document_type(expected_type) if expected_type is not None else None
-        return _result_payload(
-            runtime.document_service.open(
-                path,
-                expected_type=doc_type,
-                configuration=configuration,
-                read_only=read_only,
+    if runtime.document_service is not None:
+        @server.tool(name="document_open", description="Open a SolidWorks document within configured path roots and return explicit identity context.")
+        def document_open(
+            path: str,
+            expected_type: Literal["part", "assembly", "drawing"] | None = None,
+            configuration: str = "",
+            read_only: bool = False,
+        ) -> dict[str, Any]:
+            doc_type = _document_type(expected_type) if expected_type is not None else None
+            return _result_payload(
+                runtime.document_service.open(
+                    path,
+                    expected_type=doc_type,
+                    configuration=configuration,
+                    read_only=read_only,
+                )
             )
-        )
 
-    def ctx(
-        session_id: str,
-        path: str,
-        title: str,
-        document_type: Literal["part", "assembly", "drawing"],
-        configuration: str | None,
-        update_stamp: int | None,
-    ) -> DocumentContext:
-        return _context(session_id, path, title, document_type, configuration, update_stamp)
+        def ctx(
+            session_id: str,
+            path: str,
+            title: str,
+            document_type: Literal["part", "assembly", "drawing"],
+            configuration: str | None,
+            update_stamp: int | None,
+        ) -> DocumentContext:
+            return _context(session_id, path, title, document_type, configuration, update_stamp)
 
-    @server.tool(name="document_info", description="Read document information using explicit identity/revision context.")
-    def document_info(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.info(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_info", description="Read document information using explicit identity/revision context.")
+        def document_info(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.info(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_save", description="Save an explicitly identified document and verify postconditions.")
-    def document_save(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.save(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_save", description="Save an explicitly identified document and verify postconditions.")
+        def document_save(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.save(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_save_as", description="Save-as within configured path roots and verify native identity moved to the target.")
-    def document_save_as(target_path: str, session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.save_as(ctx(session_id, path, title, document_type, configuration, update_stamp), target_path))
+        @server.tool(name="document_save_as", description="Save-as within configured path roots and verify native identity moved to the target.")
+        def document_save_as(target_path: str, session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.save_as(ctx(session_id, path, title, document_type, configuration, update_stamp), target_path))
 
-    @server.tool(name="document_close", description="Close an explicitly identified document and verify it is no longer open.")
-    def document_close(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.close(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_close", description="Close an explicitly identified document and verify it is no longer open.")
+        def document_close(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.close(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_reopen", description="Close/reopen an explicit document and return refreshed identity context.")
-    def document_reopen(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.reopen(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_reopen", description="Close/reopen an explicit document and return refreshed identity context.")
+        def document_reopen(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.reopen(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_list_features", description="List bounded feature state for an explicit document.")
-    def document_list_features(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.list_features(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_list_features", description="List bounded feature state for an explicit document.")
+        def document_list_features(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.list_features(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_list_bodies", description="List bounded part bodies for an explicit document.")
-    def document_list_bodies(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None, visible_only: bool = False) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.list_bodies(ctx(session_id, path, title, document_type, configuration, update_stamp), visible_only=visible_only))
+        @server.tool(name="document_list_bodies", description="List bounded part bodies for an explicit document.")
+        def document_list_bodies(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None, visible_only: bool = False) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.list_bodies(ctx(session_id, path, title, document_type, configuration, update_stamp), visible_only=visible_only))
 
-    @server.tool(name="document_list_components", description="List bounded assembly components for an explicit document.")
-    def document_list_components(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None, top_level_only: bool = False) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.list_components(ctx(session_id, path, title, document_type, configuration, update_stamp), top_level_only=top_level_only))
+        @server.tool(name="document_list_components", description="List bounded assembly components for an explicit document.")
+        def document_list_components(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None, top_level_only: bool = False) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.list_components(ctx(session_id, path, title, document_type, configuration, update_stamp), top_level_only=top_level_only))
 
-    @server.tool(name="document_rebuild", description="Rebuild and reject success when SolidWorks feature/error state is not clean.")
-    def document_rebuild(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.rebuild(ctx(session_id, path, title, document_type, configuration, update_stamp)))
+        @server.tool(name="document_rebuild", description="Rebuild and reject success when SolidWorks feature/error state is not clean.")
+        def document_rebuild(session_id: str, path: str, title: str, document_type: Literal["part", "assembly", "drawing"], configuration: str | None = None, update_stamp: int | None = None) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.rebuild(ctx(session_id, path, title, document_type, configuration, update_stamp)))
 
-    @server.tool(name="document_reconcile", description="Reconcile an uncertain document mutation before dependent writes continue.")
-    def document_reconcile(call_id: str, path: str, expected_type: Literal["part", "assembly", "drawing"], should_be_open: bool) -> dict[str, Any]:
-        return _result_payload(runtime.document_service.reconcile_document_state(call_id, path=path, expected_type=_document_type(expected_type), should_be_open=should_be_open))
+        @server.tool(name="document_reconcile", description="Reconcile an uncertain document mutation before dependent writes continue.")
+        def document_reconcile(call_id: str, path: str, expected_type: Literal["part", "assembly", "drawing"], should_be_open: bool) -> dict[str, Any]:
+            return _result_payload(runtime.document_service.reconcile_document_state(call_id, path=path, expected_type=_document_type(expected_type), should_be_open=should_be_open))
 
 
     if runtime.sketch_service is not None:

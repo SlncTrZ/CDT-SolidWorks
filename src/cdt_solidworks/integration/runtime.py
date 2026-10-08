@@ -62,21 +62,28 @@ class IntegratedProviderRuntime:
         self.topology_reference_secret = topology_reference_secret
         self.session = session if session is not None else SolidWorksSession()
         self.path_policy = DocumentPathPolicy(allowed_roots)
+        native_services_available = (
+            getattr(self.session, "supports_native_services", True)
+            and hasattr(self.session, "api")
+        )
         self.document_service = (
             document_service
             if document_service is not None
-            else DocumentService(self.session, path_policy=self.path_policy)
+            else (
+                DocumentService(self.session, path_policy=self.path_policy)
+                if native_services_available else None
+            )
         )
         self.cad_service = cad_service
-        if self.cad_service is None and hasattr(self.session, "api"):
+        if self.cad_service is None and native_services_available:
             self.cad_service = CadCoreService(self.session, path_policy=self.path_policy)
         self.sketch_service = sketch_service
-        if self.sketch_service is None and hasattr(self.session, "api"):
+        if self.sketch_service is None and native_services_available:
             self.sketch_service = IntegratedSketchService(
                 self.session, path_policy=self.path_policy
             )
         self.part_feature_service = part_feature_service
-        if self.part_feature_service is None and hasattr(self.session, "api"):
+        if self.part_feature_service is None and native_services_available:
             self.part_feature_service = IntegratedPartFeatureService(
                 self.session, path_policy=self.path_policy
             )
@@ -97,7 +104,7 @@ class IntegratedProviderRuntime:
         self.export_service = export_service
         self.import_service = import_service
         self.evaluation_service = evaluation_service
-        if hasattr(self.session, "api"):
+        if native_services_available:
             if self.body_service is None:
                 self.body_service = BodyNativeAdapter(self.session, path_policy=self.path_policy)
             if self.surface_service is None:
@@ -371,6 +378,9 @@ class IntegratedProviderRuntime:
         integrated_reason = None if available else reason
         deferred_reason = "native_adapter_not_integrated"
         partial_reason = "partial_native_support"
+        document_implemented = self.document_service is not None
+        document_available = document_implemented and available
+        document_reason = integrated_reason if document_implemented else deferred_reason
         cad_implemented = self.cad_service is not None
         cad_available = cad_implemented and available
         cad_reason = integrated_reason if cad_implemented else deferred_reason
@@ -436,17 +446,17 @@ class IntegratedProviderRuntime:
             ),
             CapabilityState(
                 name="solidworks.document.lifecycle",
-                implemented=True,
-                available=available,
-                reason=integrated_reason,
+                implemented=document_implemented,
+                available=document_available,
+                reason=document_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),
             CapabilityState(
                 name="solidworks.document.query",
-                implemented=True,
-                available=available,
-                reason=integrated_reason,
+                implemented=document_implemented,
+                available=document_available,
+                reason=document_reason,
                 backend="solidworks_com",
                 dependencies=("solidworks",),
             ),

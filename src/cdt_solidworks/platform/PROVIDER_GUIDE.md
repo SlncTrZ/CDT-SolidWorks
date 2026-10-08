@@ -2,6 +2,8 @@
 
 The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD primitives are advertised only when they have a bounded implementation path, rebuild/read-back checks, and Windows SOLIDWORKS acceptance evidence.
 
+Native Windows qualification from SSH/service sessions uses `scripts/run_native_windows_gate.ps1 -Python <locked-Windows-python.exe> -EvidenceRoot <new-empty-directory> -NativeOnly`. The launcher uses the same logged-on user's interactive desktop at Limited run level, requires no pre-existing SOLIDWORKS process, runs the six body/surface/sheet-metal workflows without patching the provider, records source/artifact hashes and verifies shutdown. Omitting `-NativeOnly` runs the full suite. It preserves unresolved running task state and fails rather than treating skipped native workflows as acceptance. It does not terminate vendor processes or replay completion-unknown work. Provider-created visible/hidden sessions retain `UserControl`/`UserControlBackground` until explicit disconnect so closing the last document cannot end the automation session. Attached user sessions keep their existing control and visibility.
+
 ## Platform tools
 
 - `help` — read-only provider identity, version, contract fingerprint and this guide content.
@@ -12,7 +14,7 @@ The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD prim
 ## Application tools
 
 - `application_probe` — read-only SOLIDWORKS registration/running/version probe.
-- `application_connect` — attach to or start an explicit SOLIDWORKS application session.
+- `application_connect` — attach to or start an explicit SOLIDWORKS application session. Starting an application requires an interactive Windows desktop session. Session 0 (including service/SSH execution) is refused before COM activation with `solidworks_interactive_session_required`; run the native workstation/gate in the logged-on user's session. Unknown Windows session identity is also refused. Attach-only and read-only probes do not start an application.
 - `application_disconnect` — disconnect; only provider-owned applications may be exited.
 
 ## Document tools

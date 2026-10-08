@@ -119,7 +119,9 @@ class FakeRelationManager:
         return tuple(self.relations)
 
     def AddRelation(self, entities: tuple[Any, ...], relation_type: int) -> FakeRelation:
-        relation = FakeRelation(relation_type, tuple(entities))
+        # Native pywin32 passes a VARIANT SAFEARRAY; COM unwraps its value.
+        # The Python double accepts that same logical entity tuple on both OSes.
+        relation = FakeRelation(relation_type, tuple(getattr(entities, "value", entities)))
         self.relations.append(relation)
         return relation
 

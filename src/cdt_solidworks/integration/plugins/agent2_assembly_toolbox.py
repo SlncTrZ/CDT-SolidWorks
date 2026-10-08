@@ -25,7 +25,11 @@ def _ensure_services(runtime: Any) -> tuple[Any | None, Any | None, Any | None]:
     if toolbox is None:
         session = getattr(runtime, "session", None)
         path_policy = getattr(runtime, "path_policy", None)
-        if session is not None and path_policy is not None and hasattr(session, "api"):
+        if (
+            session is not None and path_policy is not None
+            and getattr(session, "supports_native_services", True)
+            and hasattr(session, "api")
+        ):
             toolbox = IntegratedToolboxService(
                 session,
                 path_policy=path_policy,

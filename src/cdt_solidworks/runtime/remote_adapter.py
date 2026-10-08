@@ -159,6 +159,9 @@ class _WriterLane:
 class RemoteSessionAdapter(SolidWorksRuntimePort):
     """Provider-side adapter: port contract over a ``SolidWorksRuntimeTransport``."""
 
+    # Local COM-bound service constructors cannot consume a remote lifecycle port.
+    supports_native_services = False
+
     def __init__(
         self,
         transport: Any,
@@ -234,13 +237,30 @@ class RemoteSessionAdapter(SolidWorksRuntimePort):
         if op in MUTATION_OPS:
             self._lane.check(stage=op)
         try:
-            return self._transport.call(
+            payload = self._transport.call(
                 op,
                 args,
                 kwargs,
                 deadline_ms=self._default_deadline_ms,
                 expected_generation=self._expected_generation,
             )
+            if op in MUTATION_OPS:
+                try:
+                    result = _result(op, payload)
+                    if (
+                        not isinstance(payload.get("call_id"), str)
+                        or not payload["call_id"].strip()
+                        or type(payload.get("dispatched")) is not bool
+                        or (op == "connect" and result.state is NativeCallState.SUCCESS
+                            and (result.value is None
+                                 or result.value.session_id != self._workstation_session_id))
+                    ):
+                        raise RuntimeTransportError("unbound native lifecycle receipt")
+                except (RuntimeTransportError, ValueError, TypeError) as exc:
+                    raise RuntimeUncertainError(
+                        f"remote op {op!r} returned an unverified native result; completion is unknown"
+                    ) from exc
+            return payload
         except RuntimeUncertainError as exc:
             if op in MUTATION_OPS:
                 self._lane.quarantine(None, str(exc))
