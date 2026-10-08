@@ -1,0 +1,74 @@
+name: Publish source release
+
+on:
+  push:
+    tags: ["audit-*"]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REQUIRED_BRANCH: "main"
+      REQUIRED_WORKFLOW: "release-gates"
+      RELEASE_SCOPE: >-
+        Repairs the reproduced local SolidWorks 2024 session/STA lifecycle timeout, fences ambiguous remote outcomes and provides the native qualification runner. Prior unpatched native qualification: 6/6 passed; full Windows suite 719 passed/6 fixture skips; Linux 713 passed/12 skips. Release workflow additions do not change qualified runtime/native/test bytes. The native Windows CI job is opt-in and is not inferred from Linux CI. SolidWorks 2026, remote fault parity and placement gates remain separately scoped.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact-source CI and prepare release notes
+        shell: bash
+        run: |
+          gh api "repos/$GH_REPO/actions/runs?head_sha=$GITHUB_SHA&per_page=100" > "$RUNNER_TEMP/source-ci.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import tomllib
+
+          sha = os.environ["GITHUB_SHA"]
+          required = os.environ["REQUIRED_WORKFLOW"]
+          runs = json.loads((Path(os.environ["RUNNER_TEMP"]) / "source-ci.json").read_text())["workflow_runs"]
+          matching = [
+              run for run in runs
+              if run["head_sha"] == sha and run["name"] == required
+              and run["head_branch"] == os.environ["REQUIRED_BRANCH"]
+              and run["event"] == "push"
+          ]
+          if not matching:
+              raise SystemExit(f"No exact-source CI run found for {required}")
+          latest = max(matching, key=lambda run: (run["run_number"], run["run_attempt"]))
+          if latest["status"] != "completed" or latest["conclusion"] != "success":
+              raise SystemExit(f"Exact-source CI is not successful: {latest['html_url']}")
+          if Path("package.json").is_file():
+              version = json.loads(Path("package.json").read_text())["version"]
+          else:
+              version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          notes = (
+              f"Source snapshot of package version **{version}**.\n\n"
+              f"- Source commit: \x60{sha}\x60\n"
+              f"- Exact-source CI: {latest['html_url']}\n"
+              f"- Distribution: GitHub source archives; no binary/package-registry publication.\n\n"
+              f"{os.environ['RELEASE_SCOPE']}\n"
+          )
+          (Path(os.environ["RUNNER_TEMP"]) / "release-notes.md").write_text(notes, encoding="utf-8")
+          print(f"Exact-source CI verified: {sha}")
+          PY
+      - name: Publish immutable source prerelease
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GH_REPO — $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --prerelease \
+            --latest=false

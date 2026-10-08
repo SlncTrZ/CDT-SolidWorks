@@ -1,0 +1,214 @@
+name: Baseline workflow cleanup
+
+# One-time cleanup authorized for the root baseline published on 2026-10-08.
+# Keep the baseline CI and this cleanup run; preserve published tags/releases.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: baseline-workflow-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: >-
+      github.event.head_commit.message == 'Baseline 2026-10-08' &&
+      (github.event.forced || github.event.created)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Inventory completed historical runs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          run_id = int(os.environ["GITHUB_RUN_ID"])
+          out = Path(os.environ["RUNNER_TEMP"]) / "baseline-cleanup"
+          out.mkdir(exist_ok=True)
+
+          def api(path, method="GET"):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + repo + "/" + path,
+                  method=method,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "CDT-baseline-cleanup",
+                  },
+              )
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          body = response.read()
+                          return json.loads(body) if body else {}
+                  except urllib.error.HTTPError as error:
+                      if method == "DELETE" and error.code == 404:
+                          return {}
+                      if error.code not in (403, 429, 500, 502, 503, 504) or attempt == 3:
+                          raise RuntimeError(f"GitHub {method} failed: HTTP {error.code}") from None
+                      time.sleep(10 * (attempt + 1))
+              raise RuntimeError("GitHub request did not complete")
+
+          def list_runs():
+              result = []
+              for page in range(1, 101):
+                  data = api(f"actions/runs?per_page=100&page={page}")
+                  batch = data["workflow_runs"]
+                  result.extend(batch)
+                  if len(batch) < 100:
+                      unique = {run["id"]: run for run in result}
+                      return list(unique.values())
+              raise RuntimeError("Run inventory exceeds safe pagination bound")
+
+          def is_historical(run):
+              return run["head_sha"] != sha and int(run["id"]) != run_id
+
+          commit = api("commits/" + sha)
+          if commit["parents"] or commit["commit"]["message"].strip() != "Baseline 2026-10-08":
+              raise SystemExit("Cleanup requires the authorized root baseline commit")
+          runs = list_runs()
+          old = [run for run in runs if is_historical(run)]
+          if any(run["status"] != "completed" for run in old):
+              raise SystemExit("Historical runs are still active; no runs were deleted")
+          fields = ("id", "name", "head_sha", "head_branch", "event", "status",
+                    "conclusion", "created_at", "html_url", "run_number", "run_attempt")
+          plan = {
+              "repository": repo, "baseline_sha": sha, "cleanup_run_id": run_id,
+              "historical_count": len(old),
+              "historical_runs": [{key: run.get(key) for key in fields} for run in old],
+              "retained_runs": [{key: run.get(key) for key in fields} for run in runs if not is_historical(run)],
+          }
+          (out / "inventory.json").write_text(json.dumps(plan, indent=2) + "\n")
+          print(f"Historical runs selected: {len(old)}; baseline runs retained: {len(runs) - len(old)}")
+          PY
+      - name: Preserve deletion inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-workflow-inventory-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline-cleanup/inventory.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Delete inventoried historical runs and verify
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          run_id = int(os.environ["GITHUB_RUN_ID"])
+          out = Path(os.environ["RUNNER_TEMP"]) / "baseline-cleanup"
+          out.mkdir(exist_ok=True)
+
+          def api(path, method="GET"):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + repo + "/" + path,
+                  method=method,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "CDT-baseline-cleanup",
+                  },
+              )
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          body = response.read()
+                          return json.loads(body) if body else {}
+                  except urllib.error.HTTPError as error:
+                      if method == "DELETE" and error.code == 404:
+                          return {}
+                      if error.code not in (403, 429, 500, 502, 503, 504) or attempt == 3:
+                          raise RuntimeError(f"GitHub {method} failed: HTTP {error.code}") from None
+                      time.sleep(10 * (attempt + 1))
+              raise RuntimeError("GitHub request did not complete")
+
+          def list_runs():
+              result = []
+              for page in range(1, 101):
+                  data = api(f"actions/runs?per_page=100&page={page}")
+                  batch = data["workflow_runs"]
+                  result.extend(batch)
+                  if len(batch) < 100:
+                      unique = {run["id"]: run for run in result}
+                      return list(unique.values())
+              raise RuntimeError("Run inventory exceeds safe pagination bound")
+
+          def is_historical(run):
+              return run["head_sha"] != sha and int(run["id"]) != run_id
+
+          plan = json.loads((out / "inventory.json").read_text())
+          if plan["repository"] != repo or plan["baseline_sha"] != sha or plan["cleanup_run_id"] != run_id:
+              raise SystemExit("Cleanup inventory identity mismatch")
+          deleted = []
+          try:
+              for run in plan["historical_runs"]:
+                  if not is_historical(run) or run["status"] != "completed":
+                      raise SystemExit("Unsafe run in cleanup inventory")
+                  try:
+                      current = api("actions/runs/" + str(run["id"]))
+                  except RuntimeError as error:
+                      if str(error).endswith("HTTP 404"):
+                          deleted.append(run["id"])
+                          continue
+                      raise
+                  if not is_historical(current) or current["status"] != "completed":
+                      raise SystemExit("A historical run changed state; stopping cleanup")
+                  api("actions/runs/" + str(run["id"]), method="DELETE")
+                  deleted.append(run["id"])
+                  time.sleep(3)
+              remaining = list_runs()
+              historical = [run for run in remaining if is_historical(run)]
+              result = {
+                  "repository": repo, "baseline_sha": sha,
+                  "historical_count_before": plan["historical_count"],
+                  "deleted_count": len(deleted), "deleted_run_ids": deleted,
+                  "historical_count_after": len(historical),
+                  "remaining_runs": [
+                      {key: run.get(key) for key in ("id", "name", "head_sha", "status", "conclusion", "html_url")}
+                      for run in remaining
+                  ],
+              }
+              (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write(f"### Baseline workflow cleanup\n\nBaseline: \x60{sha}\x60\n\n"
+                                f"Historical runs before: {plan['historical_count']}\n\n"
+                                f"Deleted runs: {len(deleted)}\n\n"
+                                f"Historical runs remaining: {len(historical)}\n\n"
+                                f"Baseline runs retained: {len(remaining) - len(historical)}\n")
+              print(f"Deleted {len(deleted)} historical runs; {len(historical)} historical runs remain")
+              if historical:
+                  raise SystemExit("New historical runs appeared after inventory; cleanup is incomplete")
+          finally:
+              (out / "progress.json").write_text(json.dumps({"baseline_sha": sha, "deleted_run_ids": deleted}, indent=2) + "\n")
+          PY
+      - name: Preserve cleanup result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-workflow-result-${{ github.sha }}
+          path: ${{ runner.temp }}/baseline-cleanup/*.json
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,50 @@
+# Secrets / environment
+.env
+.env.*
+*.secret
+*.pem
+*.key
+
+# .NET / IDE
+bin/
+obj/
+.vs/
+*.user
+*.suo
+.vscode/
+.idea/
+
+# SolidWorks artifacts
+*.SLDPRT
+*.SLDASM
+*.SLDDRW
+*.sldprt
+*.sldasm
+*.slddrw
+~$*
+
+# Python / test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS / logs
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+
+# Agent-local configuration
+AGENTS.md
+.agents/
+CLAUDE.md
+.claude/
+.mcp.json
+
+# Internal development direction, roadmap and evidence
+_private/
+
+# Build / package artifacts
+build/
+dist/
+*.egg-info/

@@ -1,0 +1,1 @@
+"""CDT-SolidWorks authentication primitives."""

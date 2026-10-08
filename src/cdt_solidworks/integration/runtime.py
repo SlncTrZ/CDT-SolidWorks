@@ -1,0 +1,1052 @@
+"""Integrated provider runtime — compose platform status with native document services."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+from cdt_solidworks.document.path_policy import DocumentPathPolicy
+from cdt_solidworks.document.service import DocumentService
+from cdt_solidworks.body.native import BodyNativeAdapter
+from cdt_solidworks.surface.native import SurfaceNativeAdapter
+from cdt_solidworks.sheetmetal.native import SheetMetalNativeAdapter
+from cdt_solidworks.weldment.native import WeldmentNativeAdapter
+from cdt_solidworks.native.cad_core import CadCoreService
+from cdt_solidworks.native.models import NativeCallState
+from cdt_solidworks.native.session import SolidWorksSession
+from cdt_solidworks.integration.sketch import IntegratedSketchService
+from cdt_solidworks.integration.part import IntegratedPartFeatureService
+from cdt_solidworks.integration.assembly_config import (
+    IntegratedAssemblyService,
+    IntegratedConfigurationService,
+)
+from cdt_solidworks.integration.drawing_export_eval import (
+    IntegratedDrawingService,
+    IntegratedEvaluationService,
+    IntegratedExportService,
+    IntegratedImportService,
+)
+from cdt_solidworks.platform.models import CapabilityState, DependencyState, RuntimeContext
+from cdt_solidworks.platform.observability import SafeObserver
+
+
+class IntegratedProviderRuntime:
+    """Own the native session and expose capability-honest provider composition."""
+
+    def __init__(
+        self,
+        *,
+        allowed_roots: Iterable[str | Path],
+        weldment_profile_roots: Iterable[str | Path] = (),
+        drawing_bom_template_path: str | Path | None = None,
+        version: int | None = None,
+        topology_reference_secret: str | bytes | None = None,
+        session: Any | None = None,
+        document_service: Any | None = None,
+        cad_service: Any | None = None,
+        sketch_service: Any | None = None,
+        part_feature_service: Any | None = None,
+        body_service: Any | None = None,
+        surface_service: Any | None = None,
+        sheetmetal_service: Any | None = None,
+        weldment_service: Any | None = None,
+        assembly_service: Any | None = None,
+        configuration_service: Any | None = None,
+        drawing_service: Any | None = None,
+        export_service: Any | None = None,
+        import_service: Any | None = None,
+        evaluation_service: Any | None = None,
+        observer: SafeObserver | None = None,
+    ) -> None:
+        self.version = version
+        self.topology_reference_secret = topology_reference_secret
+        self.session = session if session is not None else SolidWorksSession()
+        self.path_policy = DocumentPathPolicy(allowed_roots)
+        native_services_available = (
+            getattr(self.session, "supports_native_services", True)
+            and hasattr(self.session, "api")
+        )
+        self.document_service = (
+            document_service
+            if document_service is not None
+            else (
+                DocumentService(self.session, path_policy=self.path_policy)
+                if native_services_available else None
+            )
+        )
+        self.cad_service = cad_service
+        if self.cad_service is None and native_services_available:
+            self.cad_service = CadCoreService(self.session, path_policy=self.path_policy)
+        self.sketch_service = sketch_service
+        if self.sketch_service is None and native_services_available:
+            self.sketch_service = IntegratedSketchService(
+                self.session, path_policy=self.path_policy
+            )
+        self.part_feature_service = part_feature_service
+        if self.part_feature_service is None and native_services_available:
+            self.part_feature_service = IntegratedPartFeatureService(
+                self.session, path_policy=self.path_policy
+            )
+        self.body_service = body_service
+        self.surface_service = surface_service
+        self.sheetmetal_service = sheetmetal_service
+        self.weldment_profile_roots = tuple(weldment_profile_roots)
+        self.drawing_bom_template_path = (
+            None
+            if drawing_bom_template_path is None
+            else str(drawing_bom_template_path)
+        )
+        self.weldment_service = weldment_service
+        self.weldment_profiles_configured = bool(self.weldment_profile_roots) or weldment_service is not None
+        self.assembly_service = assembly_service
+        self.configuration_service = configuration_service
+        self.drawing_service = drawing_service
+        self.export_service = export_service
+        self.import_service = import_service
+        self.evaluation_service = evaluation_service
+        if native_services_available:
+            if self.body_service is None:
+                self.body_service = BodyNativeAdapter(self.session, path_policy=self.path_policy)
+            if self.surface_service is None:
+                self.surface_service = SurfaceNativeAdapter(self.session, path_policy=self.path_policy)
+            if self.sheetmetal_service is None:
+                self.sheetmetal_service = SheetMetalNativeAdapter(self.session, path_policy=self.path_policy)
+            if self.weldment_service is None:
+                self.weldment_service = WeldmentNativeAdapter(
+                    self.session,
+                    path_policy=self.path_policy,
+                    profile_roots=self.weldment_profile_roots,
+                )
+            if self.assembly_service is None:
+                self.assembly_service = IntegratedAssemblyService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.configuration_service is None:
+                self.configuration_service = IntegratedConfigurationService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.drawing_service is None:
+                self.drawing_service = IntegratedDrawingService(
+                    self.session,
+                    path_policy=self.path_policy,
+                    bom_template_path=self.drawing_bom_template_path,
+                )
+            if self.export_service is None:
+                self.export_service = IntegratedExportService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.import_service is None:
+                self.import_service = IntegratedImportService(
+                    self.session, path_policy=self.path_policy
+                )
+            if self.evaluation_service is None:
+                self.evaluation_service = IntegratedEvaluationService(
+                    self.session, path_policy=self.path_policy
+                )
+
+        self.observer = observer or SafeObserver()
+        self._services: dict[str, Any] = {
+            "core.session": self.session,
+            "core.path_policy": self.path_policy,
+            "core.document_service": self.document_service,
+            "core.cad_service": self.cad_service,
+        }
+        self._plugin_capabilities: dict[str, CapabilityState] = {}
+        self._plugin_capability_sources: dict[str, str] = {}
+        self._plugin_capability_resolvers: dict[
+            str,
+            Callable[[], Iterable[Mapping[str, Any] | CapabilityState]],
+        ] = {}
+
+    def set_observer(self, observer: SafeObserver) -> None:
+        """Bind the observer shared by platform and plugin tool composition."""
+
+        self.observer = observer
+
+    def register_service(self, name: str, service: Any) -> None:
+        """Register one cross-lane service port; duplicates fail deterministically."""
+
+        normalized = str(name).strip()
+        if not normalized:
+            raise ValueError("service name must be non-empty")
+        if normalized in self._services:
+            raise ValueError(f"duplicate service: {normalized}")
+        self._services[normalized] = service
+
+    def get_service(self, name: str) -> Any:
+        """Return a registered service port, including explicit ``None`` core ports."""
+
+        normalized = str(name).strip()
+        if normalized not in self._services:
+            raise KeyError(normalized)
+        return self._services[normalized]
+
+    def register_capability_descriptors(
+        self,
+        descriptors: Iterable[Mapping[str, Any] | CapabilityState],
+        *,
+        source: str,
+    ) -> None:
+        """Validate and register plugin capability descriptors without silent overwrite."""
+
+        normalized_source = str(source).strip()
+        if not normalized_source:
+            raise ValueError("capability source must be non-empty")
+        pending: list[CapabilityState] = []
+        pending_names: set[str] = set()
+        for descriptor in descriptors:
+            capability = (
+                descriptor
+                if isinstance(descriptor, CapabilityState)
+                else CapabilityState.model_validate(descriptor)
+            )
+            if capability.available and not capability.implemented:
+                raise ValueError(
+                    f"capability {capability.name} from {normalized_source} cannot be available when unimplemented"
+                )
+            if capability.name in self._plugin_capabilities or capability.name in pending_names:
+                raise ValueError(f"duplicate capability: {capability.name}")
+            pending.append(capability)
+            pending_names.add(capability.name)
+        for capability in pending:
+            self._plugin_capabilities[capability.name] = capability
+            self._plugin_capability_sources[capability.name] = normalized_source
+
+    def register_capability_resolver(
+        self,
+        resolver: Callable[[], Iterable[Mapping[str, Any] | CapabilityState]],
+        *,
+        source: str,
+    ) -> None:
+        """Register one bounded dynamic availability resolver for an existing plugin source."""
+
+        normalized_source = str(source).strip()
+        if not normalized_source:
+            raise ValueError("capability source must be non-empty")
+        if not callable(resolver):
+            raise TypeError("capability resolver must be callable")
+        if normalized_source in self._plugin_capability_resolvers:
+            raise ValueError(f"duplicate capability resolver: {normalized_source}")
+        if normalized_source not in self._plugin_capability_sources.values():
+            raise ValueError(f"unknown capability source: {normalized_source}")
+        self._plugin_capability_resolvers[normalized_source] = resolver
+
+    def _refreshed_plugin_capabilities(self) -> dict[str, CapabilityState]:
+        refreshed = dict(self._plugin_capabilities)
+        for source, resolver in self._plugin_capability_resolvers.items():
+            expected_names = {
+                name
+                for name, capability_source in self._plugin_capability_sources.items()
+                if capability_source == source
+            }
+            try:
+                dynamic: dict[str, CapabilityState] = {}
+                for descriptor in resolver():
+                    capability = (
+                        descriptor
+                        if isinstance(descriptor, CapabilityState)
+                        else CapabilityState.model_validate(descriptor)
+                    )
+                    if capability.available and not capability.implemented:
+                        raise ValueError(
+                            f"capability {capability.name} from {source} cannot be available when unimplemented"
+                        )
+                    if capability.name in dynamic:
+                        raise ValueError(f"duplicate capability: {capability.name}")
+                    dynamic[capability.name] = capability
+                if set(dynamic) != expected_names:
+                    raise ValueError("dynamic capability names changed after registration")
+            except Exception as exc:
+                reason = f"capability_refresh_failed:{type(exc).__name__}"
+                for name in expected_names:
+                    refreshed[name] = self._plugin_capabilities[name].model_copy(
+                        update={"available": False, "reason": reason}
+                    )
+                continue
+            refreshed.update(dynamic)
+        return refreshed
+
+    def _resolved_plugin_capabilities(
+        self, dependencies: tuple[DependencyState, ...]
+    ) -> tuple[CapabilityState, ...]:
+        dependency_states = {item.name: item for item in dependencies}
+        resolved: list[CapabilityState] = []
+        refreshed = self._refreshed_plugin_capabilities()
+        for name in sorted(refreshed):
+            capability = refreshed[name]
+            available = capability.available and capability.implemented
+            reason = capability.reason
+            if available:
+                for dependency_name in capability.dependencies:
+                    dependency = dependency_states.get(dependency_name)
+                    if dependency is None:
+                        available = False
+                        reason = f"dependency_not_registered:{dependency_name}"
+                        break
+                    if not dependency.available:
+                        available = False
+                        reason = dependency.reason or f"dependency_unavailable:{dependency_name}"
+                        break
+            resolved.append(capability.model_copy(update={"available": available, "reason": reason}))
+        return tuple(resolved)
+
+    def _internal_dependency_states(self) -> tuple[DependencyState, ...]:
+        """Expose composed service ports as explicit capability dependencies."""
+
+        def state(name: str, available: bool, reason: str) -> DependencyState:
+            return DependencyState(
+                name=name,
+                available=available,
+                reason=None if available else reason,
+            )
+
+        topology = getattr(self, "topology_service", None)
+        sketch = getattr(self, "sketch_service", None)
+        part = getattr(self, "part_feature_service", None)
+        toolbox = getattr(self, "toolbox_service", None)
+        drawing = getattr(self, "drawing_service", None)
+        topology_resolver = (
+            getattr(topology, "resolve_native_for_document", None)
+            if topology is not None
+            else None
+        )
+        if not callable(topology_resolver) and topology is not None:
+            topology_resolver = getattr(topology, "resolve", None)
+
+        return (
+            state("session", self.session is not None, "session_unavailable"),
+            state(
+                "document_service",
+                self.document_service is not None,
+                "document_service_unavailable",
+            ),
+            state(
+                "topology.resolve",
+                callable(topology_resolver),
+                "topology_service_unavailable",
+            ),
+            state(
+                "sketch.profile.inspect",
+                callable(getattr(sketch, "inspect_profile", None)),
+                "sketch_profile_inspection_unavailable",
+            ),
+            state("sketch", sketch is not None, "sketch_service_unavailable"),
+            state("part", part is not None, "part_service_unavailable"),
+            state(
+                "solidworks.toolbox",
+                toolbox is not None,
+                "toolbox_service_unavailable",
+            ),
+            state(
+                "bom_template",
+                bool(getattr(drawing, "bom_available", False)),
+                "bom_template_unavailable",
+            ),
+        )
+
+    def solidworks_dependency_state(self) -> DependencyState:
+        """Probe current SOLIDWORKS availability without resolving plugin capabilities."""
+
+        result = self.session.probe(version=self.version, timeout=3.0)
+        available = False
+        reason: str | None = None
+        version: str | None = None
+        if result.state is NativeCallState.SUCCESS and result.value is not None:
+            probe = result.value
+            version = str(probe.version_year) if probe.version_year is not None else probe.revision
+            if not probe.registered:
+                reason = "solidworks_not_registered"
+            elif not probe.running:
+                reason = "solidworks_not_running_or_license_unverified"
+            else:
+                available = True
+        else:
+            reason = result.failure.code if result.failure is not None else "solidworks_probe_failed"
+        return DependencyState(
+            name="solidworks",
+            available=available,
+            reason=reason,
+            version=version,
+            license=None,
+        )
+
+    def runtime_context(self) -> RuntimeContext:
+        dependency = self.solidworks_dependency_state()
+        available = dependency.available
+        reason = dependency.reason
+        version = dependency.version
+        integrated_reason = None if available else reason
+        deferred_reason = "native_adapter_not_integrated"
+        partial_reason = "partial_native_support"
+        document_implemented = self.document_service is not None
+        document_available = document_implemented and available
+        document_reason = integrated_reason if document_implemented else deferred_reason
+        cad_implemented = self.cad_service is not None
+        cad_available = cad_implemented and available
+        cad_reason = integrated_reason if cad_implemented else deferred_reason
+        sketch_implemented = self.sketch_service is not None
+        sketch_available = sketch_implemented and available
+        sketch_reason = integrated_reason if sketch_implemented else deferred_reason
+        part_feature_implemented = self.part_feature_service is not None
+        part_feature_available = part_feature_implemented and available
+        part_feature_reason = integrated_reason if part_feature_implemented else deferred_reason
+        body_implemented = self.body_service is not None
+        body_available = body_implemented and available
+        body_reason = integrated_reason if body_implemented else deferred_reason
+        surface_implemented = self.surface_service is not None
+        surface_available = surface_implemented and available
+        surface_reason = integrated_reason if surface_implemented else deferred_reason
+        sheetmetal_implemented = self.sheetmetal_service is not None
+        sheetmetal_available = sheetmetal_implemented and available
+        sheetmetal_reason = integrated_reason if sheetmetal_implemented else deferred_reason
+        weldment_implemented = self.weldment_service is not None
+        weldment_available = weldment_implemented and available
+        weldment_reason = integrated_reason if weldment_implemented else deferred_reason
+        assembly_implemented = self.assembly_service is not None
+        assembly_available = assembly_implemented and available
+        assembly_reason = integrated_reason if assembly_implemented else deferred_reason
+        configuration_implemented = self.configuration_service is not None
+        configuration_available = configuration_implemented and available
+        configuration_reason = integrated_reason if configuration_implemented else deferred_reason
+        drawing_implemented = self.drawing_service is not None
+        drawing_available = drawing_implemented and available
+        drawing_reason = integrated_reason if drawing_implemented else deferred_reason
+        export_implemented = self.export_service is not None
+        export_available = export_implemented and available
+        export_reason = integrated_reason if export_implemented else deferred_reason
+        import_implemented = self.import_service is not None
+        import_available = import_implemented and available
+        import_reason = integrated_reason if import_implemented else deferred_reason
+        evaluation_implemented = self.evaluation_service is not None
+        evaluation_available = evaluation_implemented and available
+        evaluation_reason = integrated_reason if evaluation_implemented else deferred_reason
+        assembly_components_implemented = cad_implemented or assembly_implemented
+        assembly_components_available = assembly_components_implemented and available
+        assembly_components_reason = integrated_reason if assembly_components_implemented else deferred_reason
+        if not available:
+            structural_member_available = False
+            structural_member_reason = integrated_reason
+        elif not weldment_implemented:
+            structural_member_available = False
+            structural_member_reason = deferred_reason
+        elif not self.weldment_profiles_configured:
+            structural_member_available = False
+            structural_member_reason = "weldment_profile_roots_not_configured"
+        else:
+            structural_member_available = True
+            structural_member_reason = None
+        capabilities = (
+            CapabilityState(
+                name="solidworks.application",
+                implemented=True,
+                available=available,
+                reason=integrated_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.document.lifecycle",
+                implemented=document_implemented,
+                available=document_available,
+                reason=document_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.document.query",
+                implemented=document_implemented,
+                available=document_available,
+                reason=document_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.license",
+                implemented=False,
+                available=False,
+                reason="license_probe_not_integrated",
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.parametric",
+                implemented=False,
+                available=False,
+                reason=partial_reason if cad_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.sketch.geometry",
+                implemented=sketch_implemented,
+                available=sketch_available,
+                reason=sketch_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.sketch.{name}",
+                    implemented=sketch_implemented,
+                    available=sketch_available,
+                    reason=sketch_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("relations", "dimensions")
+            ),
+            CapabilityState(
+                name="solidworks.sketch.rectangle",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.extrude",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.cut_extrude",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.simple_hole",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.revolve",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.revolve_cut",
+                implemented=part_feature_implemented,
+                available=part_feature_available,
+                reason=part_feature_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.part.{name}",
+                    implemented=part_feature_implemented,
+                    available=part_feature_available,
+                    reason=part_feature_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in (
+                    "hole_wizard",
+                    "fillet",
+                    "chamfer",
+                    "shell",
+                    "draft",
+                    "rib",
+                    "linear_pattern",
+                    "circular_pattern",
+                    "mirror",
+                    "reference_plane",
+                    "reference_axis",
+                    "reference_point",
+                    "feature_query",
+                    "feature_rename",
+                    "feature_suppression",
+                    "fillet_radius_edit",
+                )
+            ),
+            CapabilityState(
+                name="solidworks.part.multibody",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.combine",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.part.split",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.sheet_metal.base_flange",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.surface.extrude",
+                implemented=cad_implemented,
+                available=cad_available,
+                reason=cad_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.body.inspect",
+                implemented=body_implemented,
+                available=body_available,
+                reason=body_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.body.combine",
+                implemented=body_implemented,
+                available=body_available,
+                reason=body_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.surface.thicken",
+                implemented=surface_implemented,
+                available=surface_available,
+                reason=surface_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.surface.knit",
+                implemented=False,
+                available=False,
+                reason="native_evidence_pending",
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.sheet_metal.inspect",
+                implemented=sheetmetal_implemented,
+                available=sheetmetal_available,
+                reason=sheetmetal_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.sheet_metal.flat_pattern",
+                implemented=sheetmetal_implemented,
+                available=sheetmetal_available,
+                reason=sheetmetal_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *(
+                ()
+                if "solidworks.sheet_metal.edge_flange" in self._plugin_capabilities
+                else (
+                    CapabilityState(
+                        name="solidworks.sheet_metal.edge_flange",
+                        implemented=False,
+                        available=False,
+                        reason="persistent_edge_identity_not_integrated",
+                        backend="solidworks_com",
+                        dependencies=("solidworks",),
+                    ),
+                )
+            ),
+            CapabilityState(
+                name="solidworks.weldment.cut_list",
+                implemented=weldment_implemented,
+                available=weldment_available,
+                reason=weldment_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.weldment.structural_member",
+                implemented=weldment_implemented,
+                available=structural_member_available,
+                reason=structural_member_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.components",
+                implemented=assembly_components_implemented,
+                available=assembly_components_available,
+                reason=assembly_components_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_state",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_configuration",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_lifecycle",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.component_pattern",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.coincident_mate",
+                implemented=cad_implemented or assembly_implemented,
+                available=(cad_implemented or assembly_implemented) and available,
+                reason=integrated_reason if (cad_implemented or assembly_implemented) else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.common_mates",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.advanced_common_mates",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.mate_suppression",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.mate_value",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.coincident_mate_suppression",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.distance_mate_value",
+                implemented=assembly_implemented,
+                available=assembly_available,
+                reason=assembly_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.assembly.mates",
+                implemented=False,
+                available=False,
+                reason=partial_reason if (cad_implemented or assembly_implemented) else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.lifecycle",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.dimension",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.properties",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.feature_suppression",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.material",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.display_states",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configuration.equations",
+                implemented=configuration_implemented,
+                available=configuration_available,
+                reason=configuration_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.configurations",
+                implemented=False,
+                available=False,
+                reason=partial_reason if configuration_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.drawing.lifecycle",
+                implemented=drawing_implemented,
+                available=drawing_available,
+                reason=drawing_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.drawing.front_view",
+                implemented=drawing_implemented,
+                available=drawing_available,
+                reason=drawing_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.drawing.{name}",
+                    implemented=drawing_implemented,
+                    available=drawing_available,
+                    reason=drawing_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in (
+                    "standard_views",
+                    "projected_view",
+                    "section_view",
+                    "note",
+                    "center_mark",
+                )
+            ),
+            CapabilityState(
+                name="solidworks.drawing",
+                implemented=False,
+                available=False,
+                reason=partial_reason if drawing_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.export.{name}",
+                    implemented=export_implemented,
+                    available=export_available,
+                    reason=export_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("step", "iges", "parasolid", "stl", "3mf", "pdf", "dxf", "dwg")
+            ),
+            CapabilityState(
+                name="solidworks.export.pdf.single_sheet",
+                implemented=export_implemented,
+                available=export_available,
+                reason=export_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.export",
+                implemented=False,
+                available=False,
+                reason=partial_reason if export_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            *tuple(
+                CapabilityState(
+                    name=f"solidworks.import.{name}",
+                    implemented=import_implemented,
+                    available=import_available,
+                    reason=import_reason,
+                    backend="solidworks_com",
+                    dependencies=("solidworks",),
+                )
+                for name in ("step", "iges", "parasolid")
+            ),
+            CapabilityState(
+                name="solidworks.import",
+                implemented=False,
+                available=False,
+                reason=partial_reason if import_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.mass_properties",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.bounding_box",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.geometry_sanity",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.measurement",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation.interference",
+                implemented=evaluation_implemented,
+                available=evaluation_available,
+                reason=evaluation_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.evaluation",
+                implemented=False,
+                available=False,
+                reason=partial_reason if evaluation_implemented else deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.mbd",
+                implemented=False,
+                available=False,
+                reason=deferred_reason,
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.simulation.study",
+                implemented=False,
+                available=False,
+                reason="native_adapter_not_integrated",
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.flow_simulation",
+                implemented=False,
+                available=False,
+                reason="dependency_probe_not_integrated",
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+            CapabilityState(
+                name="solidworks.electrical",
+                implemented=False,
+                available=False,
+                reason="dependency_probe_not_integrated",
+                backend="solidworks_com",
+                dependencies=("solidworks",),
+            ),
+        )
+        dependencies = (dependency, *self._internal_dependency_states())
+        plugin_capabilities = self._resolved_plugin_capabilities(dependencies)
+        built_in_names = {item.name for item in capabilities}
+        duplicate_names = sorted(
+            item.name for item in plugin_capabilities if item.name in built_in_names
+        )
+        if duplicate_names:
+            raise ValueError(f"duplicate capability: {duplicate_names[0]}")
+        return RuntimeContext(
+            backend="solidworks_com",
+            dependencies=dependencies,
+            capabilities=(*capabilities, *plugin_capabilities),
+        )
+
+    def register_tools(self, server: Any) -> None:
+        from .plugins.loader import register_plugins
+        from .registrar import register_runtime_tools
+
+        original_tool = server.tool
+        try:
+            register_runtime_tools(server, self)
+        finally:
+            # Core registration temporarily observes server.tool; plugins apply their own wrapper.
+            server.tool = original_tool
+        register_plugins(server, self)
