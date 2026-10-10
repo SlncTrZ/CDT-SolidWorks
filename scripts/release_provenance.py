@@ -1,18 +1,21 @@
+#!/usr/bin/env python3
 """Release provenance — Build and verify an exact-source wheel manifest.
 Wing: release | Topic: deterministic-provenance | Updated: 2026-09-19 13:45
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
 import tempfile
+import tomllib
 import zipfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_GUIDE = ROOT / "docs" / "TOOL_GUIDE.md"
@@ -37,7 +40,9 @@ def _source_identity() -> dict[str, object]:
     head = _run("git", "rev-parse", "HEAD")
     status = _run("git", "status", "--porcelain", "--untracked-files=no")
     if status:
-        raise SystemExit("tracked source tree must be clean before release provenance is emitted")
+        raise SystemExit(
+            "tracked source tree must be clean before release provenance is emitted"
+        )
     return {"git_sha": head, "tracked_tree_clean": True}
 
 
@@ -107,8 +112,7 @@ def _wheel_payload(wheel: Path) -> dict[str, object]:
         for name in names
         if name.startswith("_private/")
         or "/_private/" in name
-        or name.endswith("AGENTS.md")
-        or name.endswith("CLAUDE.md")
+        or name.endswith(("AGENTS.md", "CLAUDE.md"))
     ]
     if forbidden:
         raise SystemExit(f"forbidden release payload: {forbidden}")
@@ -273,13 +277,16 @@ def verify(manifest_path: Path) -> None:
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
 
         expected_guide_sha = guide["sha256"]
+        expected_version = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["version"]
         source_root = str(ROOT.resolve())
         code = (
             "import hashlib, importlib.metadata as m, importlib.resources as r, "
             "json, pathlib, cdt_solidworks.cli; "
             "module=pathlib.Path(cdt_solidworks.cli.__file__).resolve(); "
             f"assert not str(module).startswith({source_root!r}); "
-            "assert m.version('cdt-solidworks') == '0.1.0'; "
+            f"assert m.version('cdt-solidworks') == {expected_version!r}; "
             "guide=r.files('cdt_solidworks.platform').joinpath('PROVIDER_GUIDE.md').read_bytes(); "
             f"assert hashlib.sha256(guide).hexdigest() == {expected_guide_sha!r}; "
             "print(json.dumps({'module': str(module), 'guide_sha256': hashlib.sha256(guide).hexdigest()}))"
