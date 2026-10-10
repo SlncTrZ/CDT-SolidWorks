@@ -20,7 +20,7 @@ def test_help_is_runtime_backed_read_only_and_deterministically_fingerprinted(tm
     expected_content = "# Runtime guide\n\nOnly current platform tools.\n"
     assert first == second
     assert first.provider_name == "solidworks"
-    assert first.provider_version == "0.1.0"
+    assert first.provider_version == "0.1.1"
     assert first.protocol_version == LATEST_PROTOCOL_VERSION
     assert first.contract_version == "0.1.0"
     assert first.updated_at == "2026-09-16"

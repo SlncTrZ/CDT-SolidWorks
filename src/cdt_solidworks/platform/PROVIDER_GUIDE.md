@@ -1,5 +1,7 @@
 # CDT-SolidWorks Provider
 
+Stable CDT package `0.1.1` / tag `v.0.1.1` retains independent contract `0.1.0`. See [Release & deployment](https://github.com/SlncTrZ/CDT-SolidWorks/blob/main/docs/RELEASE_AND_DEPLOYMENT.md) before upgrading or switching the running Gateway registration; the supported Windows SOLIDWORKS build and auth must be checked independently.
+
 The provider exposes a capability-honest SOLIDWORKS COM surface. Native CAD primitives are advertised only when they have a bounded implementation path, rebuild/read-back checks, and Windows SOLIDWORKS acceptance evidence.
 
 Native Windows qualification from SSH/service sessions uses `scripts/run_native_windows_gate.ps1 -Python <locked-Windows-python.exe> -EvidenceRoot <new-empty-directory> -NativeOnly`. The launcher uses the same logged-on user's interactive desktop at Limited run level, requires no pre-existing SOLIDWORKS process, runs the six body/surface/sheet-metal workflows without patching the provider, records source/artifact hashes and verifies shutdown. Omitting `-NativeOnly` runs the full suite. It preserves unresolved running task state and fails rather than treating skipped native workflows as acceptance. It does not terminate vendor processes or replay completion-unknown work. Provider-created visible/hidden sessions retain `UserControl`/`UserControlBackground` until explicit disconnect so closing the last document cannot end the automation session. Attached user sessions keep their existing control and visibility.
