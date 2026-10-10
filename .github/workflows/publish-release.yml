@@ -2,7 +2,7 @@ name: Publish source release
 
 on:
   push:
-    tags: ["audit-*"]
+    tags: ["v.0.*.*"]
 
 permissions:
   contents: write
@@ -22,7 +22,9 @@ jobs:
       REQUIRED_BRANCH: "main"
       REQUIRED_WORKFLOW: "release-gates"
       RELEASE_SCOPE: >-
-        Repairs the reproduced local SolidWorks 2024 session/STA lifecycle timeout, fences ambiguous remote outcomes and provides the native qualification runner. Prior unpatched native qualification: 6/6 passed; full Windows suite 719 passed/6 fixture skips; Linux 713 passed/12 skips. Release workflow additions do not change qualified runtime/native/test bytes. The native Windows CI job is opt-in and is not inferred from Linux CI. SolidWorks 2026, remote fault parity and placement gates remain separately scoped.
+        Stable product release numbering; exact-source CI is required. Native app/build
+        qualification, artifact installation, owner auth and Gateway activation are separate
+        verifiable gates, not implied by the existence of a source release.
     steps:
       - uses: actions/checkout@v4
       - name: Verify exact-source CI and prepare release notes
@@ -32,6 +34,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           from pathlib import Path
           import tomllib
 
@@ -53,8 +56,11 @@ jobs:
               version = json.loads(Path("package.json").read_text())["version"]
           else:
               version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if re.fullmatch(r"v\.0\.[0-9]+\.[0-9]+", tag) is None or tag != f"v.{version}":
+              raise SystemExit(f"Non-canonical release tag {tag} for package {version}")
           notes = (
-              f"Source snapshot of package version **{version}**.\n\n"
+              f"Stable source release for package version **{version}**.\n\n"
               f"- Source commit: \x60{sha}\x60\n"
               f"- Exact-source CI: {latest['html_url']}\n"
               f"- Distribution: GitHub source archives; no binary/package-registry publication.\n\n"
@@ -63,12 +69,10 @@ jobs:
           (Path(os.environ["RUNNER_TEMP"]) / "release-notes.md").write_text(notes, encoding="utf-8")
           print(f"Exact-source CI verified: {sha}")
           PY
-      - name: Publish immutable source prerelease
+      - name: Publish immutable stable source release
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "$GH_REPO — $GITHUB_REF_NAME" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" \
-            --prerelease \
-            --latest=false
+            --notes-file "$RUNNER_TEMP/release-notes.md"
