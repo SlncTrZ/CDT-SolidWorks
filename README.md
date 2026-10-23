@@ -1,13 +1,49 @@
 # CDT-SolidWorks
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
+[![MCP Protocol](https://img.shields.io/badge/MCP-Standard-orange.svg)](https://modelcontextprotocol.io)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](docs/TOOL_GUIDE.md)
+[![Tools](https://img.shields.io/badge/tools-149%20callable-green.svg)](docs/TOOL_GUIDE.md)
+
 Typed SOLIDWORKS MCP execution provider for native documents, sketches, features,
 assemblies, drawings and exchange operations. Engineering design decisions,
 standards and professional approval belong to CDT_Engineer.
 
-Provider `0.1.1` · independent contract `0.1.0`.
+Provider `0.1.1` · independent contract `0.1.0` · 149 public tools.
 Measured native target: SOLIDWORKS 2024 SP0.1 on Windows.
 Other versions need separate acceptance. Broad feature families remain partial;
 use the granular runtime capability map rather than inferring full suite coverage.
+
+---
+
+## Quickstart / MCP Client Configuration
+
+### Claude Desktop (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "cdt-solidworks": {
+      "command": "uvx",
+      "args": ["cdt-solidworks"]
+    }
+  }
+}
+```
+
+### Cursor (`~/.cursor/mcp.json`)
+```json
+{
+  "mcpServers": {
+    "cdt-solidworks": {
+      "command": "uvx",
+      "args": ["cdt-solidworks"]
+    }
+  }
+}
+```
+
+---
 
 ## Install and start
 
@@ -44,3 +80,7 @@ Provider-owned and user-owned sessions remain distinct.
 
 Native acceptance retains its original tested source/runtime scope.
 Hosted CI or a source snapshot does not certify a new native deployment.
+
+## License
+
+Distributed under the open-source MIT License. See [LICENSE](LICENSE).

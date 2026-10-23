@@ -27,6 +27,7 @@ obj/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+uv.lock
 
 # OS / logs
 .DS_Store

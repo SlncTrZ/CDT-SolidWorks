@@ -1050,3 +1050,59 @@ class IntegratedProviderRuntime:
             # Core registration temporarily observes server.tool; plugins apply their own wrapper.
             server.tool = original_tool
         register_plugins(server, self)
+        _enrich_tool_parameters(server)
+
+
+_PARAM_NAME_DESCRIPTIONS: dict[str, str] = {
+    "path": "Filesystem path to the SOLIDWORKS document or export target",
+    "destination_path": "Destination filesystem path for export output",
+    "document_path": "Filesystem path to the active SOLIDWORKS document",
+    "source_path": "Filesystem path to the source file",
+    "template_path": "Filesystem path to the document template",
+    "file_path": "Target file path",
+    "handle": "Persistent CAD handle of the entity",
+    "component_id": "Unique component instance identifier in the assembly",
+    "feature_name": "Name of the parametric feature",
+    "feature_id": "Unique feature identifier",
+    "sketch_name": "Name of the 2D sketch",
+    "body_name": "Name of the solid or surface body",
+    "configuration_name": "Name of the target model configuration",
+    "sheet_name": "Name of the drawing sheet",
+    "view_name": "Name of the drawing view",
+    "mate_name": "Name of the assembly mate",
+    "mate_type": "Type of assembly mate (e.g. coincident, concentric, distance)",
+    "operation": "Operation to execute",
+    "operation_id": "Unique operation identifier for tracing and idempotency",
+    "parameters": "Operation parameter dictionary",
+    "reconcile_token": "Optional reconciliation token for idempotency",
+    "dx": "Delta X translation in system units (meters)",
+    "dy": "Delta Y translation in system units (meters)",
+    "dz": "Delta Z translation in system units (meters)",
+    "x": "X coordinate in system units (meters)",
+    "y": "Y coordinate in system units (meters)",
+    "z": "Z coordinate in system units (meters)",
+    "radius_mm": "Radius in millimeters",
+    "depth_mm": "Extrusion or cut depth in millimeters",
+    "angle_deg": "Angle in degrees",
+    "scale": "Scale factor multiplier",
+    "unit": "Unit of measurement",
+    "format": "Output file format",
+    "limit": "Maximum number of items to return",
+    "offset": "Starting pagination offset index",
+    "name": "Name identifier",
+}
+
+
+def _enrich_tool_parameters(server: Any) -> None:
+    tool_manager = getattr(server, "_tool_manager", None)
+    if tool_manager is None:
+        return
+    tools = getattr(tool_manager, "_tools", {})
+    for tool in tools.values():
+        props = tool.parameters.get("properties", {})
+        for p_name, p_schema in props.items():
+            if "description" not in p_schema or not p_schema["description"]:
+                p_schema["description"] = _PARAM_NAME_DESCRIPTIONS.get(
+                    p_name, f"{p_name.replace('_', ' ').capitalize()} parameter for {tool.name}"
+                )
+
