@@ -10,7 +10,7 @@ Typed SOLIDWORKS MCP execution provider for native documents, sketches, features
 assemblies, drawings and exchange operations. Engineering design decisions,
 standards and professional approval belong to CDT_Engineer.
 
-Provider `0.1.1` · independent contract `0.1.0` · 149 public tools.
+Provider `0.1.2` · independent contract `0.1.0` · 149 public tools.
 Measured native target: SOLIDWORKS 2024 SP0.1 on Windows.
 Other versions need separate acceptance. Broad feature families remain partial;
 use the granular runtime capability map rather than inferring full suite coverage.

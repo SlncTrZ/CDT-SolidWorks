@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cdt-solidworks"
-version = "0.1.1"
+version = "0.1.2"
 description = "CDT SolidWorks MCP provider"
 readme = "README.md"
 license = { text = "MIT" }
