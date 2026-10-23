@@ -20,6 +20,7 @@ use the granular runtime capability map rather than inferring full suite coverag
 ## Quickstart / MCP Client Configuration
 
 ### Claude Desktop (`claude_desktop_config.json`)
+
 ```json
 {
   "mcpServers": {
@@ -32,6 +33,7 @@ use the granular runtime capability map rather than inferring full suite coverag
 ```
 
 ### Cursor (`~/.cursor/mcp.json`)
+
 ```json
 {
   "mcpServers": {
