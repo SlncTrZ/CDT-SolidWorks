@@ -1,6 +1,6 @@
 # CDT-SolidWorks — Release and deployment
 
-**CDT package:** `0.1.1` · tag `v.0.1.1` · **separate** API contract `0.1.0`. The exact-tag provider currently advertises **149 MCP tools**. Native acceptance targets **SOLIDWORKS 2024 SP0.1 on Windows** with the required STA/COM session.
+**CDT package:** `0.1.2` · tag `v.0.1.2` · **separate** API contract `0.1.0`. The exact-tag provider currently advertises **149 MCP tools**. Native acceptance targets **SOLIDWORKS 2024 SP0.1 on Windows** with the required STA/COM session.
 
 [GitHub release](https://github.com/SlncTrZ/CDT-SolidWorks/releases) availability alone does not prove that a native COM deployment is installed or working.
 
